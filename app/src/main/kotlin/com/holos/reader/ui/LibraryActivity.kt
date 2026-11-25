@@ -5,7 +5,9 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.content.res.ColorStateList
 import com.holos.reader.R
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
@@ -56,6 +58,23 @@ class LibraryActivity : Activity() {
     private val selectedIds = LinkedHashSet<String>()
     private var currentBooks: List<BookRecord> = emptyList()
     private var autoOpenedOnce: Boolean = false
+    private val coverCache = object : LruCache<String, Bitmap>(8 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
+    }
+
+    private fun loadCoverCached(path: String): Bitmap? {
+        coverCache.get(path)?.let { return it }
+        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, opts)
+        var sample = 1
+        while (opts.outWidth / sample > 480) sample *= 2
+        val bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }) ?: return null
+        coverCache.put(path, bmp)
+        return bmp
+    }
 
     // Views
     private lateinit var frameRoot: FrameLayout
@@ -114,6 +133,7 @@ class LibraryActivity : Activity() {
     }
 
     override fun onDestroy() {
+        coverCache.evictAll()
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -193,7 +213,7 @@ class LibraryActivity : Activity() {
             visibility = View.GONE
         }
         downloadModelBtn = TextView(this).apply {
-            text = "Завантажити голос HolosTTS (~320 МБ)"
+            text = AppStrings.t(this@LibraryActivity, "Завантажити голос HolosTTS (~320 МБ)", "Download HolosTTS Voice (~320 MB)")
             textSize = 13f
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
@@ -365,7 +385,7 @@ class LibraryActivity : Activity() {
 
     private fun refreshBooks() {
         currentBooks = db.listBooks(searchQuery, prefs.sortBy, prefs.statusFilter)
-        searchInput.hint = "Пошук серед ${currentBooks.size} книг…"
+        searchInput.hint = AppStrings.t(this, "Пошук серед ${currentBooks.size} книг…", "Search ${currentBooks.size} books…")
         renderBooks()
         updateMiniPlayer()
     }
@@ -741,8 +761,21 @@ class LibraryActivity : Activity() {
                     prefs.openLastBookOnStart = !prefs.openLastBookOnStart
                 },
                 IconMenuItem(R.drawable.ic_download, "Модель HolosTTS", "Перевірити або завантажити голоси") {
-                    modelBanner.visibility = View.VISIBLE
-                    downloadModelBtn.visibility = View.VISIBLE
+                    if (HolosModelManager.isModelReady(this)) {
+                        UiTheme.dialogBuilder(this, prefs.theme)
+                            .setTitle("Модель HolosTTS")
+                            .setMessage("Модель HolosTTS вже завантажена та готова до роботи офлайн.")
+                            .setPositiveButton("OK", null)
+                            .setNeutralButton("Перезавантажити") { _, _ ->
+                                modelBanner.visibility = View.VISIBLE
+                                downloadModelBtn.visibility = View.VISIBLE
+                                downloadModel()
+                            }
+                            .showThemed()
+                    } else {
+                        modelBanner.visibility = View.VISIBLE
+                        downloadModelBtn.visibility = View.VISIBLE
+                    }
                 },
                 IconMenuItem(R.drawable.ic_info, "Про програму (About)", "GitHub, HolosTTS, словники та джерела") {
                     UiTheme.showAboutDialog(this, prefs.theme)
@@ -866,7 +899,7 @@ class LibraryActivity : Activity() {
                     modelBanner.visibility = View.GONE
                     downloadModelBtn.isEnabled = true
                     downloadModelBtn.alpha = 1f
-                    downloadModelBtn.text = "Завантажити голос HolosTTS (~320 МБ)"
+                    downloadModelBtn.text = AppStrings.t(this@LibraryActivity, "Завантажити голос HolosTTS (~320 МБ)", "Download HolosTTS Voice (~320 MB)")
                     Toast.makeText(this, "HolosTTS готовий!", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {

@@ -7,8 +7,14 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.animation.ValueAnimator
 import android.content.pm.ActivityInfo
+import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
+import android.graphics.RectF
+import android.view.MotionEvent
+import kotlin.math.roundToInt
 import android.os.Build
 import android.text.Layout
 import android.text.style.LeadingMarginSpan
@@ -39,6 +45,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.widget.AbsListView
 import android.widget.BaseAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -65,6 +72,7 @@ import com.holos.reader.tts.ReaderTheme
 import com.holos.reader.tts.TtsPlaybackController
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Flagship virtualized EPUB 3 Reader matching the user's minimalist Light/Dark screenshots:
@@ -100,6 +108,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private var activeWordAlpha: Float = 1f
     private var wordAnimator: ValueAnimator? = null
     private var chromeVisible: Boolean = true
+    private val chapterLoadGen = AtomicLong(0L)
 
     // Views
     private lateinit var frameRoot: FrameLayout
@@ -119,8 +128,16 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var miniChapterTv: TextView
     private lateinit var miniPlayBtn: ImageView
 
-    // Bottom Minimalist Icon Bar
+    // Bottom Minimalist Icon Bar + Compact Book-Wide Scrubber Popup
     private lateinit var bottomIconBar: LinearLayout
+    private lateinit var bottomScrubberBtn: ImageView
+    private lateinit var bookScrubberBar: LinearLayout
+    private lateinit var scrubberCounterTv: TextView
+    private lateinit var bookScrubberView: BookScrubberView
+    private lateinit var scrubUndoBtn: ImageView
+    private lateinit var scrubRedoBtn: ImageView
+    private val navBackStack = ArrayDeque<Pair<Int, Int>>()
+    private val navForwardStack = ArrayDeque<Pair<Int, Int>>()
 
     private val dp get() = resources.displayMetrics.density
     private fun d(v: Int): Int = (v * dp).toInt()
@@ -132,6 +149,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         controller = TtsPlaybackController(this).also {
             it.listener = this
             ReaderAudioService.activeController = it
+            ReaderAudioService.onSkipNextAction = { runOnUiThread { jumpBlock(+1) } }
+            ReaderAudioService.onSkipPrevAction = { runOnUiThread { jumpBlock(-1) } }
         }
 
         val bookId = intent.getStringExtra(EXTRA_BOOK_ID)
@@ -153,11 +172,13 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             coverBitmap = BitmapFactory.decodeFile(cf.absolutePath)
         }
         sessionStartMs = System.currentTimeMillis()
-        chapterIndex = loaded.lastChapterIndex.coerceIn(0, (loaded.chapterCount - 1).coerceAtLeast(0))
+        val restoredCh = savedInstanceState?.getInt(STATE_CHAPTER_IDX, loaded.lastChapterIndex) ?: loaded.lastChapterIndex
+        val restoredBlock = savedInstanceState?.getInt(STATE_BLOCK_IDX, loaded.lastBlockIndex) ?: loaded.lastBlockIndex
+        chapterIndex = restoredCh.coerceIn(0, (loaded.chapterCount - 1).coerceAtLeast(0))
 
         buildUi()
         applyTheme()
-        loadChapter(chapterIndex, scrollToBlock = loaded.lastBlockIndex, autoPlay = false)
+        loadChapter(chapterIndex, scrollToBlock = restoredBlock, autoPlay = false)
     }
 
     override fun onResume() {
@@ -188,17 +209,31 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         when {
             ::tocSheet.isInitialized && tocSheet.isVisible() -> tocSheet.hide()
             ::audioSheet.isInitialized && audioSheet.isVisible() -> audioSheet.hide()
+            ::bookScrubberBar.isInitialized && bookScrubberBar.visibility == View.VISIBLE -> toggleBookScrubberBar(false)
             ::colorSwatchBar.isInitialized && colorSwatchBar.visibility == View.VISIBLE -> colorSwatchBar.visibility = View.GONE
             else -> super.onBackPressed()
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(STATE_CHAPTER_IDX, chapterIndex)
+        outState.putInt(STATE_BLOCK_IDX, activeBlockIndex.coerceAtLeast(0))
     }
 
     override fun onDestroy() {
         autoScrolling = false
         wordAnimator?.cancel()
         autoScrollHandler.removeCallbacksAndMessages(null)
-        saveProgress()
-        if (::controller.isInitialized) controller.stop()
+        if (book != null) saveProgress()
+        if (::controller.isInitialized) {
+            controller.stop()
+            if (ReaderAudioService.activeController === controller) {
+                ReaderAudioService.activeController = null
+                ReaderAudioService.onSkipNextAction = null
+                ReaderAudioService.onSkipPrevAction = null
+            }
+        }
         if (::audioSheet.isInitialized) audioSheet.destroy()
         ReaderAudioService.stop(this)
         epubSession?.close()
@@ -239,6 +274,12 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             adapter = blocksAdapter
             setPadding(d(18), d(4), d(18), d(130))
             clipToPadding = false
+            setOnScrollListener(object : AbsListView.OnScrollListener {
+                override fun onScrollStateChanged(view: AbsListView?, scrollState: Int) {}
+                override fun onScroll(view: AbsListView?, firstVisibleItem: Int, visibleItemCount: Int, totalItemCount: Int) {
+                    updatePageFooter(firstVisibleItem, visibleItemCount)
+                }
+            })
         }
 
         footerCounterTv = TextView(this).apply {
@@ -270,18 +311,21 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             setPadding(d(12), d(6), d(12), d(8))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_menu, padDp = 8) { openTocSheet(0) }, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_palette, padDp = 8) { toggleColorSwatchBar() }, LinearLayout.LayoutParams(0, d(40), 1f))
-            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_bookmark, padDp = 8) { openTocSheet(1) }, LinearLayout.LayoutParams(0, d(40), 1f))
+            bottomScrubberBtn = UiTheme.iconView(this@ReaderActivity, R.drawable.ic_scrubber, padDp = 8, tagName = "scrubber_icon") { toggleBookScrubberBar() }
+            addView(bottomScrubberBtn, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(toolbarIcon("A") { startActivity(Intent(this@ReaderActivity, ReaderSettingsActivity::class.java).putExtra(ReaderSettingsActivity.EXTRA_TAB_INDEX, 0)) }, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_headphones, padDp = 8) { openAudioSheet() }, LinearLayout.LayoutParams(0, d(40), 1f))
         }
 
         colorSwatchBar = buildColorSwatchBar().apply { visibility = View.GONE }
+        bookScrubberBar = buildBookScrubberBar().apply { visibility = View.GONE }
         bottomDock.addView(miniPlayerPill, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
             leftMargin = d(14); rightMargin = d(14); bottomMargin = d(8)
         })
         bottomDock.addView(colorSwatchBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
             leftMargin = d(12); rightMargin = d(12); bottomMargin = d(6)
         })
+        bottomDock.addView(bookScrubberBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         bottomDock.addView(bottomIconBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         frameRoot.addView(readerCanvas, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -316,6 +360,9 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             override fun getCurrentBlocks(): List<ReaderBlock> = currentBlocks
             override fun getBookId(): String = book?.id ?: ""
             override fun getChapterIndex(): Int = chapterIndex
+            override fun onAbLoopChanged(startBlock: Int, endBlock: Int) {
+                controller.setAbLoop(startBlock, endBlock)
+            }
         })
         frameRoot.addView(audioSheet.overlayRoot, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
 
@@ -456,6 +503,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         }
 
         updateBookmarkIcon()
+        refreshBookScrubberUi()
         audioSheet.applyPalette()
         blocksAdapter.notifyDataSetChanged()
     }
@@ -472,15 +520,17 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
         subtleHeaderTv.text = chapterTitle
         miniChapterTv.text = chapterTitle
-        footerCounterTv.text = "${chapterIndex + 1} / ${b.chapterCount}"
+        updatePageFooter(0, 1)
         chapterProgressBar.progress = (((chapterIndex + 1) * 100) / b.chapterCount.coerceAtLeast(1)).coerceIn(0, 100)
 
+        val loadGen = chapterLoadGen.incrementAndGet()
         // Parse chapter on background thread for instant UI responsiveness
         bgExecutor.execute {
             val blocks = synchronized(session.zip) {
                 EpubStreamingParser.parseChapterBlocks(session.zip, spineItem)
             }
             runOnUiThread {
+                if (chapterLoadGen.get() != loadGen || isFinishing || isDestroyed) return@runOnUiThread
                 currentBlocks = blocks
                 activeBlockIndex = scrollToBlock.coerceIn(0, (blocks.size - 1).coerceAtLeast(0))
                 blocksAdapter.notifyDataSetChanged()
@@ -489,6 +539,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 }
                 saveProgress(activeBlockIndex)
                 updateBookmarkIcon()
+                refreshBookScrubberUi()
                 if (audioSheet.isVisible()) {
                     audioSheet.updateState(activeBlockIndex, controller.isPlaying, controller.isPaused)
                 }
@@ -513,11 +564,17 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     private fun startPlaybackAt(blockIdx: Int) {
         if (currentBlocks.isEmpty()) return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQ_POST_NOTIF)
+        }
         val idx = blockIdx.coerceIn(0, currentBlocks.lastIndex)
         activeBlockIndex = idx
         miniPlayerPill.visibility = View.VISIBLE
         saveProgress(idx)
-        controller.startFrom(currentBlocks, idx)
+        val offlineFile = book?.let { TtsPlaybackController.offlineChapterFile(this, it.id, chapterIndex, prefs) }
+        controller.startFrom(currentBlocks, idx, offlineWavFile = offlineFile)
     }
 
     private fun togglePlayPause() {
@@ -565,7 +622,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 audioSheet.updateState(activeBlockIndex, isPlaying, isPaused)
             }
             if (isPlaying && !isPaused) {
-                ReaderAudioService.start(this, book?.title ?: "HolosReader", chapterTitle)
+                ReaderAudioService.start(this, book?.title ?: "HolosReader", chapterTitle, book?.id)
             } else if (!isPlaying) {
                 ReaderAudioService.stop(this)
             }
@@ -619,10 +676,25 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val idx = activeBlockIndex
         if (idx !in currentBlocks.indices) return
         val first = blocksListView.firstVisiblePosition
-        val child = blocksListView.getChildAt(idx - first) as? TextView ?: return
+        val child = blocksListView.getChildAt(idx - first) as? HighlightTextView ?: return
         val block = currentBlocks[idx]
         if (block.type == BlockType.IMAGE || block.type == BlockType.HR) return
-        child.text = buildBlockSpannable(block, idx, UiTheme.palette(prefs.theme))
+        val p = UiTheme.palette(prefs.theme)
+        applyBlockHighlightToView(child, idx, p)
+        if (prefs.ttsHighlightStyle == "TEXT_COLOR") {
+            child.text = buildBlockSpannable(block, idx, p)
+        }
+        if (activeWordStart >= 0 && child.layout != null) {
+            val safeOff = activeWordStart.coerceIn(0, (child.text?.length ?: 1) - 1)
+            val line = child.layout.getLineForOffset(safeOff)
+            val wordAbsY = child.top + child.paddingTop + child.layout.getLineBottom(line)
+            val safeBottom = (blocksListView.height - d(140)).coerceAtLeast(blocksListView.height / 2)
+            if (wordAbsY > safeBottom) {
+                blocksListView.smoothScrollBy(wordAbsY - blocksListView.height / 2, 180)
+            } else if (wordAbsY < d(40)) {
+                blocksListView.smoothScrollBy(wordAbsY - blocksListView.height / 3, 180)
+            }
+        }
     }
 
     private fun buildBlockSpannable(block: ReaderBlock, position: Int, p: UiPalette): SpannableStringBuilder {
@@ -659,26 +731,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             }
         }
         val gran = prefs.ttsHighlightGranularity
-        if (gran != "OFF" && position == activeBlockIndex && activeBlockIndex >= 0) {
-            ssb.setSpan(BackgroundColorSpan(p.inlineHighlightBg), 0, ssb.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            if (gran == "WORD" && activeWordStart in 0 until ssb.length && activeWordEnd in (activeWordStart + 1)..ssb.length) {
-                val hlColor = prefs.ttsHighlightColor
-                when (prefs.ttsHighlightStyle) {
-                    "UNDERLINE" -> {
-                        ssb.setSpan(UnderlineSpan(), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                        ssb.setSpan(ForegroundColorSpan(hlColor), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    }
-                    "TEXT_COLOR" -> {
-                        ssb.setSpan(ForegroundColorSpan(hlColor), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    }
-                    else -> {
-                        // Gentle pastel highlighter (~10% -> ~32% alpha) preserving natural text color & Bionic fixation
-                        val alphaByte = (24 + (58 * activeWordAlpha)).toInt().coerceIn(20, 84)
-                        val wordBg = (alphaByte shl 24) or (hlColor and 0x00FFFFFF)
-                        ssb.setSpan(BackgroundColorSpan(wordBg), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    }
-                }
-            }
+        if (gran == "WORD" && prefs.ttsHighlightStyle == "TEXT_COLOR" &&
+            position == activeBlockIndex && activeBlockIndex >= 0 &&
+            activeWordStart in 0 until ssb.length && activeWordEnd in (activeWordStart + 1)..ssb.length
+        ) {
+            ssb.setSpan(ForegroundColorSpan(prefs.ttsHighlightColor), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
         }
         return ssb
     }
@@ -965,7 +1022,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 return iv
             }
 
-            val tv = (convertView as? TextView) ?: TextView(this@ReaderActivity)
+            val tv = (convertView as? HighlightTextView) ?: HighlightTextView(this@ReaderActivity)
             tv.setLineSpacing(0f, prefs.lineSpacingMult)
             tv.letterSpacing = prefs.letterSpacingEm
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -975,22 +1032,25 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     Layout.JUSTIFICATION_MODE_NONE
                 }
             }
-            val tf = ReaderSettingsActivity.resolveTypeface(prefs)
+            val tf = ReaderSettingsActivity.resolveTypeface(this@ReaderActivity, prefs, epubSession?.resolveBookTypeface(cacheDir, prefs.fontWeight >= 600))
             val fontSize = prefs.fontSizeSp
 
             if (block.type == BlockType.HR) {
+                tv.setParagraphHighlight(false)
+                tv.clearWordHighlight()
                 tv.text = "•  •  •"
                 tv.gravity = Gravity.CENTER
                 tv.textSize = 14f
                 tv.setTextColor(p.mutedText)
                 tv.setPadding(0, d(12), 0, d(12))
                 tv.background = null
-                tv.setOnClickListener(null)
+                tv.setOnClickListener { toggleChromeVisibility() }
                 return tv
             }
 
-            // Render rich inline spans + Bionic Reading + active paragraph & animated word highlight
+            // Render rich inline spans + Bionic Reading + silky rounded-pill word & soft card highlight
             tv.text = buildBlockSpannable(block, position, p)
+            applyBlockHighlightToView(tv, position, p)
             tv.setTextColor(if (block.type == BlockType.CAPTION || block.type == BlockType.FOOTNOTE) p.secondaryText else p.primaryText)
             tv.gravity = if (block.type == BlockType.HEADING_1 || block.type == BlockType.CAPTION) Gravity.CENTER_HORIZONTAL else Gravity.START
             tv.background = if (block.type == BlockType.TABLE_ROW) UiTheme.rounded(p.cardBg, d(8).toFloat()) else null
@@ -1029,17 +1089,16 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 else -> {
                     tv.textSize = fontSize
                     tv.typeface = tf
-                    tv.setPadding(d(2), d(prefs.paragraphMarginDp), d(2), d(prefs.paragraphMarginDp))
+                    val hPad = if (position == activeBlockIndex && prefs.ttsHighlightGranularity != "OFF") d(12) else d(6)
+                    tv.setPadding(hPad, d(prefs.paragraphMarginDp), d(8), d(prefs.paragraphMarginDp))
                 }
             }
 
             tv.setOnClickListener {
-                startPlaybackAt(position)
+                toggleChromeVisibility()
             }
             tv.setOnLongClickListener {
-                chromeVisible = !chromeVisible
-                topOverlayBar.visibility = if (chromeVisible) View.VISIBLE else View.GONE
-                bottomIconBar.visibility = if (chromeVisible) View.VISIBLE else View.GONE
+                startPlaybackAt(position)
                 true
             }
             return tv
@@ -1192,8 +1251,274 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         }
     }
 
+    private fun applyBlockHighlightToView(tv: HighlightTextView, position: Int, p: UiPalette) {
+        val gran = prefs.ttsHighlightGranularity
+        val isActive = gran != "OFF" && position == activeBlockIndex && activeBlockIndex >= 0
+        if (!isActive) {
+            tv.setParagraphHighlight(false)
+            tv.clearWordHighlight()
+            return
+        }
+        val softCard = if (p.isDark) 0x16FFFFFF else 0x0E161618
+        val softBar = (0xCC shl 24) or (prefs.ttsHighlightColor and 0x00FFFFFF)
+        tv.setParagraphHighlight(true, softCard, softBar)
+        val len = tv.text?.length ?: 0
+        if (gran == "WORD" && prefs.ttsHighlightStyle != "TEXT_COLOR" &&
+            activeWordStart in 0 until len && activeWordEnd in (activeWordStart + 1)..len
+        ) {
+            tv.setWordHighlight(activeWordStart, activeWordEnd, prefs.ttsHighlightStyle, prefs.ttsHighlightColor, activeWordAlpha)
+        } else {
+            tv.clearWordHighlight()
+        }
+    }
+
+    private fun toggleChromeVisibility() {
+        chromeVisible = !chromeVisible
+        val vis = if (chromeVisible) View.VISIBLE else View.GONE
+        topOverlayBar.visibility = vis
+        bottomIconBar.visibility = vis
+        if (!chromeVisible) {
+            miniPlayerPill.visibility = View.GONE
+            if (::bookScrubberBar.isInitialized) bookScrubberBar.visibility = View.GONE
+        } else if (controller.isPlaying || controller.isPaused) {
+            miniPlayerPill.visibility = View.VISIBLE
+        }
+        refreshBookScrubberUi()
+    }
+
+    private fun updatePageFooter(firstVisibleItem: Int, visibleItemCount: Int) {
+        if (!::footerCounterTv.isInitialized) return
+        val totalCh = (book?.chapterCount ?: 1).coerceAtLeast(1)
+        val totalBlocks = currentBlocks.size.coerceAtLeast(1)
+        val pageSize = visibleItemCount.coerceAtLeast(4)
+        val totalPages = ((totalBlocks + pageSize - 1) / pageSize).coerceAtLeast(1)
+        val currentPage = ((firstVisibleItem / pageSize) + 1).coerceIn(1, totalPages)
+        footerCounterTv.text = "Стор. $currentPage / $totalPages  ·  Розд. ${chapterIndex + 1} / $totalCh"
+    }
+
+    private fun toggleBookScrubberBar(forceState: Boolean? = null) {
+        if (!::bookScrubberBar.isInitialized) return
+        val show = forceState ?: (bookScrubberBar.visibility != View.VISIBLE)
+        bookScrubberBar.visibility = if (show) View.VISIBLE else View.GONE
+        if (show) {
+            miniPlayerPill.visibility = View.GONE
+            refreshBookScrubberUi()
+        } else if (controller.isPlaying || controller.isPaused) {
+            miniPlayerPill.visibility = View.VISIBLE
+        }
+        refreshBookScrubberUi()
+    }
+
+    private fun navigateWithHistory(targetChapter: Int, targetBlock: Int = 0) {
+        val total = book?.chapterCount ?: return
+        val clamped = targetChapter.coerceIn(0, (total - 1).coerceAtLeast(0))
+        if (clamped == chapterIndex && targetBlock == activeBlockIndex) return
+        navBackStack.addLast(chapterIndex to activeBlockIndex.coerceAtLeast(0))
+        if (navBackStack.size > 30) navBackStack.removeFirst()
+        navForwardStack.clear()
+        loadChapter(clamped, scrollToBlock = targetBlock, autoPlay = controller.isPlaying)
+    }
+
+    private fun buildBookScrubberBar(): LinearLayout {
+        scrubberCounterTv = TextView(this).apply {
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setPadding(d(18), d(7), d(18), d(7))
+        }
+        val counterWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            addView(scrubberCounterTv)
+        }
+
+        bookScrubberView = BookScrubberView(this).apply {
+            onChapterLive = { chIdx, total ->
+                scrubberCounterTv.text = "${chIdx + 1} / $total"
+            }
+            onChapterCommitted = { chIdx ->
+                navigateWithHistory(chIdx, 0)
+            }
+        }
+
+        val firstBtn = UiTheme.iconView(this, R.drawable.ic_fast_rewind, padDp = 8, tagName = "scrub_nav") {
+            navigateWithHistory((chapterIndex - 10).coerceAtLeast(0), 0)
+        }
+        val prevBtn = UiTheme.iconView(this, R.drawable.ic_chevron_left, padDp = 8, tagName = "scrub_nav") {
+            navigateWithHistory((chapterIndex - 1).coerceAtLeast(0), 0)
+        }
+        scrubUndoBtn = UiTheme.iconView(this, R.drawable.ic_undo, padDp = 8, tagName = "scrub_undo") {
+            if (navBackStack.isNotEmpty()) {
+                val (prevCh, prevBlk) = navBackStack.removeLast()
+                navForwardStack.addLast(chapterIndex to activeBlockIndex.coerceAtLeast(0))
+                loadChapter(prevCh, scrollToBlock = prevBlk, autoPlay = controller.isPlaying)
+            }
+        }
+        scrubRedoBtn = UiTheme.iconView(this, R.drawable.ic_redo, padDp = 8, tagName = "scrub_redo") {
+            if (navForwardStack.isNotEmpty()) {
+                val (nextCh, nextBlk) = navForwardStack.removeLast()
+                navBackStack.addLast(chapterIndex to activeBlockIndex.coerceAtLeast(0))
+                loadChapter(nextCh, scrollToBlock = nextBlk, autoPlay = controller.isPlaying)
+            }
+        }
+        val nextBtn = UiTheme.iconView(this, R.drawable.ic_chevron_right, padDp = 8, tagName = "scrub_nav") {
+            val maxCh = ((book?.chapterCount ?: 1) - 1).coerceAtLeast(0)
+            navigateWithHistory((chapterIndex + 1).coerceAtMost(maxCh), 0)
+        }
+        val lastBtn = UiTheme.iconView(this, R.drawable.ic_fast_forward, padDp = 8, tagName = "scrub_nav") {
+            val maxCh = ((book?.chapterCount ?: 1) - 1).coerceAtLeast(0)
+            navigateWithHistory((chapterIndex + 10).coerceAtMost(maxCh), 0)
+        }
+
+        val navRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(firstBtn, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(prevBtn, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(scrubUndoBtn, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(scrubRedoBtn, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(nextBtn, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(lastBtn, LinearLayout.LayoutParams(0, d(40), 1f))
+        }
+
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            elevation = d(8).toFloat()
+            setPadding(d(16), d(14), d(16), d(8))
+            addView(counterWrap, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(12) })
+            addView(bookScrubberView, LinearLayout.LayoutParams(MATCH_PARENT, d(48)).apply { bottomMargin = d(12) })
+            addView(navRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+    }
+
+    private fun refreshBookScrubberUi() {
+        val p = UiTheme.palette(prefs.theme)
+        if (::bottomScrubberBtn.isInitialized && ::bookScrubberBar.isInitialized) {
+            val open = bookScrubberBar.visibility == View.VISIBLE
+            bottomScrubberBtn.setColorFilter(if (open) p.accentBlue else p.primaryText)
+        }
+        if (!::bookScrubberBar.isInitialized) return
+        val total = (book?.chapterCount ?: 1).coerceAtLeast(1)
+        bookScrubberBar.background = UiTheme.topRounded(p.sheetBg, d(20).toFloat())
+        scrubberCounterTv.background = UiTheme.rounded(p.cardBg, d(18).toFloat())
+        scrubberCounterTv.setTextColor(p.primaryText)
+        scrubberCounterTv.text = "${chapterIndex + 1} / $total"
+        bookScrubberView.applyPalette(p)
+        bookScrubberView.setPosition(chapterIndex, total)
+
+        fun tintNav(vg: ViewGroup) {
+            for (i in 0 until vg.childCount) {
+                val c = vg.getChildAt(i)
+                if (c is ImageView) {
+                    when (c.tag) {
+                        "scrub_nav" -> c.setColorFilter(p.primaryText)
+                        "scrub_undo" -> c.setColorFilter(if (navBackStack.isNotEmpty()) p.primaryText else p.mutedText)
+                        "scrub_redo" -> c.setColorFilter(if (navForwardStack.isNotEmpty()) p.primaryText else p.mutedText)
+                    }
+                } else if (c is ViewGroup) {
+                    tintNav(c)
+                }
+            }
+        }
+        tintNav(bookScrubberBar)
+    }
+
+    /**
+     * Compact horizontal book-wide scrubber with rounded pill track & circular percentage thumb (e.g. 47%).
+     */
+    private class BookScrubberView(context: Context) : View(context) {
+        private var currentIndex = 0
+        private var totalCount = 1
+        var onChapterLive: ((Int, Int) -> Unit)? = null
+        var onChapterCommitted: ((Int) -> Unit)? = null
+
+        private val dp = context.resources.displayMetrics.density
+        private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        private val thumbTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 11.5f * dp
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        private val trackRect = RectF()
+        private val fillRect = RectF()
+
+        fun applyPalette(p: UiPalette) {
+            trackPaint.color = p.cardBg
+            fillPaint.color = (0x33 shl 24) or (p.accentBlue and 0x00FFFFFF)
+            thumbPaint.color = p.activeCardBg
+            thumbTextPaint.color = p.primaryText
+            invalidate()
+        }
+
+        fun setPosition(index: Int, total: Int) {
+            totalCount = total.coerceAtLeast(1)
+            currentIndex = index.coerceIn(0, totalCount - 1)
+            invalidate()
+        }
+
+        private fun fraction(): Float =
+            if (totalCount <= 1) 1f else currentIndex.toFloat() / (totalCount - 1).toFloat()
+
+        private fun indexForX(x: Float): Int {
+            val r = 21f * dp
+            val usable = (width - r * 2f).coerceAtLeast(1f)
+            val frac = ((x - r) / usable).coerceIn(0f, 1f)
+            return (frac * (totalCount - 1)).roundToInt().coerceIn(0, totalCount - 1)
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val w = width.toFloat()
+            val h = height.toFloat()
+            val cy = h / 2f
+            val trackH = 26f * dp
+            val r = 21f * dp
+
+            trackRect.set(0f, cy - trackH / 2f, w, cy + trackH / 2f)
+            canvas.drawRoundRect(trackRect, trackH / 2f, trackH / 2f, trackPaint)
+
+            val cx = r + fraction() * (w - r * 2f).coerceAtLeast(0f)
+            fillRect.set(0f, cy - trackH / 2f, (cx + r * 0.5f).coerceAtMost(w), cy + trackH / 2f)
+            canvas.drawRoundRect(fillRect, trackH / 2f, trackH / 2f, fillPaint)
+
+            canvas.drawCircle(cx, cy, r, thumbPaint)
+            val pct = (fraction() * 100f).roundToInt().coerceIn(0, 100)
+            val textY = cy - (thumbTextPaint.descent() + thumbTextPaint.ascent()) / 2f
+            canvas.drawText("$pct%", cx, textY, thumbTextPaint)
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    val idx = indexForX(event.x)
+                    if (idx != currentIndex) {
+                        currentIndex = idx
+                        invalidate()
+                        onChapterLive?.invoke(currentIndex, totalCount)
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    currentIndex = indexForX(event.x)
+                    invalidate()
+                    onChapterCommitted?.invoke(currentIndex)
+                    return true
+                }
+            }
+            return super.onTouchEvent(event)
+        }
+    }
+
     companion object {
         const val EXTRA_BOOK_ID = "book_id"
+        private const val STATE_CHAPTER_IDX = "state_chapter_idx"
+        private const val STATE_BLOCK_IDX = "state_block_idx"
+        private const val REQ_POST_NOTIF = 9102
         private const val REQ_IMPORT_VOICE = 2001
     }
 }
