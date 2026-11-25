@@ -113,7 +113,7 @@ class LibraryActivity : Activity() {
             setPadding(d(14), d(12), d(14), 0)
         }
 
-        // Top Bar: [ Search in N books... | + ]  (⋯)  (☰)
+        // Top Bar: [ 🔍 Search in N books... | + ]  (⋯)  (☰)
         searchInput = EditText(this).apply {
             background = null
             textSize = 14f
@@ -211,7 +211,7 @@ class LibraryActivity : Activity() {
         // Persistent Floating Mini-Player Pill (bottom)
         miniPlayerPill = buildMiniPlayerPill()
 
-        // Multi-Select Bottom Action Panel
+        // Multi-Select Bottom Action Panel (Screenshot 5 — local-only: Open, Tag, Status, Details, Delete, Cancel)
         multiSelectBar = buildMultiSelectPanel().apply { visibility = View.GONE }
 
         frameRoot.addView(mainCol, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -552,7 +552,7 @@ class LibraryActivity : Activity() {
             booksContainer.addView(View(this).apply { setBackgroundColor(p.divider) }, LinearLayout.LayoutParams(MATCH_PARENT, 1))
         }
 
-        // Bottom "+ Import Books" pill
+        // Bottom "+ Import Books" pill (matching Screenshot 6!)
         val importPill = TextView(this).apply {
             text = "+  Імпортувати книги"
             textSize = 14f
@@ -701,25 +701,27 @@ class LibraryActivity : Activity() {
     private fun showAppMenu() {
         val darkOn = prefs.theme == ReaderTheme.DARK
         val opts = arrayOf(
-            "${if (prefs.openLastBookOnStart) "✓ " else ""}Відкривати останню книгу при запуску",
-            "${if (darkOn) "✓ " else ""}Темна тема (Dark Mode)",
+            "Налаштування читання (шрифт, макет, тема, TTS)",
             "Статистика читання",
             "Словник наголосів (stress_user.txt)",
+            "${if (darkOn) "✓ " else ""}Темна тема (Dark Mode)",
+            "${if (prefs.openLastBookOnStart) "✓ " else ""}Відкривати останню книгу при запуску",
             "Перевірити / завантажити модель HolosTTS",
         )
         UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("HolosReader")
             .setItems(opts) { _, which ->
                 when (which) {
-                    0 -> prefs.openLastBookOnStart = !prefs.openLastBookOnStart
-                    1 -> {
+                    0 -> startActivity(Intent(this, ReaderSettingsActivity::class.java))
+                    1 -> startActivity(Intent(this, StatisticsActivity::class.java))
+                    2 -> startActivity(Intent(this, StressEditorActivity::class.java))
+                    3 -> {
                         prefs.theme = if (darkOn) ReaderTheme.LIGHT else ReaderTheme.DARK
                         applyTheme()
                         renderBooks()
                     }
-                    2 -> startActivity(Intent(this, StatisticsActivity::class.java))
-                    3 -> startActivity(Intent(this, StressEditorActivity::class.java))
-                    4 -> {
+                    4 -> prefs.openLastBookOnStart = !prefs.openLastBookOnStart
+                    5 -> {
                         modelBanner.visibility = View.VISIBLE
                         downloadModelBtn.visibility = View.VISIBLE
                     }

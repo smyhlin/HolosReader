@@ -46,6 +46,11 @@
             android:label="Статистика читання" />
 
         <activity
+            android:name=".ui.ReaderSettingsActivity"
+            android:exported="false"
+            android:label="Налаштування" />
+
+        <activity
             android:name=".tts.CheckVoiceDataActivity"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">

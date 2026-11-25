@@ -6,7 +6,15 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.animation.ValueAnimator
+import android.content.pm.ActivityInfo
 import android.graphics.Color
+import android.graphics.ColorMatrixColorFilter
+import android.os.Build
+import android.text.Layout
+import android.text.style.LeadingMarginSpan
+import android.view.KeyEvent
+import android.view.WindowManager
+import android.widget.ProgressBar
 import android.graphics.Typeface
 import android.view.animation.DecelerateInterpolator
 import android.os.Bundle
@@ -101,6 +109,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var blocksListView: ListView
     private lateinit var blocksAdapter: BlocksAdapter
     private lateinit var footerCounterTv: TextView
+    private lateinit var chapterProgressBar: ProgressBar
 
     // Floating Pill Mini-Player
     private lateinit var miniPlayerPill: LinearLayout
@@ -148,6 +157,29 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         buildUi()
         applyTheme()
         loadChapter(chapterIndex, scrollToBlock = loaded.lastBlockIndex, autoPlay = false)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::frameRoot.isInitialized) {
+            applyTheme()
+        }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (prefs.volumeKeyScroll && ::blocksListView.isInitialized) {
+            when (keyCode) {
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    blocksListView.smoothScrollBy((blocksListView.height * 0.80f).toInt(), 220)
+                    return true
+                }
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    blocksListView.smoothScrollBy(-(blocksListView.height * 0.80f).toInt(), 220)
+                    return true
+                }
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     @Deprecated("Zero-AndroidX compatibility")
@@ -215,8 +247,14 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
         readerCanvas.addView(topOverlayBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         readerCanvas.addView(subtleHeaderTv, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        chapterProgressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            visibility = View.GONE
+        }
         readerCanvas.addView(blocksListView, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         readerCanvas.addView(footerCounterTv, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        readerCanvas.addView(chapterProgressBar, LinearLayout.LayoutParams(MATCH_PARENT, d(3)))
 
         // Floating Pill Mini-Player + Bottom Icon Bar docked at bottom
         val bottomDock = LinearLayout(this).apply {
@@ -231,7 +269,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_menu, padDp = 8) { openTocSheet(0) }, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_palette, padDp = 8) { toggleColorSwatchBar() }, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_bookmark, padDp = 8) { openTocSheet(1) }, LinearLayout.LayoutParams(0, d(40), 1f))
-            addView(toolbarIcon("A") { showTypographyDialog() }, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(toolbarIcon("A") { startActivity(Intent(this@ReaderActivity, ReaderSettingsActivity::class.java).putExtra(ReaderSettingsActivity.EXTRA_TAB_INDEX, 0)) }, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_headphones, padDp = 8) { openAudioSheet() }, LinearLayout.LayoutParams(0, d(40), 1f))
         }
 
@@ -382,6 +420,35 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         tintIcons(bottomIconBar)
         tintIcons(miniPlayerPill)
 
+        // Apply Layout & Device preferences live
+        val sidePad = d(prefs.sideMarginDp)
+        blocksListView.setPadding(sidePad, d(4), sidePad, d(130))
+        blocksListView.isVerticalScrollBarEnabled = !prefs.hideScrollbar
+        subtleHeaderTv.visibility = if (prefs.showHeader) View.VISIBLE else View.GONE
+        footerCounterTv.visibility = if (prefs.showFooter) View.VISIBLE else View.GONE
+        chapterProgressBar.visibility = if (prefs.showProgressBar) View.VISIBLE else View.GONE
+        chapterProgressBar.progressTintList = android.content.res.ColorStateList.valueOf(p.accentBlue)
+        chapterProgressBar.progressBackgroundTintList = android.content.res.ColorStateList.valueOf(p.divider)
+        val totalCh = (book?.chapterCount ?: 1).coerceAtLeast(1)
+        chapterProgressBar.progress = (((chapterIndex + 1) * 100) / totalCh).coerceIn(0, 100)
+
+        if (prefs.keepScreenAwake) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        @Suppress("DEPRECATION")
+        if (prefs.fullscreenMode) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+        }
+        requestedOrientation = when (prefs.screenOrientation) {
+            "PORTRAIT" -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            "LANDSCAPE" -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+
         audioSheet.applyPalette()
         blocksAdapter.notifyDataSetChanged()
     }
@@ -399,6 +466,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         subtleHeaderTv.text = chapterTitle
         miniChapterTv.text = chapterTitle
         footerCounterTv.text = "${chapterIndex + 1} / ${b.chapterCount}"
+        chapterProgressBar.progress = (((chapterIndex + 1) * 100) / b.chapterCount.coerceAtLeast(1)).coerceIn(0, 100)
 
         // Parse chapter on background thread for instant UI responsiveness
         bgExecutor.execute {
@@ -571,14 +639,38 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         if (prefs.bionicReading && block.type != BlockType.TABLE_ROW) {
             BionicTextHelper.applyBionic(ssb)
         }
-        if (position == activeBlockIndex && activeBlockIndex >= 0) {
+        if (prefs.textIndentDp > 0 && block.type == BlockType.PARAGRAPH && ssb.isNotEmpty()) {
+            ssb.setSpan(LeadingMarginSpan.Standard(d(prefs.textIndentDp), 0), 0, ssb.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        }
+        if (prefs.highlightDialogues && block.type == BlockType.PARAGRAPH) {
+            val trimmed = block.text.trimStart()
+            if (trimmed.startsWith("—") || trimmed.startsWith("–")) {
+                val dlgTint = (0x1A shl 24) or (p.accentBlue and 0x00FFFFFF)
+                ssb.setSpan(BackgroundColorSpan(dlgTint), 0, ssb.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        val gran = prefs.ttsHighlightGranularity
+        if (gran != "OFF" && position == activeBlockIndex && activeBlockIndex >= 0) {
             ssb.setSpan(BackgroundColorSpan(p.inlineHighlightBg), 0, ssb.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            if (activeWordStart in 0 until ssb.length && activeWordEnd in (activeWordStart + 1)..ssb.length) {
-                val alphaByte = (52 + (158 * activeWordAlpha)).toInt().coerceIn(40, 218)
-                val wordBg = (alphaByte shl 24) or (p.accentBlue and 0x00FFFFFF)
-                ssb.setSpan(BackgroundColorSpan(wordBg), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                if (activeWordAlpha >= 0.35f) {
-                    ssb.setSpan(ForegroundColorSpan(Color.WHITE), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (gran == "WORD" && activeWordStart in 0 until ssb.length && activeWordEnd in (activeWordStart + 1)..ssb.length) {
+                val hlColor = prefs.ttsHighlightColor
+                when (prefs.ttsHighlightStyle) {
+                    "UNDERLINE" -> {
+                        ssb.setSpan(UnderlineSpan(), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        ssb.setSpan(ForegroundColorSpan(hlColor), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    }
+                    "TEXT_COLOR" -> {
+                        ssb.setSpan(ForegroundColorSpan(hlColor), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    }
+                    else -> {
+                        val alphaByte = (52 + (158 * activeWordAlpha)).toInt().coerceIn(40, 218)
+                        val wordBg = (alphaByte shl 24) or (hlColor and 0x00FFFFFF)
+                        ssb.setSpan(BackgroundColorSpan(wordBg), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        if (activeWordAlpha >= 0.35f) {
+                            val lum = (Color.red(hlColor) * 299 + Color.green(hlColor) * 587 + Color.blue(hlColor) * 114) / 1000
+                            ssb.setSpan(ForegroundColorSpan(if (lum > 175) Color.BLACK else Color.WHITE), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                        }
+                    }
                 }
                 ssb.setSpan(StyleSpan(Typeface.BOLD), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
@@ -692,13 +784,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     private fun cycleTheme() {
-        prefs.theme = when (prefs.theme) {
-            ReaderTheme.LIGHT -> ReaderTheme.GRAY
-            ReaderTheme.GRAY -> ReaderTheme.SEPIA
-            ReaderTheme.SEPIA -> ReaderTheme.GREEN
-            ReaderTheme.GREEN -> ReaderTheme.DARK
-            ReaderTheme.DARK -> ReaderTheme.LIGHT
-        }
+        val all = ReaderTheme.entries
+        prefs.theme = all[(all.indexOf(prefs.theme) + 1) % all.size]
         applyTheme()
     }
 
@@ -831,7 +918,17 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                         val bmp = epubSession?.loadImage(imgPath, maxW)
                         if (bmp != null && iv.tag == imgPath) {
                             runOnUiThread {
-                                if (iv.tag == imgPath) iv.setImageBitmap(bmp)
+                                if (iv.tag == imgPath) {
+                                    iv.setImageBitmap(bmp)
+                                    iv.colorFilter = if (prefs.invertImagesInDark && UiTheme.palette(prefs.theme).isDark) {
+                                        ColorMatrixColorFilter(floatArrayOf(
+                                            -1f, 0f, 0f, 0f, 255f,
+                                            0f, -1f, 0f, 0f, 255f,
+                                            0f, 0f, -1f, 0f, 255f,
+                                            0f, 0f, 0f, 1f, 0f,
+                                        ))
+                                    } else null
+                                }
                             }
                         }
                     }
@@ -840,10 +937,17 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 return iv
             }
 
-            val tv = (convertView as? TextView) ?: TextView(this@ReaderActivity).apply {
-                setLineSpacing(0f, 1.42f)
+            val tv = (convertView as? TextView) ?: TextView(this@ReaderActivity)
+            tv.setLineSpacing(0f, prefs.lineSpacingMult)
+            tv.letterSpacing = prefs.letterSpacingEm
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                tv.justificationMode = if (prefs.fullJustification && block.type == BlockType.PARAGRAPH) {
+                    Layout.JUSTIFICATION_MODE_INTER_WORD
+                } else {
+                    Layout.JUSTIFICATION_MODE_NONE
+                }
             }
-            val tf = if (prefs.useSerif) Typeface.SERIF else Typeface.SANS_SERIF
+            val tf = ReaderSettingsActivity.resolveTypeface(prefs)
             val fontSize = prefs.fontSizeSp
 
             if (block.type == BlockType.HR) {
@@ -897,7 +1001,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 else -> {
                     tv.textSize = fontSize
                     tv.typeface = tf
-                    tv.setPadding(d(2), d(6), d(2), d(6))
+                    tv.setPadding(d(2), d(prefs.paragraphMarginDp), d(2), d(prefs.paragraphMarginDp))
                 }
             }
 
@@ -920,8 +1024,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     private fun toggleColorSwatchBar() {
-        colorSwatchBar.visibility = if (colorSwatchBar.visibility == View.VISIBLE) View.GONE else View.VISIBLE
-        refreshColorSwatches()
+        startActivity(
+            Intent(this, ReaderSettingsActivity::class.java)
+                .putExtra(ReaderSettingsActivity.EXTRA_TAB_INDEX, 2)
+        )
     }
 
     private fun buildColorSwatchBar(): LinearLayout {
@@ -972,11 +1078,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val darkOn = prefs.theme == ReaderTheme.DARK
         val adaptiveOn = prefs.adaptiveVoicesEnabled
         val opts = arrayOf(
+            "Налаштування читання (шрифт, макет, тема, TTS)",
             "${if (adaptiveOn) "✓ " else ""}Адаптивна озвучка (Оповідач / Система / Діалоги)",
             "${if (prefs.bionicReading) "✓ " else ""}Bionic Reading (жирний початок слів)",
             "${if (autoScrolling) "✓ " else ""}Автопрокрутка (Auto Scroll)",
             "${if (darkOn) "✓ " else ""}Темна тема (Dark Mode)",
-            "Кольорові теми (5 палітр)",
             "Словник наголосів (stress_user.txt)",
             "Статистика читання",
         )
@@ -984,7 +1090,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             .setTitle("Меню читання")
             .setItems(opts) { _, which ->
                 when (which) {
-                    0 -> {
+                    0 -> startActivity(Intent(this, ReaderSettingsActivity::class.java))
+                    1 -> {
                         miniPlayerPill.visibility = View.VISIBLE
                         audioSheet.showVoiceSettings(
                             bookTitle = book?.title.orEmpty(),
@@ -995,16 +1102,15 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                             isPaused = controller.isPaused,
                         )
                     }
-                    1 -> {
+                    2 -> {
                         prefs.bionicReading = !prefs.bionicReading
                         applyTheme()
                     }
-                    2 -> toggleAutoScroll()
-                    3 -> {
+                    3 -> toggleAutoScroll()
+                    4 -> {
                         prefs.theme = if (darkOn) ReaderTheme.LIGHT else ReaderTheme.DARK
                         applyTheme()
                     }
-                    4 -> toggleColorSwatchBar()
                     5 -> startActivity(Intent(this, StressEditorActivity::class.java))
                     6 -> {
                         saveProgress()
@@ -1023,7 +1129,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             val runner = object : Runnable {
                 override fun run() {
                     if (!autoScrolling) return
-                    blocksListView.smoothScrollBy(d(2), 30)
+                    blocksListView.smoothScrollBy(d(prefs.autoScrollSpeed), 30)
                     autoScrollHandler.postDelayed(this, 32)
                 }
             }

@@ -13,6 +13,7 @@ import android.text.SpannableStringBuilder
 import android.text.TextUtils
 import android.text.style.BackgroundColorSpan
 import android.text.style.ForegroundColorSpan
+import android.text.style.UnderlineSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
@@ -245,10 +246,23 @@ class AudioSheetController(
         if (prefs.bionicReading) {
             BionicTextHelper.applyBionic(ssb)
         }
-        if (wordStart in 0 until ssb.length && wordEnd in (wordStart + 1)..ssb.length) {
-            val pillColor = (0xCC shl 24) or (p.accentBlue and 0x00FFFFFF)
-            ssb.setSpan(BackgroundColorSpan(pillColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            ssb.setSpan(ForegroundColorSpan(Color.WHITE), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+        if (prefs.ttsHighlightGranularity == "WORD" && wordStart in 0 until ssb.length && wordEnd in (wordStart + 1)..ssb.length) {
+            val hlColor = prefs.ttsHighlightColor
+            when (prefs.ttsHighlightStyle) {
+                "UNDERLINE" -> {
+                    ssb.setSpan(UnderlineSpan(), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    ssb.setSpan(ForegroundColorSpan(hlColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+                "TEXT_COLOR" -> {
+                    ssb.setSpan(ForegroundColorSpan(hlColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+                else -> {
+                    val pillColor = (0xCC shl 24) or (hlColor and 0x00FFFFFF)
+                    ssb.setSpan(BackgroundColorSpan(pillColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    val lum = (Color.red(hlColor) * 299 + Color.green(hlColor) * 587 + Color.blue(hlColor) * 114) / 1000
+                    ssb.setSpan(ForegroundColorSpan(if (lum > 175) Color.BLACK else Color.WHITE), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+            }
         }
         lyricActiveCard.text = ssb
     }
