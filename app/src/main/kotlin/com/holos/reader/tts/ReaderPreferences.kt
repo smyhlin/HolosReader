@@ -23,6 +23,18 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getString("voice", null)
         set(v) = prefs.edit().putString("voice", v).apply()
 
+    var adaptiveVoicesEnabled: Boolean
+        get() = prefs.getBoolean("adaptive_voices", false)
+        set(v) = prefs.edit().putBoolean("adaptive_voices", v).apply()
+
+    var systemVoice: String?
+        get() = prefs.getString("voice_system", null)
+        set(v) = prefs.edit().putString("voice_system", v).apply()
+
+    var dialogueVoice: String?
+        get() = prefs.getString("voice_dialogue", null)
+        set(v) = prefs.edit().putString("voice_dialogue", v).apply()
+
     var speechSpeed: Float
         get() = prefs.getFloat("speed", 1.1f).coerceIn(0.6f, 2.0f)
         set(v) = prefs.edit().putFloat("speed", v.coerceIn(0.6f, 2.0f)).apply()
@@ -42,6 +54,10 @@ class ReaderPreferences(context: Context) {
     var useSerif: Boolean
         get() = prefs.getBoolean("serif", false)
         set(v) = prefs.edit().putBoolean("serif", v).apply()
+
+    var bionicReading: Boolean
+        get() = prefs.getBoolean("bionic_reading", false)
+        set(v) = prefs.edit().putBoolean("bionic_reading", v).apply()
 
     var autoAdvanceChapter: Boolean
         get() = prefs.getBoolean("auto_chapter", true)

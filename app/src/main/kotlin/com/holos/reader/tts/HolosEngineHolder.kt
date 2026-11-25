@@ -67,6 +67,19 @@ object HolosEngineHolder {
         }
     }
 
+    fun getStressStatusSummary(context: Context): String {
+        getStressifier(context)
+        val dictState = if (stressDict != null) {
+            val sizeMb = File(context.applicationContext.filesDir, STRESS_UNPACKED).length() / (1024.0 * 1024.0)
+            String.format("вбудований (2,88 млн форм · %.1f МБ)", sizeMb)
+        } else {
+            "не завантажено"
+        }
+        val accState = if (neuralAccentor != null) "активний" else "вимк."
+        val userCount = getUserOverrides(context).size()
+        return "Словник: $dictState · Нейроакцентор: $accState · Власні правила: $userCount"
+    }
+
     fun getStressifier(context: Context): UkrainianStressifier {
         stressifier?.let { return it }
         synchronized(lock) {

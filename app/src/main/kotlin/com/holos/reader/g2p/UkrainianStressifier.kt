@@ -17,6 +17,13 @@ class UkrainianStressifier(
 ) {
 
     companion object {
+        // 0-based vowel index for unambiguous high-frequency Ukrainian pronouns
+        private val PRONOUN_VOWEL_INDEX = mapOf(
+            "вона" to 1, "воно" to 1, "вони" to 1,
+            "її" to 1, "його" to 1, "мене" to 1, "тебе" to 1, "себе" to 1,
+            "мені" to 1, "тобі" to 1, "собі" to 1,
+            "цього" to 1, "того" to 1, "свого" to 1, "мого" to 1, "твого" to 1,
+        )
         const val ACUTE = '\u0301'
         const val GRAVE = '\u0300'
         private const val VOWELS = "аеєиіїоуюяАЕЄИІЇОУЮЯ"
@@ -58,7 +65,7 @@ class UkrainianStressifier(
         var cursor = 0
         var prevLower: String? = null
 
-        for (m in matches) {
+        for ((idx, m) in matches.withIndex()) {
             val between = text.substring(cursor, m.range.first)
             sb.append(between)
             // Sentence boundary resets contextual clue
@@ -68,7 +75,12 @@ class UkrainianStressifier(
 
             val word = m.value
             val normalized = APOSTROPHE_REGEX.replace(word.lowercase(), "'")
-            sb.append(stressWord(word, normalized, prevLower))
+            val nextLower = matches.getOrNull(idx + 1)?.let { nm ->
+                val gap = text.substring(m.range.last + 1, nm.range.first)
+                if (gap.any { it == '.' || it == '!' || it == '?' || it == '…' || it == '\n' }) null
+                else APOSTROPHE_REGEX.replace(nm.value.lowercase(), "'")
+            }
+            sb.append(stressWord(word, normalized, prevLower, nextLower))
             prevLower = normalized
             cursor = m.range.last + 1
         }
@@ -76,7 +88,7 @@ class UkrainianStressifier(
         return sb.toString()
     }
 
-    private fun stressWord(word: String, normalized: String, prevLower: String?): String {
+    private fun stressWord(word: String, normalized: String, prevLower: String?, nextLower: String?): String {
         // Respect existing explicit stress marks
         if (word.indexOf(ACUTE) >= 0 || word.indexOf(GRAVE) >= 0) return word
 
@@ -91,14 +103,23 @@ class UkrainianStressifier(
         if (vowelIndices.size <= 1) return word
         if (normalized in UNSTRESSED_WORDS) return word
 
+        // Unambiguous high-frequency Ukrainian pronouns (prevents rare homographs like во́на [currency] or ї́ї)
+        PRONOUN_VOWEL_INDEX[normalized]?.let { vIdx ->
+            if (vIdx in vowelIndices.indices) {
+                return insertStressMarks(word, intArrayOf(vowelIndices[vIdx] + 1))
+            }
+        }
+
         // Tier 1: 2.88M-word binary dictionary lookup
         when (val res = dict?.lookup(normalized)) {
             is StressLookupResult.Unambiguous -> {
-                return insertStressMarks(word, res.positions)
+                val single = pickSingleStress(normalized, res.positions)
+                return insertStressMarks(word, single)
             }
             is StressLookupResult.Ambiguous -> {
-                val chosen = disambiguateHomograph(word, normalized, res.variants, prevLower)
-                return insertStressMarks(word, chosen)
+                val chosen = disambiguateHomograph(word, normalized, res.variants, prevLower, nextLower)
+                val single = pickSingleStress(normalized, chosen)
+                return insertStressMarks(word, single)
             }
             null -> Unit
         }
@@ -134,16 +155,29 @@ class UkrainianStressifier(
     }
 
     /**
-     * Resolves homographs from the 36,414 tagged ambiguous entries using syntactic context
-     * (preposition case government, subject pronouns, negation, plural determiners)
-     * with neural accentor tie-breaking when context is neutral.
+     * Some dictionary entries store two alternative stress positions (e.g. наза́вжди́, нена́си́тна).
+     * Emitting two primary acute marks degrades HolosTTS prosody; pick a single canonical stress.
      */
+    private fun pickSingleStress(normalized: String, positions: IntArray): IntArray {
+        if (positions.size <= 1) return positions
+        val neuralPos = neuralAccentor?.predictInsertPosition(normalized)
+        if (neuralPos != null && neuralPos in positions) {
+            return intArrayOf(neuralPos)
+        }
+        return intArrayOf(positions.first())
+    }
+
     private fun disambiguateHomograph(
         word: String,
         normalized: String,
         variants: List<StressVariant>,
         prevLower: String?,
+        nextLower: String?,
     ): IntArray {
+        // 0. Numeral disambiguation (e.g. "со́рок секунд" vs "соро́к" birds)
+        if (variants.any { it.hasTag(MorphTag.UPOS_NUM) } && nextLower != null) {
+            variants.firstOrNull { it.hasTag(MorphTag.UPOS_NUM) }?.let { return it.positions }
+        }
         if (prevLower != null) {
             // 1. Preposition case government (highest precision for Gen/Loc/Ins/Dat homographs)
             if (prevLower in GEN_PREPOSITIONS) {

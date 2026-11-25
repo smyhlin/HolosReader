@@ -41,7 +41,8 @@ object HolosSafeSynthesizer {
 
         for ((idx, sentence) in sentences.withIndex()) {
             if (cancelled.get()) return
-            val cleanSent = if (sentence.isNotEmpty() && sentence.last() !in ".?!:-…") "$sentence." else sentence
+            val trimmedSent = sentence.trimEnd(',', ';', ' ')
+            val cleanSent = if (trimmedSent.isNotEmpty() && trimmedSent.last() !in ".?!:…") "$trimmedSent." else trimmedSent
             synthesizeSafeUtterance(engine, stressifier, cleanSent, voice, customVec, speed, cancelled, depth = 0, onChunk)
             if (!cancelled.get() && idx < sentences.lastIndex) {
                 onChunk(pauseSamples)
@@ -86,9 +87,26 @@ object HolosSafeSynthesizer {
         }
 
         if (cancelled.get()) return
+        var pending: FloatArray? = null
         engine.stream(encoded, trimSilence = true) { audio ->
+            if (cancelled.get()) return@stream
+            // Soft-clamp to prevent DAC clipping clicks
+            for (k in audio.indices) {
+                val v = audio[k]
+                if (v > 0.98f) audio[k] = 0.98f else if (v < -0.98f) audio[k] = -0.98f
+            }
+            pending?.let { prev -> onChunk(prev) }
+            pending = audio
+        }
+        pending?.let { last ->
             if (!cancelled.get()) {
-                onChunk(audio)
+                // Apply gentle 8 ms fade-out on utterance tail to eliminate clicks/abrupt cutoffs
+                val fadeOut = minOf(192, last.size)
+                val start = last.size - fadeOut
+                for (i in 0 until fadeOut) {
+                    last[start + i] *= (fadeOut - 1 - i).toFloat() / fadeOut.toFloat()
+                }
+                onChunk(last)
             }
         }
     }

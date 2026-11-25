@@ -27,7 +27,18 @@ object SentenceSplitter {
                 splitLongSentence(sentence, maxChars, result)
             }
         }
-        return result
+        // Merge ultra-short adjacent sentences (< 45 chars) so HolosTTS never gets unstable 1-word fragments
+        if (result.size <= 1) return result
+        val merged = ArrayList<String>(result.size)
+        for (chunk in result) {
+            val prev = merged.lastOrNull()
+            if (prev != null && (prev.length < 45 || chunk.length < 28) && prev.length + 1 + chunk.length <= maxChars) {
+                merged[merged.lastIndex] = "$prev $chunk"
+            } else {
+                merged.add(chunk)
+            }
+        }
+        return merged
     }
 
     private fun splitLongSentence(sentence: String, maxChars: Int, out: MutableList<String>) {

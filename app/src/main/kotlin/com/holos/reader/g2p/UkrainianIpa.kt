@@ -123,7 +123,6 @@ object UkrainianIpa {
         "ь" to "ʲ",
         "ю" to "ju",
         "я" to "ja",
-        "’" to "j",
         ACUTE.toString() to "ˈ",
         GRAVE.toString() to "ˌ",
     )
@@ -187,8 +186,8 @@ object UkrainianIpa {
                 phonetic = regex.replace(phonetic, repl)
             }
 
-            // Remap ASCII apostrophe to '%' so it doesn't collide with IPA stress mark
-            phonetic = phonetic.replace('\'', '%')
+            // Remap all Ukrainian apostrophe variants to '%' so consonants stay hard before я/ю/є/ї
+            phonetic = phonetic.replace('\'', '%').replace('’', '%').replace('ʼ', '%').replace('`', '%')
 
             for ((k, v) in PHONETIC_CHARS_3) phonetic = phonetic.replace(k, v)
             for ((k, v) in PHONETIC_CHARS_2) phonetic = phonetic.replace(k, v)

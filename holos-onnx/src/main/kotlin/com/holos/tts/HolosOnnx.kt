@@ -205,7 +205,7 @@ class HolosOnnx @JvmOverloads constructor(
      * [maxChunkFrames] (40, 1 s). Every chunk is decoded with 20 frames of
      * context on both sides, so the chunks join into the generate() audio.
      * [trimSilence] drops the leading silence of the boundary token except
-     * 10 ms and fades in over 5 ms.
+     * 30 ms and fades in over ~6.6 ms.
      */
     @JvmOverloads
     fun stream(encoded: Encoded, chunkFrames: Int = maxChunkFrames, trimSilence: Boolean = true, listener: ChunkListener) {
@@ -307,8 +307,8 @@ class HolosOnnx @JvmOverloads constructor(
         const val MANIFEST = "holos_onnx.json"
         const val CHANNELS = 512L
         const val VOICE_DIM = 256
-        const val SILENCE_MARGIN_SECONDS = 0.010
-        const val FADE_IN_SAMPLES = 120
+        const val SILENCE_MARGIN_SECONDS = 0.030
+        const val FADE_IN_SAMPLES = 160
 
         /** Runs a session and closes the given inputs, by default all of them, and the result. */
         inline fun <T> runStage(

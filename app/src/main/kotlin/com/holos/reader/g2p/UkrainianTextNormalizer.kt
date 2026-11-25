@@ -34,13 +34,32 @@ object UkrainianTextNormalizer {
     // Dates DD.MM.YYYY (e.g., 22.08.2025)
     private val RE_DATE_FULL = Regex("(?<!\\d)(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})(?!\\d)")
 
-    // Roman numerals after chapter/volume words
+    // Roman numerals after chapter/skill/rank/title nouns (supports Latin I/V/X and Cyrillic І/ІІ/ІІІ)
     private val RE_CHAPTER_ROMAN = Regex(
-        "(?iu)(?<![\\p{L}])(розділ|глава|том|книга|частина|акт|епізод)\\s+([IVXLCDM]+)(?![\\p{L}])"
+        "(?iu)(?<![\\p{L}])(розділ[уаі]?|глав[аиіу]?|том[уаі]?|книг[аиу]?|частин[аиу]?|акт[уаі]?|епізод[уаі]?|" +
+            "навичк[аиу]?|вміння|рівень|рівн[яюі]|ранг[уаі]?|ступ[іе]н[ьяюі]?|етап[уаі]?|стаді[яюї]|фаз[аиу]?|" +
+            "клас[уаі]?|тір[уаі]?|тир[уаі]?|поверх[уаі]?|кол[оау]|сфер[аиу]?|печатк[аиу]?|форм[аиу]?|версі[яюї]|" +
+            "покоління|століття|сцен[аиу]?|ді[яюї]|пункт[уаі]?|арк[аиу]?|квест[уаі]?|ліг[аиу]?|орден[уаі]?|" +
+            "легіон[уаі]?|сері[яюї]|модел[ьі]|тип[уаі]?|марк[аиу]?|категорі[яюї]|груп[аиу]?|сектор[уаі]?|" +
+            "зон[аиу]?|блок[уаі]?|веж[аіу]|епох[аиу]?|ер[аиу]|вік[уаі]?|корол[ььяюі]|імператор[ауі]?|цар[ььяюі]?|" +
+            "княз[ььяюі]?|герцог[ауі]?|пап[аиу]|патріарх[ауі]?|лорд[ауі]?|майст[е]?р[ауі]?|маг[ауі]?|святий)\\s+([IVXLCDMІ]+)(?![\\p{L}])"
+    )
+    // Standalone uppercase multi-char Roman numerals (II, III, IV, VI, VII, VIII, IX, XI..XX, or Cyrillic ІІ, ІІІ)
+    private val RE_STANDALONE_ROMAN = Regex(
+        "(?<![\\p{L}])(II|III|IV|VI|VII|VIII|IX|XI|XII|XIII|XIV|XV|XVI|XVII|XVIII|XIX|XX|ІІ|ІІІ)(?![\\p{L}])"
+    )
+    // Standalone Latin capital I (U+0049) surrounded by Ukrainian context (e.g. "I «...»", "I:", "— I.")
+    private val RE_LATIN_I_NUMERAL = Regex(
+        """(?<![A-Za-zА-ЩЬЮЯҐЄІЇа-щьюяґєії])I(?=[\s]*[«»"„“”:.,;!?\)\]]|\s+[А-ЩЬЮЯҐЄІЇа-щьюяґєії])"""
     )
 
-    // Ukrainian hyphenated ordinals (1-й, 2-га, 3-тє, 5-го, 10-му, 7-ї)
-    private val RE_ORDINAL = Regex("(?iu)(?<!\\d)(\\d{1,2})-(й|ий|ій|а|ша|га|тя|я|є|тє|е|го|му|ї|х|ми)(?![\\p{L}])")
+    // Ukrainian hyphenated ordinals (supports ASCII hyphen, non-breaking hyphen U+2011, en/em-dash, minus; 0..999999)
+    private val RE_ORDINAL = Regex(
+        "(?iu)(?<!\\d)(\\d{1,6})[-\u2010\u2011\u2012\u2013\u2014\u2212]" +
+            "(ього|ого|того|шого|ьої|ої|тьої|тої|шої|ьому|ому|тому|шому|ьою|ою|тьою|тою|шою|ими|іми|тими|тіми|шими|" +
+            "тий|тій|ший|гий|ий|ій|тим|тім|шим|гим|им|ім|тих|тіх|ших|гих|их|іх|" +
+            "го|му|ми|ша|га|тя|та|тє|те|ше|ге|ті|ші|гі|ту|тю|шу|гу|й|а|я|е|є|ї|у|ю|і|м|х)(?![\\p{L}])"
+    )
 
     // Time HH:MM
     private val RE_TIME = Regex("(?<!\\d)(\\d{1,2}):(\\d{2})(?!\\d)")
@@ -97,6 +116,10 @@ object UkrainianTextNormalizer {
         Regex("(?<=\\d)\\s*кг(?![\\p{L}])\\.?") to " кілограмів",
         Regex("(?<=\\d)\\s*хв(?![\\p{L}])\\.?") to " хвилин",
         Regex("(?<=\\d)\\s*сек(?![\\p{L}])\\.?") to " секунд",
+        Regex("(?<=\\d)\\s*с\\.(?=\\s|$|,|;|\\)|!|\\?)") to " секунд",
+        Regex("(?iu)(?<![\\p{L}])макс\\.") to "максимального",
+        Regex("(?iu)(?<![\\p{L}])мін\\.") to "мінімального",
+        Regex("(?iu)(?<![\\p{L}])прибл\\.") to "приблизно",
         Regex("(?<=\\d)\\s*год(?![\\p{L}])\\.?") to " годин",
         // Popular LitRPG / web-novel abbreviations
         Regex("\\bHP\\b") to "ейч-пі",
@@ -210,11 +233,18 @@ object UkrainianTextNormalizer {
             } else m.value
         }
 
-        // 5. Roman numerals in chapter/volume headings
+        // 5. Roman numerals (Latin & Cyrillic І/ІІ/ІІІ) after nouns + standalone II/III/IV..XX + Latin I
         text = RE_CHAPTER_ROMAN.replace(text) { m ->
-            val num = parseRoman(m.groupValues[2].uppercase())
+            val roman = m.groupValues[2].uppercase().replace('І', 'I')
+            val num = parseRoman(roman)
             if (num != null && num in 1..3999) "${m.groupValues[1]} $num" else m.value
         }
+        text = RE_STANDALONE_ROMAN.replace(text) { m ->
+            val roman = m.groupValues[1].replace('І', 'I')
+            val num = parseRoman(roman)
+            if (num != null && num in 2..3999) num.toString() else m.value
+        }
+        text = RE_LATIN_I_NUMERAL.replace(text, "1")
 
         // 6. Ukrainian ordinals (1-й, 2-га, 3-тє, 5-го)
         text = RE_ORDINAL.replace(text) { m ->
@@ -289,7 +319,7 @@ object UkrainianTextNormalizer {
         text = RE_ALL_DASHES.replace(text, "-")
         text = RE_SPACES.replace(text, " ").trim()
         text = text.replace(" - ", ": ")
-        text = text.replace(" ,", ",").replace(" .", ".").trim()
+        text = Regex("\\s+([,.;:!?…])").replace(text, "$1").replace(",.", ".").replace(";.", ".").trim()
 
         if (ensureTerminalPunctuation && text.isNotEmpty() && text.last() !in ".?!:-…") {
             text += "."
@@ -359,26 +389,97 @@ object UkrainianTextNormalizer {
     }
 
     private fun ordinalToWords(n: Int, suf: String): String? {
-        val stems = mapOf(
+        if (n < 0 || n > 999_999) return null
+        val slot = when (suf) {
+            "й", "ий", "ій", "тий", "тій", "ший", "гий" -> "NOM_M"
+            "а", "ша", "га", "тя", "та", "я" -> "NOM_F"
+            "е", "є", "тє", "те", "ше", "ге" -> "NOM_N"
+            "і", "ті", "ші", "гі" -> "NOM_PL"
+            "го", "ого", "ього", "того", "шого" -> "GEN_M"
+            "ї", "ої", "ьої", "тої", "тьої", "шої" -> "GEN_F"
+            "му", "ому", "ьому", "тому", "шому" -> "DAT_M"
+            "у", "ю", "ту", "тю", "шу", "гу" -> "ACC_F"
+            "м", "им", "ім", "тим", "тім", "шим", "гим" -> "INS_M"
+            "ою", "ьою", "тою", "тьою", "шою" -> "INS_F"
+            "х", "их", "іх", "тих", "тіх", "ших", "гих" -> "GEN_PL"
+            "ми", "ими", "іми", "тими", "тіми", "шими" -> "INS_PL"
+            else -> return null
+        }
+
+        fun declineStem(stem: String, soft: Boolean): String = stem + when (slot) {
+            "NOM_M" -> if (soft) "ій" else "ий"
+            "NOM_F" -> if (soft) "я" else "а"
+            "NOM_N" -> if (soft) "є" else "е"
+            "NOM_PL" -> "і"
+            "GEN_M" -> if (soft) "ього" else "ого"
+            "GEN_F" -> if (soft) "ьої" else "ої"
+            "DAT_M" -> if (soft) "ьому" else "ому"
+            "ACC_F" -> if (soft) "ю" else "у"
+            "INS_M" -> if (soft) "ім" else "им"
+            "INS_F" -> if (soft) "ьою" else "ою"
+            "GEN_PL" -> if (soft) "іх" else "их"
+            "INS_PL" -> if (soft) "іми" else "ими"
+            else -> "ий"
+        }
+
+        if (n == 0) return declineStem("нульов", soft = false)
+
+        val unitStems = mapOf(
             1 to "перш", 2 to "друг", 3 to "трет", 4 to "четверт", 5 to "п'ят",
             6 to "шост", 7 to "сьом", 8 to "восьм", 9 to "дев'ят", 10 to "десят",
             11 to "одинадцят", 12 to "дванадцят", 13 to "тринадцят", 14 to "чотирнадцят",
             15 to "п'ятнадцят", 16 to "шістнадцят", 17 to "сімнадцят", 18 to "вісімнадцят",
-            19 to "дев'ятнадцят", 20 to "двадцят"
+            19 to "дев'ятнадцят"
         )
-        val stem = stems[n] ?: return null
-        val ending = when (suf) {
-            "й", "ий", "ій" -> if (n == 3) "ій" else "ий"
-            "а", "ша", "га", "тя", "я" -> if (n == 3) "я" else "а"
-            "є", "тє", "е" -> if (n == 3) "є" else "е"
-            "го" -> if (n == 3) "ього" else "ого"
-            "му" -> if (n == 3) "ьому" else "ому"
-            "ї" -> if (n == 3) "ьої" else "ої"
-            "х" -> if (n == 3) "іх" else "их"
-            "ми" -> if (n == 3) "іми" else "ими"
-            else -> return null
+        val tenStems = mapOf(
+            20 to "двадцят", 30 to "тридцят", 40 to "сороков", 50 to "п'ятдесят",
+            60 to "шістдесят", 70 to "сімдесят", 80 to "вісімдесят", 90 to "дев'яност"
+        )
+        val hundredStems = mapOf(
+            100 to "сот", 200 to "двохсот", 300 to "трьохсот", 400 to "чотирьохсот",
+            500 to "п'ятисот", 600 to "шестисот", 700 to "семисот", 800 to "восьмисот",
+            900 to "дев'ятисот"
+        )
+
+        // Exact thousands (e.g., 1000-го -> тисячного, 2000-го -> двохтисячного)
+        if (n % 1000 == 0) {
+            val th = n / 1000
+            val thPrefix = when (th) {
+                1 -> ""
+                2 -> "двох"
+                3 -> "трьох"
+                4 -> "чотирьох"
+                5 -> "п'яти"
+                6 -> "шести"
+                7 -> "семи"
+                8 -> "восьми"
+                9 -> "дев'яти"
+                10 -> "десяти"
+                else -> "${numberToWords(th.toLong())} "
+            }
+            return thPrefix + declineStem("тисячн", soft = false)
         }
-        return stem + ending
+
+        // Exact hundreds (e.g., 100-го -> сотого, 1200-го -> тисяча двохсотого)
+        if (n % 100 == 0) {
+            val head = n - (n % 1000)
+            val hStem = hundredStems[n % 1000] ?: return null
+            val tail = declineStem(hStem, soft = false)
+            return if (head > 0) "${numberToWords(head.toLong())} $tail" else tail
+        }
+
+        val rem100 = n % 100
+        val head100 = n - rem100
+        val tailWord = when {
+            rem100 in 1..19 -> declineStem(unitStems[rem100]!!, soft = rem100 == 3)
+            rem100 % 10 == 0 -> declineStem(tenStems[rem100]!!, soft = false)
+            else -> {
+                val tens = (rem100 / 10) * 10
+                val unit = rem100 % 10
+                "${numberToWords(tens.toLong())} ${declineStem(unitStems[unit]!!, soft = unit == 3)}"
+            }
+        }
+        return if (head100 > 0) "${numberToWords(head100.toLong())} $tailWord" else tailWord
     }
 
     private fun parseRoman(s: String): Int? {

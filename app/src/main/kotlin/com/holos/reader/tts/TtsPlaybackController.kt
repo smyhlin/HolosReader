@@ -5,6 +5,9 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import com.holos.reader.epub.ReaderBlock
+import com.holos.reader.ui.BionicTextHelper
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -17,23 +20,35 @@ import java.util.concurrent.atomic.AtomicLong
  * - Initializes ONNX engine & stress dictionary off the UI thread (zero freezes/ANRs/crashes).
  * - Producer thread synthesizes upcoming paragraphs ahead of time into a bounded PCM queue
  *   so there are ZERO dead-air pauses between sentences and paragraphs.
- * - Consumer thread streams PCM float audio to [AudioTrack] and emits [Listener.onActiveBlockChanged]
- *   at the EXACT moment each paragraph begins playing, keeping text highlighting 100% synchronized.
+ * - Supports optional adaptive multi-voice narration ([AdaptiveVoiceRouter]) switching smoothly
+ *   between Narrator, [СИСТЕМА], and Dialogue (`—`) voices within and across paragraphs.
+ * - Consumer thread streams PCM float audio to a 4-second [AudioTrack] buffer with a 1.2 s jitter
+ *   pre-buffer to eliminate underruns/stutters on mobile CPUs.
+ * - Sample-accurate hardware clock sync ([AudioTrack.getPlaybackHeadPosition]) emits BOTH
+ *   [Listener.onActiveBlockChanged] and [Listener.onActiveWordChanged] at the EXACT moment each
+ *   paragraph & word reaches the speaker (1:1).
  */
 class TtsPlaybackController(private val context: Context) {
 
     interface Listener {
         fun onPlaybackStateChanged(isPlaying: Boolean, isPaused: Boolean, statusText: String)
         fun onActiveBlockChanged(blockIndex: Int)
+        fun onActiveWordChanged(blockIndex: Int, wordStart: Int, wordEnd: Int) {}
         fun onChapterFinished()
         fun onError(message: String)
     }
 
     private sealed class Packet {
         data class Audio(val blockIndex: Int, val samples: FloatArray) : Packet()
-        data class BlockEnd(val blockIndex: Int) : Packet()
+        data class BlockEnd(val blockIndex: Int, val speechFrames: Long) : Packet()
         data object ChapterEnd : Packet()
     }
+
+    private data class BlockMarker(
+        val blockIndex: Int,
+        val startFrame: Long,
+        val text: String,
+    )
 
     private val cancelFlag = AtomicBoolean(false)
     private val pausedFlag = AtomicBoolean(false)
@@ -52,6 +67,8 @@ class TtsPlaybackController(private val context: Context) {
     private var producerThread: Thread? = null
     @Volatile
     private var consumerThread: Thread? = null
+    @Volatile
+    private var syncThread: Thread? = null
     @Volatile
     private var currentTrack: AudioTrack? = null
 
@@ -113,12 +130,11 @@ class TtsPlaybackController(private val context: Context) {
 
             val prefs = ReaderPreferences(context)
             val customDir = HolosEngineHolder.getCustomVoicesDir(context)
-            val voice = prefs.selectedVoice?.takeIf {
+            val defaultVoice = prefs.selectedVoice?.takeIf {
                 it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
             } ?: engine.voices.firstOrNull()
             val speed = prefs.speechSpeed
 
-            // If this chapter has no speakable blocks from startIdx onward (e.g. cover page), advance cleanly
             val hasSpeakable = (startIdx until blocks.size).any { blocks[it].isSpeakable }
             if (!hasSpeakable) {
                 playingFlag.set(false)
@@ -128,7 +144,8 @@ class TtsPlaybackController(private val context: Context) {
                 return@Thread
             }
 
-            val queue = LinkedBlockingQueue<Packet>(24)
+            val queue = LinkedBlockingQueue<Packet>(48)
+            val blockSpeechFrames = ConcurrentHashMap<Int, Long>()
             listener?.onPlaybackStateChanged(isPlaying = true, isPaused = false, statusText = "Синтез…")
 
             // Producer: pre-synthesizes current + upcoming paragraphs ahead of playback
@@ -139,26 +156,58 @@ class TtsPlaybackController(private val context: Context) {
                         val block = blocks[i]
                         if (!block.isSpeakable) continue
 
-                        HolosSafeSynthesizer.synthesizeParagraphStreaming(
-                            engine = engine,
-                            stressifier = stressifier,
-                            rawParagraph = block.text,
-                            voice = voice,
-                            speed = speed,
-                            cancelled = cancelFlag,
-                            customVoicesDir = customDir,
-                        ) { chunk ->
-                            while (isCurrent(gen)) {
-                                if (queue.offer(Packet.Audio(i, chunk), 100, TimeUnit.MILLISECONDS)) break
+                        var speechFrames = 0L
+                        if (prefs.adaptiveVoicesEnabled) {
+                            val segments = AdaptiveVoiceRouter.segmentParagraph(block.text)
+                            for ((segIdx, seg) in segments.withIndex()) {
+                                if (!isCurrent(gen)) return@Thread
+                                val segVoice = AdaptiveVoiceRouter.resolveVoice(seg.role, prefs, engine.voices)
+                                HolosSafeSynthesizer.synthesizeParagraphStreaming(
+                                    engine = engine,
+                                    stressifier = stressifier,
+                                    rawParagraph = seg.text,
+                                    voice = segVoice,
+                                    speed = speed,
+                                    cancelled = cancelFlag,
+                                    customVoicesDir = customDir,
+                                ) { chunk ->
+                                    speechFrames += chunk.size.toLong()
+                                    while (isCurrent(gen)) {
+                                        if (queue.offer(Packet.Audio(i, chunk), 100, TimeUnit.MILLISECONDS)) break
+                                    }
+                                }
+                                if (segIdx < segments.lastIndex && isCurrent(gen)) {
+                                    val rolePause = FloatArray((engine.sampleRate * 135) / 1000)
+                                    speechFrames += rolePause.size.toLong()
+                                    while (isCurrent(gen)) {
+                                        if (queue.offer(Packet.Audio(i, rolePause), 100, TimeUnit.MILLISECONDS)) break
+                                    }
+                                }
+                            }
+                        } else {
+                            HolosSafeSynthesizer.synthesizeParagraphStreaming(
+                                engine = engine,
+                                stressifier = stressifier,
+                                rawParagraph = block.text,
+                                voice = defaultVoice,
+                                speed = speed,
+                                cancelled = cancelFlag,
+                                customVoicesDir = customDir,
+                            ) { chunk ->
+                                speechFrames += chunk.size.toLong()
+                                while (isCurrent(gen)) {
+                                    if (queue.offer(Packet.Audio(i, chunk), 100, TimeUnit.MILLISECONDS)) break
+                                }
                             }
                         }
                         if (isCurrent(gen)) {
+                            blockSpeechFrames[i] = speechFrames
                             // Brief 260 ms paragraph pause
                             val paraPause = FloatArray((engine.sampleRate * 260) / 1000)
                             while (isCurrent(gen)) {
                                 if (queue.offer(Packet.Audio(i, paraPause), 100, TimeUnit.MILLISECONDS)) break
                             }
-                            queue.offer(Packet.BlockEnd(i), 200, TimeUnit.MILLISECONDS)
+                            queue.offer(Packet.BlockEnd(i, speechFrames), 200, TimeUnit.MILLISECONDS)
                         }
                     }
                     if (isCurrent(gen)) {
@@ -172,7 +221,7 @@ class TtsPlaybackController(private val context: Context) {
                 }
             }, "HolosProducer")
 
-            // Consumer: plays PCM float chunks and drives synchronized paragraph highlighting
+            // Consumer: plays PCM float chunks and drives 1:1 hardware-clock paragraph & word highlighting
             val cons = Thread({
                 val track = try {
                     AudioTrack.Builder()
@@ -190,7 +239,8 @@ class TtsPlaybackController(private val context: Context) {
                                 .build()
                         )
                         .setTransferMode(AudioTrack.MODE_STREAM)
-                        .setBufferSizeInBytes(2 * engine.sampleRate * 4)
+                        .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_NONE)
+                        .setBufferSizeInBytes(4 * engine.sampleRate * 4)
                         .build()
                 } catch (t: Throwable) {
                     if (isCurrent(gen)) {
@@ -202,8 +252,99 @@ class TtsPlaybackController(private val context: Context) {
                 }
                 currentTrack = track
 
-                var lastReportedBlock = -1
+                val pendingMarkers = ConcurrentLinkedQueue<BlockMarker>()
+                val syncRunning = AtomicBoolean(true)
+                var lastEnqueuedBlock = -1
+                var totalFramesWritten = 0L
                 var chapterEndedNaturally = false
+
+                // Hardware-clock 1:1 synchronizer: advances paragraph AND active word at exact speaker frame
+                val sync = Thread({
+                    var currentMarker: BlockMarker? = null
+                    var currentTimeline: List<BionicTextHelper.WordSpan> = emptyList()
+                    var lastWordStart = -1
+                    var lastWordEnd = -1
+
+                    while (syncRunning.get() && isCurrent(gen)) {
+                        val playedFrames = try {
+                            track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                        } catch (_: Exception) {
+                            break
+                        }
+                        if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                            while (true) {
+                                val head = pendingMarkers.peek() ?: break
+                                if (playedFrames >= head.startFrame) {
+                                    pendingMarkers.poll()
+                                    if (currentMarker?.blockIndex != head.blockIndex) {
+                                        currentMarker = head
+                                        currentTimeline = BionicTextHelper.buildWordTimeline(head.text)
+                                        lastWordStart = -1
+                                        lastWordEnd = -1
+                                        activeBlock.set(head.blockIndex)
+                                        listener?.onActiveBlockChanged(head.blockIndex)
+                                        listener?.onPlaybackStateChanged(true, false, "Озвучення…")
+                                    }
+                                } else {
+                                    break
+                                }
+                            }
+
+                            val cm = currentMarker
+                            if (cm != null && currentTimeline.isNotEmpty()) {
+                                val estFrames = ((cm.text.length / (14.5f * speed)) * engine.sampleRate).toLong()
+                                    .coerceAtLeast(engine.sampleRate / 4L)
+                                val durFrames = (blockSpeechFrames[cm.blockIndex] ?: estFrames).coerceAtLeast(1L)
+                                val elapsed = (playedFrames - cm.startFrame).coerceAtLeast(0L)
+                                val frac = (elapsed.toFloat() / durFrames.toFloat()).coerceIn(0f, 0.9999f)
+                                val word = BionicTextHelper.findWordAt(currentTimeline, frac)
+                                if (word != null && (word.start != lastWordStart || word.end != lastWordEnd)) {
+                                    lastWordStart = word.start
+                                    lastWordEnd = word.end
+                                    listener?.onActiveWordChanged(cm.blockIndex, word.start, word.end)
+                                }
+                            }
+                        }
+                        try {
+                            Thread.sleep(25)
+                        } catch (_: InterruptedException) {
+                            break
+                        }
+                    }
+                }, "HolosSync")
+                syncThread = sync
+                sync.start()
+
+                val prebufferTargetSamples = (engine.sampleRate * 12) / 10
+                val prebuffer = ArrayList<Packet.Audio>(8)
+                var prebufferSamples = 0
+                var playbackStarted = false
+
+                fun writeAudioPacket(ap: Packet.Audio) {
+                    if (ap.blockIndex != lastEnqueuedBlock) {
+                        lastEnqueuedBlock = ap.blockIndex
+                        val txt = blocks.getOrNull(ap.blockIndex)?.text.orEmpty()
+                        pendingMarkers.add(BlockMarker(ap.blockIndex, totalFramesWritten, txt))
+                    }
+                    val written = track.write(ap.samples, 0, ap.samples.size, AudioTrack.WRITE_BLOCKING)
+                    if (written > 0) {
+                        totalFramesWritten += written.toLong()
+                    }
+                }
+
+                fun flushPrebuffer() {
+                    if (prebuffer.isEmpty()) return
+                    for (ap in prebuffer) {
+                        if (!isCurrent(gen)) return
+                        writeAudioPacket(ap)
+                        if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                            track.play()
+                        }
+                    }
+                    prebuffer.clear()
+                    prebufferSamples = 0
+                    playbackStarted = true
+                }
 
                 try {
                     while (isCurrent(gen)) {
@@ -224,26 +365,54 @@ class TtsPlaybackController(private val context: Context) {
                         val packet = queue.poll(100, TimeUnit.MILLISECONDS) ?: continue
                         when (packet) {
                             is Packet.Audio -> {
-                                if (packet.blockIndex != lastReportedBlock) {
-                                    lastReportedBlock = packet.blockIndex
-                                    activeBlock.set(packet.blockIndex)
-                                    listener?.onActiveBlockChanged(packet.blockIndex)
-                                    listener?.onPlaybackStateChanged(true, false, "Озвучення…")
+                                if (!playbackStarted) {
+                                    prebuffer.add(packet)
+                                    prebufferSamples += packet.samples.size
+                                    if (prebufferSamples >= prebufferTargetSamples) {
+                                        flushPrebuffer()
+                                    }
+                                } else {
+                                    if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                                        track.play()
+                                    }
+                                    writeAudioPacket(packet)
                                 }
-                                if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                                    track.play()
-                                }
-                                track.write(packet.samples, 0, packet.samples.size, AudioTrack.WRITE_BLOCKING)
                             }
-                            is Packet.BlockEnd -> Unit
+                            is Packet.BlockEnd -> {
+                                blockSpeechFrames[packet.blockIndex] = packet.speechFrames
+                                if (!playbackStarted) flushPrebuffer()
+                            }
                             is Packet.ChapterEnd -> {
+                                if (!playbackStarted) flushPrebuffer()
                                 chapterEndedNaturally = true
                                 break
                             }
                         }
                     }
-                    if (chapterEndedNaturally && isCurrent(gen)) {
-                        Thread.sleep(350)
+
+                    // Drain the hardware AudioTrack buffer completely so the final words of the chapter are never cut off
+                    if (chapterEndedNaturally && isCurrent(gen) && totalFramesWritten > 0L) {
+                        var lastPos = -1L
+                        var stalledMs = 0
+                        val targetEnd = (totalFramesWritten - (engine.sampleRate / 25)).coerceAtLeast(0L)
+                        while (isCurrent(gen)) {
+                            while (pausedFlag.get() && isCurrent(gen)) {
+                                if (track.playState == AudioTrack.PLAYSTATE_PLAYING) track.pause()
+                                Thread.sleep(40)
+                            }
+                            if (!isCurrent(gen)) break
+                            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+                            val pos = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                            if (pos >= targetEnd) break
+                            if (pos == lastPos) {
+                                stalledMs += 40
+                                if (stalledMs >= 1500) break
+                            } else {
+                                lastPos = pos
+                                stalledMs = 0
+                            }
+                            Thread.sleep(40)
+                        }
                     }
                 } catch (_: InterruptedException) {
                     // Stopped normally
@@ -252,6 +421,10 @@ class TtsPlaybackController(private val context: Context) {
                         listener?.onError("Помилка відтворення: ${t.message ?: t.javaClass.simpleName}")
                     }
                 } finally {
+                    syncRunning.set(false)
+                    sync.interrupt()
+                    try { sync.join(150) } catch (_: Exception) {}
+                    if (syncThread === sync) syncThread = null
                     try {
                         track.pause()
                         track.flush()
@@ -277,6 +450,8 @@ class TtsPlaybackController(private val context: Context) {
             }, "HolosConsumer")
 
             if (!isCurrent(gen)) return@Thread
+            prod.priority = (Thread.NORM_PRIORITY + 1).coerceAtMost(Thread.MAX_PRIORITY)
+            cons.priority = (Thread.MAX_PRIORITY - 1).coerceAtLeast(Thread.NORM_PRIORITY)
             producerThread = prod
             consumerThread = cons
             prod.start()
@@ -321,12 +496,15 @@ class TtsPlaybackController(private val context: Context) {
         initThread?.interrupt()
         producerThread?.interrupt()
         consumerThread?.interrupt()
+        syncThread?.interrupt()
         try { initThread?.join(200) } catch (_: Exception) {}
         try { producerThread?.join(350) } catch (_: Exception) {}
         try { consumerThread?.join(350) } catch (_: Exception) {}
+        try { syncThread?.join(150) } catch (_: Exception) {}
         initThread = null
         producerThread = null
         consumerThread = null
+        syncThread = null
         playingFlag.set(false)
     }
 }
