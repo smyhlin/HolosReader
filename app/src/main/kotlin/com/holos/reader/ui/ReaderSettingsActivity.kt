@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -25,33 +26,29 @@ import java.io.File
 import java.util.Locale
 
 /**
- * Unified 5-tab Reader & TTS Settings screen inspired by modern minimalist e-readers:
- * - Tab 0 (Шрифт): Font Size, Font Weight (300–700), Font Family, Bionic Reading + Live Preview
- * - Tab 1 (Макет): Paragraph Margin, Line Spacing, Letter Spacing, Text Indent, Full Justification,
- *                  Side Margins, Header/Footer/Progress Bar, Screen Orientation
- * - Tab 2 (Тема): 9-palette visual `Aa` Theme Grid, Invert Images in Dark Mode, Dialogue Highlighting
- * - Tab 3 (Поведінка): Hide Scrollbar, Volume-Key Scrolling, Auto-Advance Chapter, Keep Screen Awake,
- *                      Fullscreen Mode, Open Last Book, Auto-Scroll Speed
- * - Tab 4 (Озвучка): Adaptive Multi-Voice toggle, Speech Speed, CPU Threads, Stress Dictionary link,
- *                    TTS Highlighting (Granularity / Style / 5 Quick Colors), Offline Audio Cache cleaner
+ * Unified 5-tab Reader & TTS Settings screen:
+ * - Crash-proof initialization & drag-down-to-close top handle (`—`)
+ * - Labeled icon tabs (Шрифт / Макет / Тема / Поведінка / Озвучка)
+ * - 9-palette visual `Aa` Theme Grid + live typography preview
  */
 class ReaderSettingsActivity : Activity() {
 
-    private enum class Tab(val titleUk: String, val iconRes: Int) {
-        FONT("Шрифт", R.drawable.ic_font),
-        LAYOUT("Макет", R.drawable.ic_layout),
-        THEME("Тема", R.drawable.ic_palette),
-        BEHAVIOR("Поведінка", R.drawable.ic_touch),
-        TTS("Озвучка", R.drawable.ic_headphones),
-    }
+    private data class TabSpec(val id: Int, val titleUk: String, val iconRes: Int)
+
+    private val tabs = listOf(
+        TabSpec(0, "Шрифт", R.drawable.ic_font),
+        TabSpec(1, "Макет", R.drawable.ic_layout),
+        TabSpec(2, "Тема", R.drawable.ic_palette),
+        TabSpec(3, "Поведінка", R.drawable.ic_touch),
+        TabSpec(4, "Озвучка", R.drawable.ic_headphones),
+    )
 
     private lateinit var prefs: ReaderPreferences
-    private var activeTab: Tab = Tab.FONT
+    private var activeTabIndex: Int = 0
 
+    private lateinit var rootFrame: FrameLayout
     private lateinit var rootScroll: ScrollView
     private lateinit var rootCol: LinearLayout
-    private lateinit var titleTv: TextView
-    private lateinit var tabBar: LinearLayout
     private lateinit var contentHost: LinearLayout
 
     private val dp get() = resources.displayMetrics.density
@@ -60,15 +57,30 @@ class ReaderSettingsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = ReaderPreferences(this)
-        val startIdx = intent.getIntExtra(EXTRA_TAB_INDEX, 0).coerceIn(0, Tab.entries.lastIndex)
-        activeTab = Tab.entries[startIdx]
-        rebuildFullUi()
+        try {
+            prefs = ReaderPreferences(this)
+            activeTabIndex = (intent?.getIntExtra(EXTRA_TAB_INDEX, 0) ?: 0).coerceIn(0, tabs.lastIndex)
+            rebuildFullUi()
+        } catch (t: Throwable) {
+            val tv = TextView(this).apply {
+                text = "Помилка налаштувань: ${t.javaClass.simpleName}: ${t.message}"
+                setTextColor(Color.WHITE)
+                setBackgroundColor(0xFF161618.toInt())
+                setPadding(32, 64, 32, 32)
+            }
+            setContentView(tv)
+        }
     }
 
     private fun rebuildFullUi() {
         val pal = p
         UiTheme.applySystemBars(this, prefs.theme)
+        val activeTab = tabs[activeTabIndex]
+
+        rootFrame = FrameLayout(this).apply {
+            fitsSystemWindows = true
+            setBackgroundColor(pal.canvasBg)
+        }
 
         rootCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -76,23 +88,26 @@ class ReaderSettingsActivity : Activity() {
             setPadding(d(16), d(10), d(16), d(28))
         }
 
-        // Top drag handle pill
-        rootCol.addView(
+        // Draggable top handle + header zone (pull down to dismiss)
+        val headerZone = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        headerZone.addView(
             View(this).apply { background = UiTheme.rounded(pal.handleColor, d(4).toFloat()) },
-            LinearLayout.LayoutParams(d(38), d(4)).apply {
+            LinearLayout.LayoutParams(d(42), d(4)).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
                 bottomMargin = d(12)
             }
         )
 
-        // Header: <   Title
         val backBtn = UiTheme.iconView(this, R.drawable.ic_chevron_left, padDp = 6) { finish() }.apply {
             setColorFilter(pal.primaryText)
         }
-        titleTv = TextView(this).apply {
+        val titleTv = TextView(this).apply {
             text = activeTab.titleUk
             textSize = 18f
-            setTypeface(typeface, Typeface.BOLD)
+            setTypeface(null, Typeface.BOLD)
             setTextColor(pal.primaryText)
             gravity = Gravity.CENTER
         }
@@ -103,51 +118,90 @@ class ReaderSettingsActivity : Activity() {
             addView(titleTv, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addView(View(this@ReaderSettingsActivity), LinearLayout.LayoutParams(d(38), d(1)))
         }
-        rootCol.addView(topBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(12) })
+        headerZone.addView(topBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(12) })
 
-        // 5-icon Horizontal Tab Strip
-        tabBar = LinearLayout(this).apply {
+        var dragStartY = 0f
+        headerZone.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragStartY = ev.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = (ev.rawY - dragStartY).coerceAtLeast(0f)
+                    rootFrame.translationY = dy
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val dy = ev.rawY - dragStartY
+                    if (dy > d(90)) {
+                        rootFrame.animate().translationY(resources.displayMetrics.heightPixels.toFloat())
+                            .setDuration(180L).withEndAction { finish() }.start()
+                    } else {
+                        rootFrame.animate().translationY(0f).setDuration(150L).start()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+        rootCol.addView(headerZone, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        // 5-icon Horizontal Tab Strip WITH readable labels
+        val tabBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
         }
-        for (tab in Tab.entries) {
-            val isSelected = tab == activeTab
-            val iv = ImageView(this).apply {
-                setImageResource(tab.iconRes)
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                setPadding(d(10), d(8), d(10), d(8))
-                setColorFilter(if (isSelected) pal.primaryText else pal.secondaryText)
-                background = if (isSelected) UiTheme.rounded(pal.cardBg, d(10).toFloat(), pal.divider, 1) else null
+        for (tab in tabs) {
+            val isSelected = tab.id == activeTabIndex
+            val tabBtn = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setPadding(d(4), d(7), d(4), d(7))
+                background = if (isSelected) UiTheme.rounded(pal.cardBg, d(12).toFloat(), pal.accentBlue, d(1)) else null
+                addView(ImageView(context).apply {
+                    setImageResource(tab.iconRes)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setColorFilter(if (isSelected) pal.accentBlue else pal.secondaryText)
+                }, LinearLayout.LayoutParams(d(20), d(20)).apply { bottomMargin = d(3) })
+                addView(TextView(context).apply {
+                    text = tab.titleUk
+                    textSize = 10f
+                    maxLines = 1
+                    gravity = Gravity.CENTER
+                    setTypeface(null, if (isSelected) Typeface.BOLD else Typeface.NORMAL)
+                    setTextColor(if (isSelected) pal.primaryText else pal.secondaryText)
+                })
                 setOnClickListener {
-                    if (activeTab != tab) {
-                        activeTab = tab
+                    if (activeTabIndex != tab.id) {
+                        activeTabIndex = tab.id
                         rebuildFullUi()
                     }
                 }
             }
-            tabBar.addView(iv, LinearLayout.LayoutParams(0, d(40), 1f).apply {
-                leftMargin = d(3); rightMargin = d(3)
+            tabBar.addView(tabBtn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+                leftMargin = d(2); rightMargin = d(2)
             })
         }
-        rootCol.addView(tabBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(18) })
+        rootCol.addView(tabBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(16) })
 
         contentHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         rootCol.addView(contentHost, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        when (activeTab) {
-            Tab.FONT -> renderFontTab(contentHost)
-            Tab.LAYOUT -> renderLayoutTab(contentHost)
-            Tab.THEME -> renderThemeTab(contentHost)
-            Tab.BEHAVIOR -> renderBehaviorTab(contentHost)
-            Tab.TTS -> renderTtsTab(contentHost)
+        when (activeTabIndex) {
+            0 -> renderFontTab(contentHost)
+            1 -> renderLayoutTab(contentHost)
+            2 -> renderThemeTab(contentHost)
+            3 -> renderBehaviorTab(contentHost)
+            4 -> renderTtsTab(contentHost)
         }
 
         rootScroll = ScrollView(this).apply {
-            fitsSystemWindows = true
             setBackgroundColor(pal.canvasBg)
-            addView(rootCol)
+            addView(rootCol, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
-        setContentView(rootScroll)
+        rootFrame.addView(rootScroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        setContentView(rootFrame)
     }
 
     // ==================== TAB 0: FONT ====================
@@ -169,7 +223,7 @@ class ReaderSettingsActivity : Activity() {
         }
 
         host.addView(sectionLabel("Розмір і насиченість"))
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             stepperRow(
                 label = "Розмір шрифту (sp)",
                 valueText = { prefs.fontSizeSp.toInt().toString() },
@@ -182,11 +236,11 @@ class ReaderSettingsActivity : Activity() {
                 onMinus = { prefs.fontWeight = prefs.fontWeight - 100; refreshPreview() },
                 onPlus = { prefs.fontWeight = prefs.fontWeight + 100; refreshPreview() },
             ),
-        ))
+        )))
 
         host.addView(sectionLabel("Сімейство шрифту та читання"))
         val familyLabels = mapOf("SANS" to "Без засічок (Sans)", "SERIF" to "Із засічками (Serif)", "MONO" to "Моноширинний")
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             pickerRow(
                 label = "Основний шрифт",
                 currentLabel = { familyLabels[prefs.fontFamily] ?: "Без засічок (Sans)" },
@@ -199,7 +253,7 @@ class ReaderSettingsActivity : Activity() {
                 initial = prefs.bionicReading,
                 onChanged = { prefs.bionicReading = it; refreshPreview() },
             ),
-        ))
+        )))
 
         host.addView(sectionLabel("Попередній перегляд"))
         host.addView(previewTv, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(8) })
@@ -209,7 +263,7 @@ class ReaderSettingsActivity : Activity() {
     // ==================== TAB 1: LAYOUT ====================
     private fun renderLayoutTab(host: LinearLayout) {
         host.addView(sectionLabel("Абзац"))
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             stepperRow(
                 label = "Відступ між абзацами (dp)",
                 valueText = { prefs.paragraphMarginDp.toString() },
@@ -240,10 +294,10 @@ class ReaderSettingsActivity : Activity() {
                 initial = prefs.fullJustification,
                 onChanged = { prefs.fullJustification = it },
             ),
-        ))
+        )))
 
         host.addView(sectionLabel("Поля та колонтитули"))
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             stepperRow(
                 label = "Бокові поля (dp)",
                 valueText = { prefs.sideMarginDp.toString() },
@@ -265,27 +319,26 @@ class ReaderSettingsActivity : Activity() {
                 initial = prefs.showProgressBar,
                 onChanged = { prefs.showProgressBar = it },
             ),
-        ))
+        )))
 
         host.addView(sectionLabel("Екран"))
         val orientLabels = mapOf("AUTO" to "Авто", "PORTRAIT" to "Книжкова", "LANDSCAPE" to "Альбомна")
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             pickerRow(
                 label = "Орієнтація екрана",
                 currentLabel = { orientLabels[prefs.screenOrientation] ?: "Авто" },
                 options = listOf("AUTO" to "Автоматично", "PORTRAIT" to "Книжкова (Portrait)", "LANDSCAPE" to "Альбомна (Landscape)"),
                 onPicked = { prefs.screenOrientation = it },
             )
-        ))
+        )))
     }
 
     // ==================== TAB 2: THEME ====================
     private fun renderThemeTab(host: LinearLayout) {
-        host.addView(sectionLabel("Кольорова тема (${ReaderTheme.entries.size} палітр)"))
+        val themes = ReaderTheme.values().toList()
+        host.addView(sectionLabel("Кольорова тема (${themes.size} палітр)"))
 
-        // 3-column visual `Aa` theme grid matching the reference screenshot
         val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val themes = ReaderTheme.entries
         var idx = 0
         while (idx < themes.size) {
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -310,7 +363,7 @@ class ReaderSettingsActivity : Activity() {
                         addView(TextView(context).apply {
                             text = "Aa"
                             textSize = 18f
-                            setTypeface(typeface, Typeface.BOLD)
+                            setTypeface(null, Typeface.BOLD)
                             setTextColor(tp.primaryText)
                             gravity = Gravity.CENTER
                         })
@@ -339,7 +392,7 @@ class ReaderSettingsActivity : Activity() {
         })
 
         host.addView(sectionLabel("Ілюстрації та діалоги"))
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             toggleRow(
                 label = "Інвертувати зображення у темній темі",
                 subtitle = "Корисно для чорно-білих схем і діаграм",
@@ -352,13 +405,13 @@ class ReaderSettingsActivity : Activity() {
                 initial = prefs.highlightDialogues,
                 onChanged = { prefs.highlightDialogues = it },
             ),
-        ))
+        )))
     }
 
     // ==================== TAB 3: BEHAVIOR ====================
     private fun renderBehaviorTab(host: LinearLayout) {
         host.addView(sectionLabel("Навігація та прокрутка"))
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             toggleRow(
                 label = "Приховати смугу прокрутки",
                 initial = prefs.hideScrollbar,
@@ -382,10 +435,10 @@ class ReaderSettingsActivity : Activity() {
                 onMinus = { prefs.autoScrollSpeed -= 1 },
                 onPlus = { prefs.autoScrollSpeed += 1 },
             ),
-        ))
+        )))
 
         host.addView(sectionLabel("Пристрій"))
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             toggleRow(
                 label = "Не вимикати екран під час читання",
                 initial = prefs.keepScreenAwake,
@@ -402,13 +455,13 @@ class ReaderSettingsActivity : Activity() {
                 initial = prefs.openLastBookOnStart,
                 onChanged = { prefs.openLastBookOnStart = it },
             ),
-        ))
+        )))
     }
 
     // ==================== TAB 4: TTS ====================
     private fun renderTtsTab(host: LinearLayout) {
         host.addView(sectionLabel("Голос та синтез"))
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             toggleRow(
                 label = "Адаптивна озвучка (3 ролі)",
                 subtitle = "Оповідач · [СИСТЕМА] · Діалоги (—)",
@@ -417,9 +470,9 @@ class ReaderSettingsActivity : Activity() {
             ),
             stepperRow(
                 label = "Швидкість озвучення",
-                valueText = { String.format(Locale.US, "%.1f×", prefs.speechSpeed) },
-                onMinus = { prefs.speechSpeed = ((prefs.speechSpeed * 10).toInt() - 1) / 10f },
-                onPlus = { prefs.speechSpeed = ((prefs.speechSpeed * 10).toInt() + 1) / 10f },
+                valueText = { String.format(Locale.US, "%.2f×", prefs.speechSpeed) },
+                onMinus = { prefs.speechSpeed = ((prefs.speechSpeed * 20).toInt() - 1) / 20f },
+                onPlus = { prefs.speechSpeed = ((prefs.speechSpeed * 20).toInt() + 1) / 20f },
             ),
             stepperRow(
                 label = "Потоки CPU (ONNX)",
@@ -433,12 +486,12 @@ class ReaderSettingsActivity : Activity() {
                 trailing = "›",
                 onClick = { startActivity(Intent(this, StressEditorActivity::class.java)) },
             ),
-        ))
+        )))
 
         host.addView(sectionLabel("Підсвічування TTS"))
         val granLabels = mapOf("WORD" to "Слово (1:1)", "PARAGRAPH" to "Абзац", "OFF" to "Вимкнено")
         val styleLabels = mapOf("HIGHLIGHTER" to "Маркер", "UNDERLINE" to "Підкреслення", "TEXT_COLOR" to "Колір тексту")
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             pickerRow(
                 label = "Деталізація",
                 currentLabel = { granLabels[prefs.ttsHighlightGranularity] ?: "Слово (1:1)" },
@@ -452,12 +505,12 @@ class ReaderSettingsActivity : Activity() {
                 onPicked = { prefs.ttsHighlightStyle = it },
             ),
             quickColorRow(),
-        ))
+        )))
 
         host.addView(sectionLabel("Кеш офлайн-аудіо"))
         val cacheDir = File(cacheDir, "offline_chapters")
         val cacheMb = (cacheDir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024.0 * 1024.0)
-        host.addView(groupedCard(
+        host.addView(groupedCard(listOf(
             actionRow(
                 label = "Очистити кеш збережених розділів",
                 subtitle = String.format(Locale.US, "Зайнято: %.1f МБ", cacheMb),
@@ -468,7 +521,7 @@ class ReaderSettingsActivity : Activity() {
                     rebuildFullUi()
                 },
             )
-        ))
+        )))
     }
 
     // ==================== REUSABLE CONTROLS ====================
@@ -480,10 +533,11 @@ class ReaderSettingsActivity : Activity() {
         setPadding(d(4), d(10), d(4), d(6))
     }
 
-    private fun groupedCard(vararg rows: View): LinearLayout {
+    private fun groupedCard(rows: List<View>): LinearLayout {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = UiTheme.rounded(p.cardBg, d(16).toFloat(), p.divider, 1)
+            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) }
         }
         rows.forEachIndexed { idx, row ->
             card.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -496,9 +550,7 @@ class ReaderSettingsActivity : Activity() {
                 )
             }
         }
-        return card.apply {
-            layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) }
-        }
+        return card
     }
 
     private fun toggleRow(
@@ -510,22 +562,22 @@ class ReaderSettingsActivity : Activity() {
         var checked = initial
         val track = FrameLayout(this)
         val thumb = View(this)
+        val thumbLp = FrameLayout.LayoutParams(d(20), d(20))
 
         fun renderSwitch() {
             track.background = if (checked) {
                 UiTheme.rounded(p.accentBlue, d(14).toFloat())
             } else {
-                UiTheme.rounded(p.sheetBg, d(14).toFloat(), p.mutedText, d(1))
+                UiTheme.rounded(p.sheetBg, d(14).toFloat(), p.mutedText, d(1).coerceAtLeast(1))
             }
             thumb.background = UiTheme.circle(if (checked) Color.WHITE else p.secondaryText)
-            val lp = thumb.layoutParams as FrameLayout.LayoutParams
-            lp.gravity = Gravity.CENTER_VERTICAL or if (checked) Gravity.END else Gravity.START
-            lp.leftMargin = d(3)
-            lp.rightMargin = d(3)
-            thumb.layoutParams = lp
+            thumbLp.gravity = Gravity.CENTER_VERTICAL or if (checked) Gravity.END else Gravity.START
+            thumbLp.leftMargin = d(3)
+            thumbLp.rightMargin = d(3)
+            thumb.layoutParams = thumbLp
         }
 
-        track.addView(thumb, FrameLayout.LayoutParams(d(20), d(20)))
+        track.addView(thumb, thumbLp)
         renderSwitch()
 
         val textCol = LinearLayout(this).apply {
@@ -568,7 +620,7 @@ class ReaderSettingsActivity : Activity() {
         val valTv = TextView(this).apply {
             text = valueText()
             textSize = 14f
-            setTypeface(typeface, Typeface.BOLD)
+            setTypeface(null, Typeface.BOLD)
             setTextColor(p.primaryText)
             gravity = Gravity.CENTER
             minWidth = d(40)
@@ -732,10 +784,14 @@ class ReaderSettingsActivity : Activity() {
                 "MONO" -> Typeface.MONOSPACE
                 else -> Typeface.SANS_SERIF
             }
-            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                Typeface.create(base, prefs.fontWeight, false)
-            } else {
-                if (prefs.fontWeight >= 600) Typeface.create(base, Typeface.BOLD) else base
+            return try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    Typeface.create(base, prefs.fontWeight, false)
+                } else {
+                    if (prefs.fontWeight >= 600) Typeface.create(base, Typeface.BOLD) else base
+                }
+            } catch (_: Throwable) {
+                base
             }
         }
     }

@@ -77,14 +77,38 @@ class StatisticsActivity : Activity() {
             setPadding(d(16), d(10), d(16), d(28))
         }
 
-        // Top drag handle pill
+        // Draggable top handle pill (pull down to close)
         val handle = View(this).apply {
             background = UiTheme.rounded(palette.handleColor, d(4).toFloat())
         }
-        root.addView(handle, LinearLayout.LayoutParams(d(38), d(4)).apply {
+        val handleWrap = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            bottomMargin = d(12)
-        })
+            setPadding(0, d(4), 0, d(12))
+            addView(handle, LinearLayout.LayoutParams(d(42), d(4)))
+        }
+        var dragStartY = 0f
+        handleWrap.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { dragStartY = ev.rawY; true }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = (ev.rawY - dragStartY).coerceAtLeast(0f)
+                    root.translationY = dy
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (ev.rawY - dragStartY > d(85)) {
+                        root.animate().translationY(resources.displayMetrics.heightPixels.toFloat())
+                            .setDuration(180L).withEndAction { finish() }.start()
+                    } else {
+                        root.animate().translationY(0f).setDuration(150L).start()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+        root.addView(handleWrap, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         // Top Header: <   Статистика читання
         val backBtn = UiTheme.iconView(this, R.drawable.ic_chevron_left, padDp = 6) { finish() }.apply {
