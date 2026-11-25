@@ -39,6 +39,7 @@ import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.HolosSafeSynthesizer
 import com.holos.reader.tts.HolosVoiceCatalog
 import com.holos.reader.tts.ReaderPreferences
+import com.holos.reader.tts.TtsPlaybackController
 import com.holos.reader.tts.VoiceRole
 import java.io.File
 import java.io.RandomAccessFile
@@ -76,12 +77,14 @@ class AudioSheetController(
         fun getCurrentBlocks(): List<ReaderBlock>
         fun getBookId(): String
         fun getChapterIndex(): Int
+        fun onAbLoopChanged(startBlock: Int, endBlock: Int) {}
     }
 
     private val previewWorker = Executors.newSingleThreadExecutor()
     private val previewCancel = AtomicBoolean(false)
     private val previewGen = AtomicLong(0L)
     private val offlineRenderCancel = AtomicBoolean(false)
+    private val offlineRendering = AtomicBoolean(false)
 
     @Volatile
     private var previewingVoice: String? = null
@@ -112,7 +115,7 @@ class AudioSheetController(
     // Centered lyrics stream (prev2, prev1, activeCard, next1, next2)
     private lateinit var lyricPrev2: TextView
     private lateinit var lyricPrev1: TextView
-    private lateinit var lyricActiveCard: TextView
+    private lateinit var lyricActiveCard: HighlightTextView
     private lateinit var lyricNext1: TextView
     private lateinit var lyricNext2: TextView
 
@@ -148,6 +151,7 @@ class AudioSheetController(
     private var voiceFilter: String = "ALL" // ALL, FEMALE, MALE
     private var editingRole: VoiceRole = VoiceRole.NARRATOR
     private var abLoopStart: Int = -1
+    private var abLoopEnd: Int = -1
 
     private val dp = activity.resources.displayMetrics.density
     private fun d(v: Int): Int = (v * dp).toInt()
@@ -309,15 +313,19 @@ class AudioSheetController(
         lyricPrev2.text = blocks.getOrNull(idx - 2)?.text.orEmpty()
         lyricPrev1.text = blocks.getOrNull(idx - 1)?.text.orEmpty()
         val rawActive = blocks.getOrNull(idx)?.text?.ifBlank { "…" } ?: "Оберіть абзац для читання"
+        val blockChanged = rawActive != activeBlockText
         activeBlockText = rawActive
         renderActiveLyricCard(-1, -1)
+        if (blockChanged && ::lyricActiveScroll.isInitialized) {
+            lyricActiveScroll.post { lyricActiveScroll.scrollTo(0, 0) }
+        }
         lyricNext1.text = blocks.getOrNull(idx + 1)?.text.orEmpty()
         lyricNext2.text = blocks.getOrNull(idx + 2)?.text.orEmpty()
 
         playCircleBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
         speedValTv.text = String.format(Locale.US, "%.2f×", prefs.speechSpeed).replace(".00×", ".0×")
         voiceValTv.text = HolosVoiceCatalog.displayName(prefs.selectedVoice).take(16)
-        voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна · 3 ролі" else "Диктор"
+        voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
 
         // Scrubber & estimated reading time (~14 chars/sec * speed)
         val totalChars = blocks.sumOf { if (it.isSpeakable) it.text.length else 0 }.coerceAtLeast(1)
@@ -331,9 +339,12 @@ class AudioSheetController(
         scrubber.max = (blocks.size - 1).coerceAtLeast(1)
         scrubber.progress = idx
 
-        val cached = getChapterWavFile().exists()
-        offlineSubTv.text = if (cached) "Розділ збережено локально (0% CPU)" else "Зберегти аудіо розділу локально"
-        offlineBadgeTv.text = if (cached) "Готово" else "Офлайн ›"
+        if (!offlineRendering.get()) {
+            val cached = getChapterWavFile().exists()
+            offlineSubTv.text = if (cached) "Розділ збережено локально (0% CPU)" else "Зберегти аудіо розділу локально"
+            offlineBadgeTv.text = if (cached) "Готово" else "Офлайн ›"
+            offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
+        }
     }
 
     fun updateActiveWord(wordStart: Int, wordEnd: Int) {
@@ -348,23 +359,29 @@ class AudioSheetController(
         if (prefs.bionicReading) {
             BionicTextHelper.applyBionic(ssb)
         }
-        if (prefs.ttsHighlightGranularity == "WORD" && wordStart in 0 until ssb.length && wordEnd in (wordStart + 1)..ssb.length) {
+        val hasWord = prefs.ttsHighlightGranularity == "WORD" && wordStart in 0 until ssb.length && wordEnd in (wordStart + 1)..ssb.length
+        if (hasWord) {
             val hlColor = prefs.ttsHighlightColor
-            when (prefs.ttsHighlightStyle) {
-                "UNDERLINE" -> {
-                    ssb.setSpan(UnderlineSpan(), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    ssb.setSpan(ForegroundColorSpan(hlColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                }
-                "TEXT_COLOR" -> {
-                    ssb.setSpan(ForegroundColorSpan(hlColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                }
-                else -> {
-                    val pillColor = (0x4C shl 24) or (hlColor and 0x00FFFFFF)
-                    ssb.setSpan(BackgroundColorSpan(pillColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                }
+            if (prefs.ttsHighlightStyle == "TEXT_COLOR") {
+                ssb.setSpan(ForegroundColorSpan(hlColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                lyricActiveCard.clearWordHighlight()
+            } else {
+                lyricActiveCard.setWordHighlight(wordStart, wordEnd, prefs.ttsHighlightStyle, hlColor, 1f)
             }
+        } else {
+            lyricActiveCard.clearWordHighlight()
         }
         lyricActiveCard.text = ssb
+        if (wordStart in 0 until ssb.length && ::lyricActiveScroll.isInitialized) {
+            lyricActiveCard.post {
+                val layout = lyricActiveCard.layout ?: return@post
+                val safeOffset = wordStart.coerceIn(0, (lyricActiveCard.text?.length ?: 1) - 1)
+                val line = layout.getLineForOffset(safeOffset)
+                val centerY = (layout.getLineTop(line) + layout.getLineBottom(line)) / 2
+                val targetY = (centerY - lyricActiveScroll.height / 2).coerceAtLeast(0)
+                lyricActiveScroll.smoothScrollTo(0, targetY)
+            }
+        }
     }
 
     fun applyPalette() {
@@ -433,7 +450,7 @@ class AudioSheetController(
         adaptiveTogglePill.setTextColor(if (enabled) Color.WHITE else p.secondaryText)
         adaptiveRolesRow.visibility = if (enabled) View.VISIBLE else View.GONE
 
-        val available = try { HolosEngineHolder.getEngine(activity)?.voices } catch (_: Exception) { null } ?: emptyList()
+        val available = HolosEngineHolder.peekVoicesOrEmpty()
         for ((role, triple) in rolePills) {
             val (pill, titleV, voiceV) = triple
             val active = role == editingRole
@@ -549,14 +566,16 @@ class AudioSheetController(
         lyricPrev1 = lyricView(14f, false, 0.65f, 3).apply {
             setOnClickListener { callbacks.onJumpBlock(-1) }
         }
-        lyricActiveCard = TextView(activity).apply {
+        lyricActiveCard = HighlightTextView(activity).apply {
             textSize = prefs.fontSizeSp.coerceIn(14f, 26f)
             gravity = Gravity.CENTER
-            setLineSpacing(0f, 1.3f)
-            setPadding(d(16), d(14), d(16), d(14))
+            setLineSpacing(0f, 1.32f)
+            setPadding(d(16), d(18), d(16), d(18))
         }
         lyricActiveScroll = ScrollView(activity).apply {
             isVerticalScrollBarEnabled = true
+            isVerticalFadingEdgeEnabled = true
+            setFadingEdgeLength(d(22))
             isFillViewport = true
             addView(lyricActiveCard, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
@@ -635,17 +654,50 @@ class AudioSheetController(
         val nextPara = UiTheme.iconView(activity, R.drawable.ic_skip_next, padDp = 8, tagName = "icon_btn") { callbacks.onJumpBlock(+1) }
         val nextCh = UiTheme.iconView(activity, R.drawable.ic_fast_forward, padDp = 8, tagName = "icon_btn") { callbacks.onJumpChapter(+1) }
         abBtn = textTransportBtn("A–B", 11f) {
-            if (abLoopStart < 0) {
-                abLoopStart = scrubber.progress
-                Toast.makeText(activity, "Повтор A–B: точка A (абзац ${abLoopStart + 1})", Toast.LENGTH_SHORT).show()
-            } else {
-                val target = abLoopStart
-                abLoopStart = -1
-                callbacks.onSeekBlock(target)
-                Toast.makeText(activity, "Повернення до точки A", Toast.LENGTH_SHORT).show()
-            }
+            val en = AppStrings.isEnglish(activity)
             val p = UiTheme.palette(prefs.theme)
-            abBtn.setTextColor(if (abLoopStart >= 0) p.accentBlue else p.secondaryText)
+            when {
+                abLoopStart < 0 -> {
+                    abLoopStart = scrubber.progress
+                    abLoopEnd = -1
+                    abBtn.text = "A→?"
+                    abBtn.setTextColor(p.accentBlue)
+                    Toast.makeText(
+                        activity,
+                        if (en) "A–B Loop: Point A set (block ${abLoopStart + 1}). Tap again for B."
+                        else "Повтор A–B: точка A (абзац ${abLoopStart + 1}). Натисніть ще раз для B.",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                abLoopEnd < 0 -> {
+                    val cur = scrubber.progress
+                    val a = minOf(abLoopStart, cur)
+                    val b = maxOf(abLoopStart, cur)
+                    abLoopStart = a
+                    abLoopEnd = b
+                    abBtn.text = "A↔B"
+                    abBtn.setTextColor(p.accentBlue)
+                    callbacks.onAbLoopChanged(a, b)
+                    Toast.makeText(
+                        activity,
+                        if (en) "A–B Loop active: blocks ${a + 1}–${b + 1}"
+                        else "Цикл A–B активний: абзаци ${a + 1}–${b + 1}",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+                else -> {
+                    abLoopStart = -1
+                    abLoopEnd = -1
+                    abBtn.text = "A–B"
+                    abBtn.setTextColor(p.secondaryText)
+                    callbacks.onAbLoopChanged(-1, -1)
+                    Toast.makeText(
+                        activity,
+                        if (en) "A–B Loop cleared" else "Цикл A–B вимкнено",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
+            }
         }
 
         val transport = LinearLayout(activity).apply {
@@ -781,7 +833,7 @@ class AudioSheetController(
             voicePage.visibility = View.GONE
             playerPage.visibility = View.VISIBLE
             voiceValTv.text = HolosVoiceCatalog.displayName(prefs.selectedVoice).take(16)
-            voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна · 3 ролі" else "Диктор"
+            voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
         }
         voiceHeaderTv = TextView(activity).apply {
             text = "Голоси та озвучка"
@@ -832,7 +884,7 @@ class AudioSheetController(
                 if (!prefs.adaptiveVoicesEnabled) editingRole = VoiceRole.NARRATOR
                 styleAdaptiveCard(UiTheme.palette(prefs.theme))
                 renderVoiceList()
-                voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна · 3 ролі" else "Диктор"
+                voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
                 callbacks.onVoiceSelected(prefs.selectedVoice.orEmpty())
             }
         }
@@ -1258,17 +1310,24 @@ class AudioSheetController(
         }
     }
 
-    private fun getChapterWavFile(): File {
-        val dir = File(activity.cacheDir, "offline_chapters").apply { mkdirs() }
-        return File(dir, "${callbacks.getBookId()}_ch${callbacks.getChapterIndex()}.wav")
-    }
+    private fun getChapterWavFile(): File =
+        TtsPlaybackController.offlineChapterFile(activity, callbacks.getBookId(), callbacks.getChapterIndex(), prefs)
 
     private fun preRenderChapterOffline() {
+        if (offlineRendering.get()) {
+            offlineRenderCancel.set(true)
+            offlineSubTv.text = "Зупинка генерації…"
+            Toast.makeText(activity, "Генерацію офлайн-аудіо зупинено", Toast.LENGTH_SHORT).show()
+            return
+        }
         val blocks = callbacks.getCurrentBlocks().filter { it.isSpeakable }
         if (blocks.isEmpty()) return
         val outFile = getChapterWavFile()
         offlineRenderCancel.set(false)
+        offlineRendering.set(true)
         offlineSubTv.text = "Генерація офлайн-аудіо розділу (0/${blocks.size})…"
+        offlineBadgeTv.text = "Зупинити"
+        offlineBadgeTv.setTextColor(0xFFE53935.toInt())
 
         previewWorker.execute {
             val engine = HolosEngineHolder.getEngine(activity)
@@ -1293,8 +1352,11 @@ class AudioSheetController(
                         raf.write(buf)
                         totalPcmBytes += buf.size
                     }
+                    val blockIndices = ArrayList<TtsPlaybackController.OfflineBlockIndex>(blocks.size)
+                    val paraPause = FloatArray((engine.sampleRate * 260) / 1000)
                     for ((i, b) in blocks.withIndex()) {
                         if (offlineRenderCancel.get()) break
+                        val startSample = totalPcmBytes / 2L
                         if (prefs.adaptiveVoicesEnabled) {
                             for (seg in AdaptiveVoiceRouter.segmentParagraph(b.text)) {
                                 if (offlineRenderCancel.get()) break
@@ -1322,6 +1384,11 @@ class AudioSheetController(
                                 onChunk = writeFloats,
                             )
                         }
+                        val speechSamples = (totalPcmBytes / 2L) - startSample
+                        if (speechSamples > 0L) {
+                            blockIndices.add(TtsPlaybackController.OfflineBlockIndex(b.index, startSample, speechSamples))
+                            writeFloats(paraPause)
+                        }
                         if (i % 4 == 0 || i == blocks.lastIndex) {
                             val pct = ((i + 1) * 100) / blocks.size
                             activity.runOnUiThread {
@@ -1331,6 +1398,9 @@ class AudioSheetController(
                     }
                     raf.seek(0)
                     raf.write(buildWavHeader(totalPcmBytes.toInt(), engine.sampleRate))
+                    if (!offlineRenderCancel.get()) {
+                        TtsPlaybackController.writeOfflineIndex(File(outFile.path + ".idx"), blockIndices)
+                    }
                 }
                 if (!offlineRenderCancel.get()) {
                     if (outFile.exists()) outFile.delete()
@@ -1338,11 +1408,25 @@ class AudioSheetController(
                     activity.runOnUiThread {
                         offlineSubTv.text = "Розділ збережено локально (0% CPU)"
                         offlineBadgeTv.text = "Готово"
+                        offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).accentBlue)
+                    }
+                } else {
+                    tmp.delete()
+                    activity.runOnUiThread {
+                        offlineSubTv.text = "Генерацію зупинено"
+                        offlineBadgeTv.text = "Офлайн ›"
+                        offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
                     }
                 }
             } catch (e: Exception) {
                 tmp.delete()
-                activity.runOnUiThread { offlineSubTv.text = "Помилка: ${e.message}" }
+                activity.runOnUiThread {
+                    offlineSubTv.text = "Помилка: ${e.message}"
+                    offlineBadgeTv.text = "Офлайн ›"
+                    offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
+                }
+            } finally {
+                offlineRendering.set(false)
             }
         }
     }
