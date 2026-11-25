@@ -34,6 +34,7 @@ class StressEditorActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val cancelTest = AtomicBoolean(false)
 
+    private lateinit var statusTv: TextView
     private lateinit var dictEditor: EditText
     private lateinit var testInput: EditText
     private lateinit var previewOut: TextView
@@ -61,6 +62,14 @@ class StressEditorActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             addView(backBtn, LinearLayout.LayoutParams(d(40), d(40)))
             addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { leftMargin = d(6) })
+        }
+
+        statusTv = TextView(this).apply {
+            text = "Перевірка вбудованого словника наголосів…"
+            textSize = 12f
+            setTextColor(p.secondaryText)
+            setPadding(d(12), d(8), d(12), d(8))
+            background = UiTheme.rounded(p.cardBg, d(10).toFloat(), p.divider, 1)
         }
 
         val hint = TextView(this).apply {
@@ -93,6 +102,7 @@ class StressEditorActivity : Activity() {
             setPadding(d(14), d(12), d(14), d(12))
             setOnClickListener {
                 HolosEngineHolder.saveUserOverrides(this@StressEditorActivity, dictEditor.text.toString())
+                refreshStatus()
                 Toast.makeText(
                     this@StressEditorActivity,
                     "Збережено (${HolosEngineHolder.getUserOverrides(this@StressEditorActivity).size()} правил)",
@@ -114,7 +124,7 @@ class StressEditorActivity : Activity() {
             setHintTextColor(p.mutedText)
             setPadding(d(12), d(12), d(12), d(12))
             background = UiTheme.rounded(p.cardBg, d(12).toFloat(), p.divider, 1)
-            setText("Замок стояв на пагорбі. Герой відкрив ранобе про ісекай.")
+            setText("Навичка II «Бенкет»: Перезаряджання 40 с. Замок стояв на пагорбі.")
         }
         val testBtn = TextView(this).apply {
             text = "Перевірити та озвучити"
@@ -137,7 +147,8 @@ class StressEditorActivity : Activity() {
             setBackgroundColor(p.canvasBg)
             setPadding(d(16), d(12), d(16), d(24))
             addView(topBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-            addView(hint, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(8) })
+            addView(statusTv, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(10) })
+            addView(hint, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(10) })
             addView(dictEditor, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(12) })
             addView(saveBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(10) })
             addView(testLabel, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(22) })
@@ -151,6 +162,18 @@ class StressEditorActivity : Activity() {
             setBackgroundColor(p.canvasBg)
             addView(root)
         })
+        refreshStatus()
+    }
+
+    private fun refreshStatus() {
+        worker.execute {
+            val summary = try {
+                HolosEngineHolder.getStressStatusSummary(this)
+            } catch (t: Throwable) {
+                "Помилка перевірки словника: ${t.message}"
+            }
+            runOnUiThread { statusTv.text = summary }
+        }
     }
 
     override fun onDestroy() {

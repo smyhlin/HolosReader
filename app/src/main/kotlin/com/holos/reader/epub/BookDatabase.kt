@@ -8,6 +8,9 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import java.io.File
 import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
@@ -82,6 +85,13 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             )
         """)
         db.execSQL("CREATE INDEX idx_bm_book ON bookmarks(book_id)")
+        db.execSQL("""
+            CREATE TABLE IF NOT EXISTS reading_activity (
+                day_key TEXT PRIMARY KEY,
+                seconds INTEGER NOT NULL DEFAULT 0,
+                pages INTEGER NOT NULL DEFAULT 0
+            )
+        """)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -90,6 +100,30 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             try { db.execSQL("ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT 'UNREAD'") } catch (_: Exception) {}
             try { db.execSQL("ALTER TABLE books ADD COLUMN tags TEXT NOT NULL DEFAULT ''") } catch (_: Exception) {}
             try { db.execSQL("ALTER TABLE books ADD COLUMN reading_time_sec INTEGER NOT NULL DEFAULT 0") } catch (_: Exception) {}
+        }
+        if (oldVersion < 3) {
+            db.execSQL("""
+                CREATE TABLE IF NOT EXISTS reading_activity (
+                    day_key TEXT PRIMARY KEY,
+                    seconds INTEGER NOT NULL DEFAULT 0,
+                    pages INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            // Backfill existing book reading time so historical progress appears immediately
+            val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+            db.rawQuery("SELECT reading_time_sec, last_read_at, last_chapter FROM books WHERE reading_time_sec > 0", null).use { c ->
+                while (c.moveToNext()) {
+                    val sec = c.getLong(0)
+                    val ts = c.getLong(1).takeIf { it > 0L } ?: System.currentTimeMillis()
+                    val pages = c.getInt(2).coerceAtLeast(1).toLong()
+                    val dayKey = fmt.format(Date(ts))
+                    db.execSQL(
+                        "INSERT INTO reading_activity(day_key, seconds, pages) VALUES(?,?,?) " +
+                            "ON CONFLICT(day_key) DO UPDATE SET seconds = seconds + excluded.seconds, pages = pages + excluded.pages",
+                        arrayOf<Any>(dayKey, sec, pages)
+                    )
+                }
+            }
         }
     }
 
@@ -336,18 +370,33 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             existing.chapterCount > 0 && chapterIndex >= existing.chapterCount - 1 && blockIndex > 0 -> ReadingStatus.FINISHED
             else -> ReadingStatus.READING
         }
+        val safeAddSec = addSeconds.coerceAtLeast(0L)
+        val now = System.currentTimeMillis()
         writableDatabase.update(
             "books",
             ContentValues().apply {
                 put("last_chapter", chapterIndex)
                 put("last_block", blockIndex)
                 put("status", newStatus.code)
-                put("reading_time_sec", existing.readingTimeSec + addSeconds.coerceAtLeast(0L))
-                put("last_read_at", System.currentTimeMillis())
+                put("reading_time_sec", existing.readingTimeSec + safeAddSec)
+                put("last_read_at", now)
             },
             "id=?",
             arrayOf(bookId)
         )
+        val pagesDelta = when {
+            chapterIndex > existing.lastChapterIndex -> (chapterIndex - existing.lastChapterIndex).coerceAtMost(20).toLong()
+            chapterIndex == existing.lastChapterIndex && blockIndex > existing.lastBlockIndex && (blockIndex - existing.lastBlockIndex) >= 6 -> 1L
+            else -> 0L
+        }
+        if (safeAddSec > 0L || pagesDelta > 0L) {
+            val dayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
+            writableDatabase.execSQL(
+                "INSERT INTO reading_activity(day_key, seconds, pages) VALUES(?,?,?) " +
+                    "ON CONFLICT(day_key) DO UPDATE SET seconds = seconds + excluded.seconds, pages = pages + excluded.pages",
+                arrayOf<Any>(dayKey, safeAddSec, pagesDelta)
+            )
+        }
     }
 
     fun updateStatus(bookIds: Collection<String>, status: ReadingStatus) {
@@ -385,6 +434,25 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             totalReadingSec = all.sumOf { it.readingTimeSec },
             totalChaptersRead = all.sumOf { if (it.status == ReadingStatus.FINISHED) it.chapterCount else it.lastChapterIndex },
         )
+    }
+
+    fun getDailyActivity(): Map<String, Long> {
+        val out = LinkedHashMap<String, Long>()
+        readableDatabase.rawQuery("SELECT day_key, seconds FROM reading_activity ORDER BY day_key ASC", null).use { c ->
+            while (c.moveToNext()) {
+                out[c.getString(0)] = c.getLong(1)
+            }
+        }
+        return out
+    }
+
+    fun getTotalPagesRead(): Long {
+        var activityPages = 0L
+        readableDatabase.rawQuery("SELECT COALESCE(SUM(pages), 0) FROM reading_activity", null).use { c ->
+            if (c.moveToFirst()) activityPages = c.getLong(0)
+        }
+        val chapters = getReadingStats().totalChaptersRead.toLong()
+        return maxOf(activityPages, chapters)
     }
 
     fun addBookmark(bookId: String, chapterIndex: Int, blockIndex: Int, excerpt: String) {
@@ -434,7 +502,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DB_NAME = "holos_reader.db"
-        private const val DB_VERSION = 2
+        private const val DB_VERSION = 3
 
         fun buildSingleChapterEpub(outFile: File, title: String, bodyText: String) {
             fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

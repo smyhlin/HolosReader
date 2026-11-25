@@ -41,6 +41,11 @@
             android:label="Власні наголоси" />
 
         <activity
+            android:name=".ui.StatisticsActivity"
+            android:exported="false"
+            android:label="Статистика читання" />
+
+        <activity
             android:name=".tts.CheckVoiceDataActivity"
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
