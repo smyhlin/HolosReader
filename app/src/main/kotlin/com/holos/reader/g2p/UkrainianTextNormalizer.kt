@@ -1,0 +1,505 @@
+package com.holos.reader.g2p
+
+import java.text.Normalizer
+
+/**
+ * Production Ukrainian Book / Light Novel / LitRPG Text Normalizer & Symbol Verbalizer
+ * aligned with `spaces/patriotyk/HolosTTS/app.py` prosody conventions:
+ *
+ * - Silently strips decorative scene-break dividers (`***`, `~~~`, `───`, `❖ ❖ ❖`)
+ * - Converts star ratings (`★★★`, `5★`, `★★★☆☆`) with exact Ukrainian plural grammar
+ * - Expands Ukrainian dates (`22.08.2025` -> `двадцять другого серпня дві тисячі двадцять п'ятого року`)
+ * - Expands time (`15:30`), ordinals (`1-й`, `2-га`, `3-тє`), Roman chapters (`Розділ IV`)
+ * - Expands currencies (`$`, `€`, `₴`, `£`, `¥`, `₩`), percentages (`%`), permille (`‰`), degrees (`°C`)
+ * - Expands RPG/math/status symbols (`+50`, `-20`, `±5`, `×3`, `120/150`, `10 → 25`, `≤`, `≥`, `∞`, `✓`, `✗`, `⚔`, `🛡`, `⚡`, `🔥`)
+ * - Preserves inline `+` stress notation from patriotyk's Space (`Му+дрого` -> `Му́дрого`)
+ * - Applies Space prosody rules: NFKC normalization, dash-to-colon pause (` - ` -> `: `), and terminal punctuation
+ */
+object UkrainianTextNormalizer {
+
+    private const val ACUTE = '\u0301'
+
+    private val RE_INVISIBLE = Regex("[\u00AD\u200B\u200C\u200D\uFEFF]")
+    private val RE_SCENE_BREAK = Regex("^[\\s*~=_\\-─━═❖◆◇●○■□✦✧❦❧•·▪▫★☆]+$")
+    private val RE_SPACES = Regex("[\\s\\u00A0]+")
+
+    // Inline `+` stress after a Ukrainian vowel (e.g. "Му+дрого", "Русі+")
+    private val RE_INLINE_PLUS_STRESS = Regex("([аеєиіїоуюяАЕЄИІЇОУЮЯ])\\+(?=[а-щьюяґєіїА-ЩЬЮЯҐЄІЇ'’]|$|\\s|[.,!?;:\\-—–])")
+
+    // Star ratings: e.g. ★★★☆☆, ★★★, 5★
+    private val RE_MIXED_STARS = Regex("([★⭐✪✦]+)([☆✧]+)")
+    private val RE_RUN_STARS = Regex("[★⭐✪✦]{2,}")
+    private val RE_NUM_STARS = Regex("(?<!\\d)(\\d+)\\s*[★⭐✪✦]")
+
+    // Dates DD.MM.YYYY (e.g., 22.08.2025)
+    private val RE_DATE_FULL = Regex("(?<!\\d)(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})(?!\\d)")
+
+    // Roman numerals after chapter/volume words
+    private val RE_CHAPTER_ROMAN = Regex(
+        "(?iu)(?<![\\p{L}])(розділ|глава|том|книга|частина|акт|епізод)\\s+([IVXLCDM]+)(?![\\p{L}])"
+    )
+
+    // Ukrainian hyphenated ordinals (1-й, 2-га, 3-тє, 5-го, 10-му, 7-ї)
+    private val RE_ORDINAL = Regex("(?iu)(?<!\\d)(\\d{1,2})-(й|ий|ій|а|ша|га|тя|я|є|тє|е|го|му|ї|х|ми)(?![\\p{L}])")
+
+    // Time HH:MM
+    private val RE_TIME = Regex("(?<!\\d)(\\d{1,2}):(\\d{2})(?!\\d)")
+
+    // Currencies ($100 or 100$, €50, ₴500, £20, ¥1000)
+    private val RE_CURR_PREFIX = Regex("([$€₴£¥₩₿])\\s*(\\d+(?:[.,]\\d+)?)")
+    private val RE_CURR_SUFFIX = Regex("(?<!\\d)(\\d+(?:[.,]\\d+)?)\\s*([$€₴£¥₩₿])")
+
+    // RPG stat transitions (10 -> 25, 10 → 25, Lv.5 ⇒ Lv.6)
+    private val RE_ARROW_TRANSITION = Regex("\\s*(?:->|=>|→|⇒|➜|➔|⟶)\\s*")
+
+    // HP/MP/XP fractions (120/150)
+    private val RE_FRACTION = Regex("(?<!\\d)(\\d+)\\s*/\\s*(\\d+)(?!\\d)")
+
+    // Multipliers (×3, x3, 3×, 3x)
+    private val RE_MULT_PREFIX = Regex("(?<!\\p{L})[×xX]\\s*(\\d+(?:[.,]\\d+)?)")
+    private val RE_MULT_SUFFIX = Regex("(?<!\\d)(\\d+(?:[.,]\\d+)?)\\s*[×xX](?!\\p{L})")
+
+    // Degrees (°C, °F, °), Percentages (%), Permille (‰), Superscript powers
+    private val RE_DEG_C = Regex("(?<!\\d)([+-]?\\d+(?:[.,]\\d+)?)\\s*°\\s*[CcСс]")
+    private val RE_DEG_F = Regex("(?<!\\d)([+-]?\\d+(?:[.,]\\d+)?)\\s*°\\s*[Ff]")
+    private val RE_DEG = Regex("(?<!\\d)([+-]?\\d+(?:[.,]\\d+)?)\\s*°")
+    private val RE_PERCENT = Regex("(\\d+[.,]\\d+|\\d+)\\s*%")
+    private val RE_PERMILLE = Regex("(\\d+[.,]\\d+|\\d+)\\s*‰")
+
+    // Signed deltas (+50, -20, ±5)
+    private val RE_PLUS_MINUS = Regex("±\\s*(\\d+(?:[.,]\\d+)?)")
+    private val RE_POS_DELTA = Regex("(?<=\\s|^|\\(|\\[)\\+(\\d+(?:[.,]\\d+)?)")
+    private val RE_NEG_DELTA = Regex("(?<=\\s|^|\\(|\\[)-(\\d+(?:[.,]\\d+)?)")
+
+    private val RE_DECIMAL = Regex("(?<!\\d)(\\d+)[.,](\\d+)(?!\\d)")
+    private val RE_RANGE = Regex("(?<!\\d)(\\d+)\\s*[–—-]\\s*(\\d+)(?!\\d)")
+    private val RE_HASH_NUM = Regex("#(\\d+)")
+    private val RE_INT = Regex("\\d+")
+    private val RE_LATIN_WORD = Regex("[A-Za-z]+")
+    private val RE_ALL_DASHES = Regex("[\\u1806\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015\\u207B\\u208B\\u2212\\u2E3A\\u2E3B]")
+
+    private val ABBREVIATIONS = listOf(
+        Regex("(?iu)(?<![\\p{L}])і т\\.\\s*д\\.") to "і так далі",
+        Regex("(?iu)(?<![\\p{L}])і т\\.\\s*п\\.") to "і тому подібне",
+        Regex("(?iu)(?<![\\p{L}])т\\.\\s*д\\.") to "так далі",
+        Regex("(?iu)(?<![\\p{L}])т\\.\\s*п\\.") to "тому подібне",
+        Regex("(?iu)(?<![\\p{L}])н\\.\\s*е\\.") to "нашої ери",
+        Regex("(?iu)(?<![\\p{L}])до н\\.\\s*е\\.") to "до нашої ери",
+        Regex("(?iu)(?<![\\p{L}])тис\\.(?=\\s|$|,)") to "тисяч",
+        Regex("(?iu)(?<![\\p{L}])млн(?![\\p{L}])\\.?") to "мільйонів",
+        Regex("(?iu)(?<![\\p{L}])млрд(?![\\p{L}])\\.?") to "мільярдів",
+        Regex("(?iu)(?<![\\p{L}])рр\\.(?=\\s|$|,)") to "років",
+        Regex("(?<=\\d)\\s*р\\.(?=\\s|$|,)") to " року",
+        Regex("(?<=\\d)\\s*ст\\.(?=\\s|$|,)") to " століття",
+        Regex("(?<=\\d)\\s*км(?![\\p{L}])\\.?") to " кілометрів",
+        Regex("(?<=\\d)\\s*см(?![\\p{L}])\\.?") to " сантиметрів",
+        Regex("(?<=\\d)\\s*мм(?![\\p{L}])\\.?") to " міліметрів",
+        Regex("(?<=\\d)\\s*кг(?![\\p{L}])\\.?") to " кілограмів",
+        Regex("(?<=\\d)\\s*хв(?![\\p{L}])\\.?") to " хвилин",
+        Regex("(?<=\\d)\\s*сек(?![\\p{L}])\\.?") to " секунд",
+        Regex("(?<=\\d)\\s*год(?![\\p{L}])\\.?") to " годин",
+        // Popular LitRPG / web-novel abbreviations
+        Regex("\\bHP\\b") to "ейч-пі",
+        Regex("\\bMP\\b") to "ем-пі",
+        Regex("\\bSP\\b") to "ес-пі",
+        Regex("\\bXP\\b") to "ікс-пі",
+        Regex("\\bEXP\\b") to "експа",
+        Regex("\\bDPS\\b") to "ді-пі-ес",
+        Regex("\\bAOE\\b", RegexOption.IGNORE_CASE) to "аое",
+        Regex("\\bLVL\\b|\\bLv\\.?", RegexOption.IGNORE_CASE) to "рівень ",
+        Regex("\\bNPC\\b") to "ен-пі-сі",
+        Regex("\\bRPG\\b") to "ар-пі-джі",
+        Regex("\\bVR\\b") to "ві-ар",
+        Regex("\\bAI\\b") to "ей-ай",
+    )
+
+    // Standalone Unicode/ASCII symbols frequently used in light novels & system windows
+    private val SYMBOL_WORDS = listOf(
+        "≠" to " не дорівнює ",
+        "≈" to " приблизно ",
+        "≤" to " менше або дорівнює ",
+        "≥" to " більше або дорівнює ",
+        "÷" to " поділити на ",
+        "∞" to " нескінченність ",
+        "√" to " корінь з ",
+        "²" to " в квадраті ",
+        "³" to " в кубі ",
+        "№" to " номер ",
+        "§" to " параграф ",
+        "©" to " копірайт ",
+        "™" to " торгова марка ",
+        "↑" to " вгору ",
+        "↓" to " вниз ",
+        "←" to " вліво ",
+        "⇐" to " вліво ",
+        "↔" to " між ",
+        "✓" to " виконано ",
+        "✔" to " виконано ",
+        "☑" to " виконано ",
+        "✗" to " провалено ",
+        "✘" to " провалено ",
+        "☒" to " провалено ",
+        "★" to " зірка ",
+        "⭐" to " зірка ",
+        "✪" to " зірка ",
+        "✦" to " зірка ",
+        "☆" to " порожня зірка ",
+        "✧" to " порожня зірка ",
+        "⚔" to " бій ",
+        "🛡" to " захист ",
+        "⚡" to " блискавка ",
+        "🔥" to " вогонь ",
+        "❄" to " лід ",
+        "💀" to " смерть ",
+        "❤" to " серце ",
+        "♥" to " серце ",
+        "👑" to " корона ",
+        "💎" to " діамант ",
+        "⚠" to " увага ",
+        "&" to " і ",
+        "=" to " дорівнює ",
+        "<" to " менше ",
+        ">" to " більше ",
+        "@" to " собачка ",
+        // Silent decorative symbols (music notes, bullets, brackets, quotes)
+        "♪" to " ", "♫" to " ", "🎵" to " ", "🎶" to " ",
+        "•" to " ", "▪" to " ", "❖" to " ", "◆" to " ", "◇" to " ",
+        "«" to " ", "»" to " ", "„" to " ", "“" to " ", "”" to " ", "\"" to " ",
+        "[" to " ", "]" to " ", "{" to " ", "}" to " ", "【" to " ", "】" to " ",
+        "「" to " ", "」" to " ", "『" to " ", "』" to " ", "《" to " ", "》" to " ",
+    )
+
+    fun normalize(raw: String, ensureTerminalPunctuation: Boolean = false): String {
+        var text = RE_INVISIBLE.replace(raw, "").trim()
+        if (text.isEmpty() || RE_SCENE_BREAK.matches(text)) return ""
+
+        // 1. Preserve patriotyk Space inline `+` stress (e.g. "Му+дрого" -> "Му́дрого") BEFORE math `+`
+        text = RE_INLINE_PLUS_STRESS.replace(text, "$1$ACUTE")
+
+        // 2. NFKC normalization (matches spaces/patriotyk/HolosTTS/app.py), preserving combining acute
+        text = Normalizer.normalize(text, Normalizer.Form.NFKC)
+        text = text.replace("...", "…")
+
+        // 3. Star ratings & ranks (★★★☆☆, ★★★, 5★)
+        text = RE_MIXED_STARS.replace(text) { m ->
+            val filled = m.groupValues[1].length.toLong()
+            val total = (m.groupValues[1].length + m.groupValues[2].length).toLong()
+            val totalGen = when (total.toInt()) {
+                1 -> "однієї"; 2 -> "двох"; 3 -> "трьох"; 4 -> "чотирьох"; 5 -> "п'яти"
+                6 -> "шести"; 7 -> "семи"; 8 -> "восьми"; 9 -> "дев'яти"; 10 -> "десяти"
+                else -> numberToWords(total)
+            }
+            " ${numberToWords(filled, feminine = true)} з $totalGen ${pluralForm(total, "зірки", "зірок", "зірок")} "
+        }
+        text = RE_NUM_STARS.replace(text) { m ->
+            val n = m.groupValues[1].toLongOrNull() ?: 1L
+            " ${numberToWords(n, feminine = true)} ${pluralForm(n, "зірка", "зірки", "зірок")} "
+        }
+        text = RE_RUN_STARS.replace(text) { m ->
+            val n = m.value.length.toLong()
+            " ${numberToWords(n, feminine = true)} ${pluralForm(n, "зірка", "зірки", "зірок")} "
+        }
+
+        // 4. Full dates DD.MM.YYYY (e.g. 22.08.2025 -> двадцять другого серпня дві тисячі двадцять п'ятого року)
+        text = RE_DATE_FULL.replace(text) { m ->
+            val day = m.groupValues[1].toIntOrNull()
+            val month = m.groupValues[2].toIntOrNull()
+            val year = m.groupValues[3].toIntOrNull()
+            if (day != null && month != null && year != null && day in 1..31 && month in 1..12) {
+                "${dayGenitive(day)} ${MONTHS_GEN[month - 1]} ${yearGenitive(year)} року"
+            } else m.value
+        }
+
+        // 5. Roman numerals in chapter/volume headings
+        text = RE_CHAPTER_ROMAN.replace(text) { m ->
+            val num = parseRoman(m.groupValues[2].uppercase())
+            if (num != null && num in 1..3999) "${m.groupValues[1]} $num" else m.value
+        }
+
+        // 6. Ukrainian ordinals (1-й, 2-га, 3-тє, 5-го)
+        text = RE_ORDINAL.replace(text) { m ->
+            val n = m.groupValues[1].toIntOrNull() ?: return@replace m.value
+            val suf = m.groupValues[2].lowercase()
+            ordinalToWords(n, suf) ?: "${numberToWords(n.toLong())}-$suf"
+        }
+
+        // 7. Time HH:MM
+        text = RE_TIME.replace(text) { m ->
+            val h = m.groupValues[1].toLongOrNull()
+            val min = m.groupValues[2].toLongOrNull()
+            if (h != null && min != null && h in 0..23 && min in 0..59) {
+                val mWord = if (min == 0L) "годин" else numberToWords(min)
+                "${numberToWords(h)} $mWord"
+            } else m.value
+        }
+
+        // 8. Currencies ($100, 100₴, €50)
+        text = RE_CURR_PREFIX.replace(text) { m -> currencyToWords(m.groupValues[2], m.groupValues[1]) }
+        text = RE_CURR_SUFFIX.replace(text) { m -> currencyToWords(m.groupValues[1], m.groupValues[2]) }
+
+        // 9. Degrees, percentages, permille
+        text = RE_DEG_C.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Цельсія" }
+        text = RE_DEG_F.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Фаренгейта" }
+        text = RE_DEG.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів" }
+        text = RE_PERCENT.replace(text) { m -> "${numOrDecimalToWords(m.groupValues[1])} відсотків" }
+        text = RE_PERMILLE.replace(text) { m -> "${numOrDecimalToWords(m.groupValues[1])} проміле" }
+
+        // 10. RPG arrows, HP/MP fractions, multipliers, signed deltas
+        text = RE_ARROW_TRANSITION.replace(text, " переходить у ")
+        text = RE_FRACTION.replace(text) { m ->
+            val a = m.groupValues[1].toLongOrNull() ?: 0L
+            val b = m.groupValues[2].toLongOrNull() ?: 0L
+            "${numberToWords(a)} на ${numberToWords(b)}"
+        }
+        text = RE_MULT_PREFIX.replace(text) { m -> "на ${numOrDecimalToWords(m.groupValues[1])}" }
+        text = RE_MULT_SUFFIX.replace(text) { m -> "${numOrDecimalToWords(m.groupValues[1])} ікс" }
+        text = RE_PLUS_MINUS.replace(text) { m -> "плюс-мінус ${numOrDecimalToWords(m.groupValues[1])}" }
+        text = RE_POS_DELTA.replace(text) { m -> "плюс ${numOrDecimalToWords(m.groupValues[1])}" }
+        text = RE_NEG_DELTA.replace(text) { m -> "мінус ${numOrDecimalToWords(m.groupValues[1])}" }
+
+        // 11. Abbreviations (Ukrainian + LitRPG)
+        for ((re, repl) in ABBREVIATIONS) {
+            text = re.replace(text, repl)
+        }
+
+        // 12. Hash numbers (#12 -> номер дванадцять), ranges, decimals, remaining integers
+        text = RE_HASH_NUM.replace(text) { m -> "номер ${numberToWords(m.groupValues[1].toLongOrNull() ?: 0L)}" }
+        text = RE_RANGE.replace(text) { m ->
+            val a = m.groupValues[1].toLongOrNull()
+            val b = m.groupValues[2].toLongOrNull()
+            if (a != null && b != null) "${numberToWords(a)} — ${numberToWords(b)}" else m.value
+        }
+        text = RE_DECIMAL.replace(text) { m -> decimalToWords("${m.groupValues[1]},${m.groupValues[2]}") }
+        text = RE_INT.replace(text) { m ->
+            val rawNum = m.value
+            if (rawNum.length > 12) rawNum.map { digitToWord(it) }.joinToString(" ")
+            else numberToWords(rawNum.toLongOrNull() ?: 0L)
+        }
+
+        // 13. Popular novel / status symbols -> Ukrainian words
+        for ((sym, word) in SYMBOL_WORDS) {
+            if (sym in text) text = text.replace(sym, word)
+        }
+        text = text.replace('*', ' ').replace('#', ' ')
+
+        // 14. Transliterate remaining Latin words
+        text = RE_LATIN_WORD.replace(text) { m -> transliterateLatin(m.value) }
+
+        // 15. Upstream patriotyk Space prosody rules: unify dashes & convert ` - ` to `: `
+        text = RE_ALL_DASHES.replace(text, "-")
+        text = RE_SPACES.replace(text, " ").trim()
+        text = text.replace(" - ", ": ")
+        text = text.replace(" ,", ",").replace(" .", ".").trim()
+
+        if (ensureTerminalPunctuation && text.isNotEmpty() && text.last() !in ".?!:-…") {
+            text += "."
+        }
+        return text
+    }
+
+    private fun signedNumToWords(s: String): String = when {
+        s.startsWith("+") -> "плюс ${numOrDecimalToWords(s.substring(1))}"
+        s.startsWith("-") -> "мінус ${numOrDecimalToWords(s.substring(1))}"
+        else -> numOrDecimalToWords(s)
+    }
+
+    private fun numOrDecimalToWords(s: String): String =
+        if ('.' in s || ',' in s) decimalToWords(s) else numberToWords(s.toLongOrNull() ?: 0L)
+
+    private fun currencyToWords(numStr: String, sym: String): String {
+        val isDec = '.' in numStr || ',' in numStr
+        val n = if (isDec) 5L else (numStr.toLongOrNull() ?: 0L)
+        val fem = sym == "₴"
+        val spokenNum = if (isDec) decimalToWords(numStr) else numberToWords(n, feminine = fem)
+        val unit = when (sym) {
+            "$" -> pluralForm(n, "долар", "долари", "доларів")
+            "€" -> "євро"
+            "₴" -> pluralForm(n, "гривня", "гривні", "гривень")
+            "£" -> pluralForm(n, "фунт", "фунти", "фунтів")
+            "¥" -> pluralForm(n, "єна", "єни", "єн")
+            "₩" -> pluralForm(n, "вона", "вони", "вон")
+            "₿" -> pluralForm(n, "біткоїн", "біткоїни", "біткоїнів")
+            else -> ""
+        }
+        return "$spokenNum $unit"
+    }
+
+    private val MONTHS_GEN = arrayOf(
+        "січня", "лютого", "березня", "квітня", "травня", "червня",
+        "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"
+    )
+
+    private val DAYS_GEN = arrayOf(
+        "", "першого", "другого", "третього", "четвертого", "п'ятого",
+        "шостого", "сьомого", "восьмого", "дев'ятого", "десятого",
+        "одинадцятого", "дванадцятого", "тринадцятого", "чотирнадцятого", "п'ятнадцятого",
+        "шістнадцятого", "сімнадцятого", "вісімнадцятого", "дев'ятнадцятого", "двадцятого",
+        "двадцять першого", "двадцять другого", "двадцять третього", "двадцять четвертого", "двадцять п'ятого",
+        "двадцять шостого", "двадцять сьомого", "двадцять восьмого", "двадцять дев'ятого", "тридцятого",
+        "тридцять першого"
+    )
+
+    private fun dayGenitive(day: Int): String = DAYS_GEN.getOrElse(day) { numberToWords(day.toLong()) }
+
+    private fun yearGenitive(year: Int): String {
+        val rem100 = year % 100
+        val head = year - rem100
+        val headWords = if (head > 0) numberToWords(head.toLong()) else ""
+        val tail = when {
+            rem100 == 0 -> ""
+            rem100 in 1..31 -> DAYS_GEN[rem100]
+            else -> {
+                val t = (rem100 / 10) * 10
+                val u = rem100 % 10
+                if (u == 0) "${numberToWords(t.toLong())}го"
+                else "${numberToWords(t.toLong())} ${DAYS_GEN[u]}"
+            }
+        }
+        return listOf(headWords, tail).filter { it.isNotEmpty() }.joinToString(" ")
+    }
+
+    private fun ordinalToWords(n: Int, suf: String): String? {
+        val stems = mapOf(
+            1 to "перш", 2 to "друг", 3 to "трет", 4 to "четверт", 5 to "п'ят",
+            6 to "шост", 7 to "сьом", 8 to "восьм", 9 to "дев'ят", 10 to "десят",
+            11 to "одинадцят", 12 to "дванадцят", 13 to "тринадцят", 14 to "чотирнадцят",
+            15 to "п'ятнадцят", 16 to "шістнадцят", 17 to "сімнадцят", 18 to "вісімнадцят",
+            19 to "дев'ятнадцят", 20 to "двадцят"
+        )
+        val stem = stems[n] ?: return null
+        val ending = when (suf) {
+            "й", "ий", "ій" -> if (n == 3) "ій" else "ий"
+            "а", "ша", "га", "тя", "я" -> if (n == 3) "я" else "а"
+            "є", "тє", "е" -> if (n == 3) "є" else "е"
+            "го" -> if (n == 3) "ього" else "ого"
+            "му" -> if (n == 3) "ьому" else "ому"
+            "ї" -> if (n == 3) "ьої" else "ої"
+            "х" -> if (n == 3) "іх" else "их"
+            "ми" -> if (n == 3) "іми" else "ими"
+            else -> return null
+        }
+        return stem + ending
+    }
+
+    private fun parseRoman(s: String): Int? {
+        val map = mapOf('I' to 1, 'V' to 5, 'X' to 10, 'L' to 50, 'C' to 100, 'D' to 500, 'M' to 1000)
+        var total = 0; var prev = 0
+        for (i in s.length - 1 downTo 0) {
+            val v = map[s[i]] ?: return null
+            if (v < prev) total -= v else total += v
+            prev = v
+        }
+        return if (total > 0) total else null
+    }
+
+    private fun decimalToWords(numStr: String): String {
+        val parts = numStr.split('.', ',')
+        if (parts.size != 2) return numStr
+        val whole = parts[0].toLongOrNull() ?: 0L
+        val frac = parts[1].toLongOrNull() ?: 0L
+        val wholeWords = numberToWords(whole, feminine = true)
+        val fracWords = numberToWords(frac, feminine = true)
+        val wholeLabel = if (whole % 10 == 1L && whole % 100 != 11L) "ціла" else "цілих"
+        val fracUnit = when (parts[1].length) {
+            1 -> if (frac % 10 == 1L && frac % 100 != 11L) "десята" else "десятих"
+            2 -> if (frac % 10 == 1L && frac % 100 != 11L) "сота" else "сотих"
+            else -> if (frac % 10 == 1L && frac % 100 != 11L) "тисячна" else "тисячних"
+        }
+        return "$wholeWords $wholeLabel $fracWords $fracUnit"
+    }
+
+    private fun digitToWord(ch: Char): String = when (ch) {
+        '0' -> "нуль"; '1' -> "один"; '2' -> "два"; '3' -> "три"; '4' -> "чотири"
+        '5' -> "п'ять"; '6' -> "шість"; '7' -> "сім"; '8' -> "вісім"; '9' -> "дев'ять"
+        else -> ""
+    }
+
+    fun numberToWords(n: Long, feminine: Boolean = false): String {
+        if (n == 0L) return "нуль"
+        if (n < 0L) return "мінус ${numberToWords(-n, feminine)}"
+        val parts = mutableListOf<String>()
+        var rem = n
+        val billions = rem / 1_000_000_000L
+        if (billions > 0) {
+            parts.add(tripletToWords(billions.toInt(), false))
+            parts.add(pluralForm(billions, "мільярд", "мільярди", "мільярдів"))
+            rem %= 1_000_000_000L
+        }
+        val millions = rem / 1_000_000L
+        if (millions > 0) {
+            parts.add(tripletToWords(millions.toInt(), false))
+            parts.add(pluralForm(millions, "мільйон", "мільйони", "мільйонів"))
+            rem %= 1_000_000L
+        }
+        val thousands = rem / 1_000L
+        if (thousands > 0) {
+            parts.add(tripletToWords(thousands.toInt(), true))
+            parts.add(pluralForm(thousands, "тисяча", "тисячі", "тисяч"))
+            rem %= 1_000L
+        }
+        if (rem > 0) parts.add(tripletToWords(rem.toInt(), feminine))
+        return parts.joinToString(" ")
+    }
+
+    private fun tripletToWords(n: Int, feminine: Boolean): String {
+        val hundreds = arrayOf("", "сто", "двісті", "триста", "чотириста", "п'ятсот", "шістсот", "сімсот", "вісімсот", "дев'ятсот")
+        val tens = arrayOf("", "", "двадцять", "тридцять", "сорок", "п'ятдесят", "шістдесят", "сімдесят", "вісімдесят", "дев'яносто")
+        val teens = arrayOf("десять", "одинадцять", "дванадцять", "тринадцять", "чотирнадцять", "п'ятнадцять", "шістнадцять", "сімнадцять", "вісімнадцять", "дев'ятнадцять")
+        val unitsM = arrayOf("", "один", "два", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять")
+        val unitsF = arrayOf("", "одна", "дві", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять")
+        val out = mutableListOf<String>()
+        val h = n / 100; val t = (n % 100) / 10; val u = n % 10
+        if (h > 0) out.add(hundreds[h])
+        if (t == 1) out.add(teens[u]) else {
+            if (t >= 2) out.add(tens[t])
+            if (u > 0) out.add(if (feminine) unitsF[u] else unitsM[u])
+        }
+        return out.joinToString(" ")
+    }
+
+    private fun pluralForm(n: Long, one: String, few: String, many: String): String {
+        val mod100 = (n % 100).toInt(); val mod10 = (n % 10).toInt()
+        return when {
+            mod100 in 11..19 -> many
+            mod10 == 1 -> one
+            mod10 in 2..4 -> few
+            else -> many
+        }
+    }
+
+    private fun transliterateLatin(word: String): String {
+        val lower = word.lowercase()
+        val sb = StringBuilder(lower.length * 2)
+        var i = 0
+        while (i < lower.length) {
+            val rest = lower.substring(i)
+            when {
+                rest.startsWith("shch") -> { sb.append("щ"); i += 4 }
+                rest.startsWith("tion") -> { sb.append("шн"); i += 4 }
+                rest.startsWith("sh") -> { sb.append("ш"); i += 2 }
+                rest.startsWith("ch") -> { sb.append("ч"); i += 2 }
+                rest.startsWith("th") -> { sb.append("з"); i += 2 }
+                rest.startsWith("ph") -> { sb.append("ф"); i += 2 }
+                rest.startsWith("ck") -> { sb.append("к"); i += 2 }
+                rest.startsWith("qu") -> { sb.append("кв"); i += 2 }
+                rest.startsWith("ee") || rest.startsWith("ea") -> { sb.append("і"); i += 2 }
+                rest.startsWith("oo") -> { sb.append("у"); i += 2 }
+                else -> {
+                    sb.append(
+                        when (lower[i]) {
+                            'a' -> "а"; 'b' -> "б"; 'c' -> "к"; 'd' -> "д"; 'e' -> "е"
+                            'f' -> "ф"; 'g' -> "ґ"; 'h' -> "х"; 'i' -> "і"; 'j' -> "дж"
+                            'k' -> "к"; 'l' -> "л"; 'm' -> "м"; 'n' -> "н"; 'o' -> "о"
+                            'p' -> "п"; 'q' -> "к"; 'r' -> "р"; 's' -> "с"; 't' -> "т"
+                            'u' -> "у"; 'v' -> "в"; 'w' -> "в"; 'x' -> "кс"; 'y' -> "і"
+                            'z' -> "з"
+                            else -> ""
+                        }
+                    )
+                    i++
+                }
+            }
+        }
+        return sb.toString()
+    }
+}
