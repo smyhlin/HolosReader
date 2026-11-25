@@ -208,10 +208,21 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         }
 
         val fallbackTitle = displayName?.removeSuffix(".epub")?.takeIf { it.isNotBlank() }
+        val resolvedTitle = meta.title.ifBlank { fallbackTitle ?: "Без назви" }
+
+        // Deduplicate: if a book with identical title, author, and chapter count already exists
+        // (e.g. opened again from Google Drive), clean up the temp copy and return the existing record.
+        val existing = findDuplicateBook(resolvedTitle, meta.author, meta.spine.size)
+        if (existing != null) {
+            destFile.delete()
+            coverName?.let { File(coversDir, it).delete() }
+            return existing
+        }
+
         val record = BookRecord(
             id = id,
             fileName = safeName,
-            title = meta.title.ifBlank { fallbackTitle ?: "Без назви" },
+            title = resolvedTitle,
             author = meta.author,
             description = meta.description.take(280),
             language = meta.language,
@@ -455,7 +466,32 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         return maxOf(activityPages, chapters)
     }
 
+    fun findDuplicateBook(title: String, author: String, chapterCount: Int): BookRecord? {
+        readableDatabase.rawQuery(
+            "SELECT id FROM books WHERE LOWER(title)=LOWER(?) AND LOWER(author)=LOWER(?) AND chapter_count=? LIMIT 1",
+            arrayOf(title.trim(), author.trim(), chapterCount.toString())
+        ).use { c ->
+            if (c.moveToFirst()) return getBook(c.getString(0))
+        }
+        return null
+    }
+
+    fun findBookmarkId(bookId: String, chapterIndex: Int, blockIndex: Int): Long? {
+        readableDatabase.rawQuery(
+            "SELECT id FROM bookmarks WHERE book_id=? AND chapter_idx=? AND ABS(block_idx - ?) <= 3 ORDER BY created_at DESC LIMIT 1",
+            arrayOf(bookId, chapterIndex.toString(), blockIndex.toString())
+        ).use { c ->
+            if (c.moveToFirst()) return c.getLong(0)
+        }
+        return null
+    }
+
+    fun deleteBookmark(bookmarkId: Long) {
+        writableDatabase.delete("bookmarks", "id=?", arrayOf(bookmarkId.toString()))
+    }
+
     fun addBookmark(bookId: String, chapterIndex: Int, blockIndex: Int, excerpt: String) {
+        if (findBookmarkId(bookId, chapterIndex, blockIndex) != null) return
         writableDatabase.insert("bookmarks", null, ContentValues().apply {
             put("book_id", bookId)
             put("chapter_idx", chapterIndex)

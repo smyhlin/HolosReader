@@ -105,6 +105,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var frameRoot: FrameLayout
     private lateinit var readerCanvas: LinearLayout
     private lateinit var topOverlayBar: LinearLayout
+    private lateinit var topBookmarkBtn: ImageView
     private lateinit var subtleHeaderTv: TextView
     private lateinit var blocksListView: ListView
     private lateinit var blocksAdapter: BlocksAdapter
@@ -215,7 +216,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(d(12), d(6), d(12), d(6))
-            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_bookmark, padDp = 8) { addCurrentBookmark() }, LinearLayout.LayoutParams(0, d(40), 1f))
+            topBookmarkBtn = UiTheme.iconView(this@ReaderActivity, R.drawable.ic_bookmark, padDp = 8, tagName = "bm_icon") { toggleCurrentBookmark() }
+            addView(topBookmarkBtn, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(toolbarIcon("А́") { startActivity(Intent(this@ReaderActivity, StressEditorActivity::class.java)) }, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_palette, padDp = 8) { toggleColorSwatchBar() }, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_menu, padDp = 8) { showReaderMenu() }, LinearLayout.LayoutParams(0, d(40), 1f))
@@ -301,6 +303,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 }, REQ_IMPORT_VOICE)
             }
             override fun onSpeedCycle() = showSpeedDialog()
+            override fun onSpeedChanged(speed: Float) {
+                prefs.speechSpeed = speed
+                if (controller.isPlaying) startPlaybackAt(activeBlockIndex.coerceAtLeast(0))
+            }
             override fun onSleepTimerClick() = showSleepDialog()
             override fun onFontDelta(deltaSp: Float) {
                 prefs.fontSizeSp = prefs.fontSizeSp + deltaSp
@@ -449,6 +455,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
 
+        updateBookmarkIcon()
         audioSheet.applyPalette()
         blocksAdapter.notifyDataSetChanged()
     }
@@ -481,6 +488,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     blocksListView.setSelection(activeBlockIndex)
                 }
                 saveProgress(activeBlockIndex)
+                updateBookmarkIcon()
                 if (audioSheet.isVisible()) {
                     audioSheet.updateState(activeBlockIndex, controller.isPlaying, controller.isPaused)
                 }
@@ -582,6 +590,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 audioSheet.updateState(blockIndex, controller.isPlaying, controller.isPaused)
             }
             saveProgress(blockIndex)
+            updateBookmarkIcon()
         }
     }
 
@@ -663,16 +672,12 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                         ssb.setSpan(ForegroundColorSpan(hlColor), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     }
                     else -> {
-                        val alphaByte = (52 + (158 * activeWordAlpha)).toInt().coerceIn(40, 218)
+                        // Gentle pastel highlighter (~10% -> ~32% alpha) preserving natural text color & Bionic fixation
+                        val alphaByte = (24 + (58 * activeWordAlpha)).toInt().coerceIn(20, 84)
                         val wordBg = (alphaByte shl 24) or (hlColor and 0x00FFFFFF)
                         ssb.setSpan(BackgroundColorSpan(wordBg), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                        if (activeWordAlpha >= 0.35f) {
-                            val lum = (Color.red(hlColor) * 299 + Color.green(hlColor) * 587 + Color.blue(hlColor) * 114) / 1000
-                            ssb.setSpan(ForegroundColorSpan(if (lum > 175) Color.BLACK else Color.WHITE), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                        }
                     }
                 }
-                ssb.setSpan(StyleSpan(Typeface.BOLD), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
         }
         return ssb
@@ -758,12 +763,35 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         dialog.show()
     }
 
-    private fun addCurrentBookmark() {
+    private fun toggleCurrentBookmark() {
         val b = book ?: return
         val idx = activeBlockIndex.coerceIn(0, (currentBlocks.size - 1).coerceAtLeast(0))
-        val excerpt = currentBlocks.getOrNull(idx)?.text?.take(80) ?: chapterTitle
-        db.addBookmark(b.id, chapterIndex, idx, excerpt)
-        Toast.makeText(this, "Закладку додано ($chapterTitle)", Toast.LENGTH_SHORT).show()
+        val existingId = db.findBookmarkId(b.id, chapterIndex, idx)
+        if (existingId != null) {
+            db.deleteBookmark(existingId)
+            updateBookmarkIcon()
+            Toast.makeText(this, "Закладку видалено", Toast.LENGTH_SHORT).show()
+        } else {
+            val excerpt = currentBlocks.getOrNull(idx)?.text?.take(80) ?: chapterTitle
+            db.addBookmark(b.id, chapterIndex, idx, excerpt)
+            updateBookmarkIcon()
+            Toast.makeText(this, "Закладку додано ($chapterTitle)", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun updateBookmarkIcon() {
+        if (!::topBookmarkBtn.isInitialized) return
+        val b = book ?: return
+        val idx = activeBlockIndex.coerceIn(0, (currentBlocks.size - 1).coerceAtLeast(0))
+        val isBookmarked = db.findBookmarkId(b.id, chapterIndex, idx) != null
+        val p = UiTheme.palette(prefs.theme)
+        if (isBookmarked) {
+            topBookmarkBtn.setImageResource(R.drawable.ic_bookmark_filled)
+            topBookmarkBtn.setColorFilter(0xFFE53935.toInt())
+        } else {
+            topBookmarkBtn.setImageResource(R.drawable.ic_bookmark)
+            topBookmarkBtn.setColorFilter(p.primaryText)
+        }
     }
 
     private fun showBookmarksDialog() {
@@ -1075,50 +1103,49 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     private fun showReaderMenu() {
-        val darkOn = prefs.theme == ReaderTheme.DARK
-        val adaptiveOn = prefs.adaptiveVoicesEnabled
-        val opts = arrayOf(
-            "Налаштування читання (шрифт, макет, тема, TTS)",
-            "${if (adaptiveOn) "✓ " else ""}Адаптивна озвучка (Оповідач / Система / Діалоги)",
-            "${if (prefs.bionicReading) "✓ " else ""}Bionic Reading (жирний початок слів)",
-            "${if (autoScrolling) "✓ " else ""}Автопрокрутка (Auto Scroll)",
-            "${if (darkOn) "✓ " else ""}Темна тема (Dark Mode)",
-            "Словник наголосів (stress_user.txt)",
-            "Статистика читання",
+        val darkOn = UiTheme.palette(prefs.theme).isDark
+        UiTheme.showIconMenuDialog(
+            this,
+            prefs.theme,
+            "Меню читання",
+            listOf(
+                IconMenuItem(R.drawable.ic_settings, "Налаштування читання", "Шрифт, макет, тема, поведінка, TTS") {
+                    startActivity(Intent(this, ReaderSettingsActivity::class.java))
+                },
+                IconMenuItem(R.drawable.ic_headphones, "Адаптивна озвучка", "Оповідач · [СИСТЕМА] · Діалоги (—)", checked = prefs.adaptiveVoicesEnabled) {
+                    miniPlayerPill.visibility = View.VISIBLE
+                    audioSheet.showVoiceSettings(
+                        bookTitle = book?.title.orEmpty(),
+                        chapterTitle = chapterTitle,
+                        coverBmp = coverBitmap,
+                        activeIdx = activeBlockIndex.coerceAtLeast(0),
+                        isPlaying = controller.isPlaying,
+                        isPaused = controller.isPaused,
+                    )
+                },
+                IconMenuItem(R.drawable.ic_font, "Bionic Reading", "Жирний початок кожного слова", checked = prefs.bionicReading) {
+                    prefs.bionicReading = !prefs.bionicReading
+                    applyTheme()
+                },
+                IconMenuItem(R.drawable.ic_touch, "Автопрокрутка", "Плавний скрол тексту", checked = autoScrolling) {
+                    toggleAutoScroll()
+                },
+                IconMenuItem(R.drawable.ic_palette, "Темна тема", "Швидке перемикання Dark / Light", checked = darkOn) {
+                    prefs.theme = if (darkOn) ReaderTheme.LIGHT else ReaderTheme.DARK
+                    applyTheme()
+                },
+                IconMenuItem(R.drawable.ic_label, "Словник наголосів", "Редагувати stress_user.txt") {
+                    startActivity(Intent(this, StressEditorActivity::class.java))
+                },
+                IconMenuItem(R.drawable.ic_stats, "Статистика читання", "Графіки часу, активність та серії") {
+                    saveProgress()
+                    startActivity(Intent(this, StatisticsActivity::class.java))
+                },
+                IconMenuItem(R.drawable.ic_info, "Про програму (About)", "GitHub, HolosTTS, словники та джерела") {
+                    UiTheme.showAboutDialog(this, prefs.theme)
+                },
+            ),
         )
-        UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Меню читання")
-            .setItems(opts) { _, which ->
-                when (which) {
-                    0 -> startActivity(Intent(this, ReaderSettingsActivity::class.java))
-                    1 -> {
-                        miniPlayerPill.visibility = View.VISIBLE
-                        audioSheet.showVoiceSettings(
-                            bookTitle = book?.title.orEmpty(),
-                            chapterTitle = chapterTitle,
-                            coverBmp = coverBitmap,
-                            activeIdx = activeBlockIndex.coerceAtLeast(0),
-                            isPlaying = controller.isPlaying,
-                            isPaused = controller.isPaused,
-                        )
-                    }
-                    2 -> {
-                        prefs.bionicReading = !prefs.bionicReading
-                        applyTheme()
-                    }
-                    3 -> toggleAutoScroll()
-                    4 -> {
-                        prefs.theme = if (darkOn) ReaderTheme.LIGHT else ReaderTheme.DARK
-                        applyTheme()
-                    }
-                    5 -> startActivity(Intent(this, StressEditorActivity::class.java))
-                    6 -> {
-                        saveProgress()
-                        startActivity(Intent(this, StatisticsActivity::class.java))
-                    }
-                }
-            }
-            .showThemed()
     }
 
     private fun toggleAutoScroll() {

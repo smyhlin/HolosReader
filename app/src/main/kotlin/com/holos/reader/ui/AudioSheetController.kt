@@ -2,9 +2,15 @@ package com.holos.reader.ui
 
 import android.app.Activity
 import android.content.res.ColorStateList
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Typeface
+import android.view.MotionEvent
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
@@ -63,6 +69,7 @@ class AudioSheetController(
         fun onVoiceSelected(voice: String)
         fun onImportCustomVoice()
         fun onSpeedCycle()
+        fun onSpeedChanged(speed: Float)
         fun onSleepTimerClick()
         fun onFontDelta(deltaSp: Float)
         fun onDismiss()
@@ -85,6 +92,15 @@ class AudioSheetController(
     private val sheetContainer: LinearLayout
     private val playerPage: LinearLayout
     private val voicePage: LinearLayout
+    private val speedPage: LinearLayout
+    private var isExpanded: Boolean = false
+    private lateinit var lyricActiveScroll: ScrollView
+    private lateinit var voiceListScroll: ScrollView
+    private lateinit var speedBackBtn: ImageView
+    private lateinit var speedHeaderTv: TextView
+    private lateinit var speedBigValTv: TextView
+    private lateinit var speedRuler: SpeedRulerView
+    private val speedPresetBtns = ArrayList<Pair<Float, TextView>>()
 
     // Header
     private lateinit var coverImg: ImageView
@@ -151,14 +167,20 @@ class AudioSheetController(
 
         playerPage = buildPlayerPage()
         voicePage = buildVoicePage().apply { visibility = View.GONE }
+        speedPage = buildSpeedPage().apply { visibility = View.GONE }
 
         val handle = View(activity).apply { tag = "handle" }
-        sheetContainer.addView(handle, LinearLayout.LayoutParams(d(38), d(4)).apply {
+        val handleZone = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            bottomMargin = d(14)
-        })
+            setPadding(d(40), d(4), d(40), d(14))
+            addView(handle, LinearLayout.LayoutParams(d(42), d(4)))
+        }
+        attachSheetDragGesture(handleZone)
+        sheetContainer.addView(handleZone, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         sheetContainer.addView(playerPage, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         sheetContainer.addView(voicePage, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        sheetContainer.addView(speedPage, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         overlayRoot.addView(
             sheetContainer,
@@ -175,6 +197,10 @@ class AudioSheetController(
         if (coverBmp != null) coverImg.setImageBitmap(coverBmp)
         playerPage.visibility = View.VISIBLE
         voicePage.visibility = View.GONE
+        speedPage.visibility = View.GONE
+        sheetContainer.translationY = 0f
+        setExpanded(false)
+        applyLyricFontSize()
         updateState(activeIdx, isPlaying, isPaused)
         overlayRoot.visibility = View.VISIBLE
     }
@@ -190,8 +216,84 @@ class AudioSheetController(
 
     fun hide() {
         stopPreview()
+        isExpanded = false
+        sheetContainer.translationY = 0f
         overlayRoot.visibility = View.GONE
         callbacks.onDismiss()
+    }
+
+    private fun attachSheetDragGesture(dragHandle: View) {
+        var startY = 0f
+        dragHandle.setOnTouchListener { _, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startY = ev.rawY
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dy = ev.rawY - startY
+                    if (dy > 0f) {
+                        sheetContainer.translationY = dy
+                    } else if (!isExpanded) {
+                        sheetContainer.translationY = (dy * 0.25f).coerceAtLeast(-d(36).toFloat())
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    val dy = ev.rawY - startY
+                    when {
+                        dy < -d(55) && !isExpanded -> {
+                            sheetContainer.animate().translationY(0f).setDuration(160L).start()
+                            setExpanded(true)
+                        }
+                        dy > d(85) && isExpanded -> {
+                            sheetContainer.animate().translationY(0f).setDuration(160L).start()
+                            setExpanded(false)
+                        }
+                        dy > d(85) && !isExpanded -> {
+                            sheetContainer.animate()
+                                .translationY(activity.resources.displayMetrics.heightPixels.toFloat())
+                                .setDuration(180L)
+                                .withEndAction { hide() }
+                                .start()
+                        }
+                        else -> {
+                            sheetContainer.animate().translationY(0f).setDuration(150L).start()
+                        }
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun setExpanded(expanded: Boolean) {
+        isExpanded = expanded
+        val lp = sheetContainer.layoutParams as? FrameLayout.LayoutParams
+            ?: FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM)
+        lp.height = if (expanded) MATCH_PARENT else WRAP_CONTENT
+        sheetContainer.layoutParams = lp
+
+        if (::lyricActiveScroll.isInitialized) {
+            val slp = lyricActiveScroll.layoutParams as LinearLayout.LayoutParams
+            slp.height = if (expanded) d(310) else d(145)
+            lyricActiveScroll.layoutParams = slp
+        }
+        if (::voiceListScroll.isInitialized) {
+            val vlp = voiceListScroll.layoutParams as LinearLayout.LayoutParams
+            vlp.height = if (expanded) d(480) else d(300)
+            voiceListScroll.layoutParams = vlp
+        }
+    }
+
+    private fun applyLyricFontSize() {
+        val base = prefs.fontSizeSp.coerceIn(14f, 26f)
+        lyricActiveCard.textSize = base
+        lyricPrev1.textSize = (base - 2f).coerceAtLeast(12f)
+        lyricNext1.textSize = (base - 2f).coerceAtLeast(12f)
+        lyricPrev2.textSize = (base - 3.5f).coerceAtLeast(11f)
+        lyricNext2.textSize = (base - 3.5f).coerceAtLeast(11f)
     }
 
     fun destroy() {
@@ -213,7 +315,7 @@ class AudioSheetController(
         lyricNext2.text = blocks.getOrNull(idx + 2)?.text.orEmpty()
 
         playCircleBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
-        speedValTv.text = String.format(Locale.US, "%.1f×", prefs.speechSpeed)
+        speedValTv.text = String.format(Locale.US, "%.2f×", prefs.speechSpeed).replace(".00×", ".0×")
         voiceValTv.text = HolosVoiceCatalog.displayName(prefs.selectedVoice).take(16)
         voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна · 3 ролі" else "Диктор"
 
@@ -257,10 +359,8 @@ class AudioSheetController(
                     ssb.setSpan(ForegroundColorSpan(hlColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
                 else -> {
-                    val pillColor = (0xCC shl 24) or (hlColor and 0x00FFFFFF)
+                    val pillColor = (0x4C shl 24) or (hlColor and 0x00FFFFFF)
                     ssb.setSpan(BackgroundColorSpan(pillColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    val lum = (Color.red(hlColor) * 299 + Color.green(hlColor) * 587 + Color.blue(hlColor) * 114) / 1000
-                    ssb.setSpan(ForegroundColorSpan(if (lum > 175) Color.BLACK else Color.WHITE), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                 }
             }
         }
@@ -280,7 +380,9 @@ class AudioSheetController(
         lyricPrev2.setTextColor(p.mutedText)
         lyricPrev1.setTextColor(p.secondaryText)
         lyricActiveCard.setTextColor(p.primaryText)
-        lyricActiveCard.background = UiTheme.rounded(p.activeCardBg, d(16).toFloat())
+        lyricActiveCard.background = null
+        lyricActiveScroll.background = UiTheme.rounded(p.activeCardBg, d(16).toFloat())
+        applyLyricFontSize()
         lyricNext1.setTextColor(p.secondaryText)
         lyricNext2.setTextColor(p.mutedText)
 
@@ -302,6 +404,11 @@ class AudioSheetController(
 
         voiceBackBtn.setColorFilter(p.primaryText)
         voiceHeaderTv.setTextColor(p.primaryText)
+        speedBackBtn.setColorFilter(p.primaryText)
+        speedHeaderTv.setTextColor(p.primaryText)
+        speedBigValTv.setTextColor(p.primaryText)
+        speedRuler.applyPalette(p)
+        styleSpeedPresets(p)
         styleAdaptiveCard(p)
         styleVoiceFilterTabs(p)
         if (voicePage.visibility == View.VISIBLE) {
@@ -405,14 +512,14 @@ class AudioSheetController(
             textSize = 16f
             setTypeface(typeface, Typeface.BOLD)
             setPadding(d(8), d(6), d(8), d(6))
-            setOnClickListener { callbacks.onFontDelta(-2f) }
+            setOnClickListener { callbacks.onFontDelta(-2f); applyLyricFontSize() }
         }
         fontPlusBtn = TextView(activity).apply {
             text = "A+"
             textSize = 16f
             setTypeface(typeface, Typeface.BOLD)
             setPadding(d(8), d(6), d(4), d(6))
-            setOnClickListener { callbacks.onFontDelta(+2f) }
+            setOnClickListener { callbacks.onFontDelta(+2f); applyLyricFontSize() }
         }
 
         val headerRow = LinearLayout(activity).apply {
@@ -442,21 +549,29 @@ class AudioSheetController(
         lyricPrev1 = lyricView(14f, false, 0.65f, 3).apply {
             setOnClickListener { callbacks.onJumpBlock(-1) }
         }
-        lyricActiveCard = lyricView(16f, true, 1.0f, 4).apply {
+        lyricActiveCard = TextView(activity).apply {
+            textSize = prefs.fontSizeSp.coerceIn(14f, 26f)
+            gravity = Gravity.CENTER
+            setLineSpacing(0f, 1.3f)
             setPadding(d(16), d(14), d(16), d(14))
         }
-        lyricNext1 = lyricView(14f, false, 0.65f, 3).apply {
+        lyricActiveScroll = ScrollView(activity).apply {
+            isVerticalScrollBarEnabled = true
+            isFillViewport = true
+            addView(lyricActiveCard, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+        lyricNext1 = lyricView(14f, false, 0.65f, 2).apply {
             setOnClickListener { callbacks.onJumpBlock(+1) }
         }
-        lyricNext2 = lyricView(13f, false, 0.30f, 2)
+        lyricNext2 = lyricView(13f, false, 0.30f, 1)
 
         val lyricsBox = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_HORIZONTAL
-            addView(lyricPrev2, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(6) })
-            addView(lyricPrev1, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
-            addView(lyricActiveCard, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
-            addView(lyricNext1, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(6) })
+            addView(lyricPrev2, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(4) })
+            addView(lyricPrev1, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(8) })
+            addView(lyricActiveScroll, LinearLayout.LayoutParams(MATCH_PARENT, d(145)).apply { bottomMargin = d(8) })
+            addView(lyricNext1, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(4) })
             addView(lyricNext2, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
         page.addView(lyricsBox, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
@@ -581,7 +696,7 @@ class AudioSheetController(
             return Triple(card, topTv, subTv)
         }
 
-        val (speedCard, spTv, _) = pillCard("1.0×", "Швидкість") { callbacks.onSpeedCycle() }
+        val (speedCard, spTv, _) = pillCard("1.0×", "Швидкість") { openSpeedPage() }
         speedValTv = spTv
         val (voiceCard, vcTv, vcSub) = pillCard("Голос", "Диктор") { openVoicePage() }
         voiceValTv = vcTv
@@ -790,13 +905,113 @@ class AudioSheetController(
         page.addView(voiceFilterRow, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
 
         voiceListContainer = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
-        val scroll = ScrollView(activity).apply { addView(voiceListContainer) }
-        page.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, d(310)))
+        voiceListScroll = ScrollView(activity).apply { addView(voiceListContainer) }
+        page.addView(voiceListScroll, LinearLayout.LayoutParams(MATCH_PARENT, d(300)))
         return page
+    }
+
+    private fun buildSpeedPage(): LinearLayout {
+        val page = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        speedBackBtn = UiTheme.iconView(activity, R.drawable.ic_chevron_left, padDp = 6, tagName = "icon_btn") {
+            speedPage.visibility = View.GONE
+            playerPage.visibility = View.VISIBLE
+            speedValTv.text = String.format(Locale.US, "%.2f×", prefs.speechSpeed).replace(".00×", ".0×")
+        }
+        speedHeaderTv = TextView(activity).apply {
+            text = "Швидкість"
+            textSize = 17f
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+        }
+        val topRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(speedBackBtn, LinearLayout.LayoutParams(d(36), d(36)))
+            addView(speedHeaderTv, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(View(activity), LinearLayout.LayoutParams(d(36), d(1)))
+        }
+        page.addView(topRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(16) })
+
+        speedBigValTv = TextView(activity).apply {
+            text = String.format(Locale.US, "%.2f×", prefs.speechSpeed)
+            textSize = 26f
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+        }
+        page.addView(speedBigValTv, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(8) })
+
+        speedRuler = SpeedRulerView(activity).apply {
+            setSpeed(prefs.speechSpeed)
+            onSpeedLive = { spd ->
+                speedBigValTv.text = String.format(Locale.US, "%.2f×", spd)
+                speedValTv.text = String.format(Locale.US, "%.2f×", spd).replace(".00×", ".0×")
+                styleSpeedPresets(UiTheme.palette(prefs.theme))
+            }
+            onSpeedCommitted = { spd ->
+                prefs.speechSpeed = spd
+                speedBigValTv.text = String.format(Locale.US, "%.2f×", spd)
+                speedValTv.text = String.format(Locale.US, "%.2f×", spd).replace(".00×", ".0×")
+                styleSpeedPresets(UiTheme.palette(prefs.theme))
+                callbacks.onSpeedChanged(spd)
+            }
+        }
+        page.addView(speedRuler, LinearLayout.LayoutParams(MATCH_PARENT, d(96)).apply { bottomMargin = d(18) })
+
+        val presetsRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        val presets = floatArrayOf(0.8f, 1.0f, 1.2f, 1.5f, 2.0f)
+        presets.forEachIndexed { idx, spd ->
+            val btn = TextView(activity).apply {
+                text = String.format(Locale.US, "%.1f×", spd)
+                textSize = 13f
+                setTypeface(null, Typeface.BOLD)
+                gravity = Gravity.CENTER
+                setPadding(d(8), d(10), d(8), d(10))
+                setOnClickListener {
+                    prefs.speechSpeed = spd
+                    speedRuler.setSpeed(spd)
+                    speedBigValTv.text = String.format(Locale.US, "%.2f×", spd)
+                    speedValTv.text = String.format(Locale.US, "%.1f×", spd)
+                    styleSpeedPresets(UiTheme.palette(prefs.theme))
+                    callbacks.onSpeedChanged(spd)
+                }
+            }
+            speedPresetBtns.add(spd to btn)
+            presetsRow.addView(btn, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+                if (idx > 0) leftMargin = d(8)
+            })
+        }
+        page.addView(presetsRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(18) })
+        return page
+    }
+
+    private fun styleSpeedPresets(p: UiPalette) {
+        val cur = prefs.speechSpeed
+        for ((spd, tv) in speedPresetBtns) {
+            val active = abs(cur - spd) < 0.03f
+            tv.background = if (active) {
+                UiTheme.rounded(p.accentBlue, d(12).toFloat())
+            } else {
+                UiTheme.rounded(p.cardBg, d(12).toFloat(), p.divider, 1)
+            }
+            tv.setTextColor(if (active) Color.WHITE else p.primaryText)
+        }
+    }
+
+    private fun openSpeedPage() {
+        playerPage.visibility = View.GONE
+        voicePage.visibility = View.GONE
+        speedPage.visibility = View.VISIBLE
+        speedRuler.setSpeed(prefs.speechSpeed)
+        speedBigValTv.text = String.format(Locale.US, "%.2f×", prefs.speechSpeed)
+        applyPalette()
     }
 
     private fun openVoicePage() {
         playerPage.visibility = View.GONE
+        speedPage.visibility = View.GONE
         voicePage.visibility = View.VISIBLE
         if (!prefs.adaptiveVoicesEnabled) editingRole = VoiceRole.NARRATOR
         applyPalette()
@@ -1153,5 +1368,116 @@ class AudioSheetController(
         val m = sec / 60
         val s = sec % 60
         return String.format(Locale.US, "%d:%02d", m, s)
+    }
+
+    /**
+     * Modern horizontal tick-ruler speed slider (0.5x .. 2.5x, step 0.05x) modeled on modern audio readers.
+     */
+    private class SpeedRulerView(context: Context) : View(context) {
+        private val minSpeed = 0.5f
+        private val maxSpeed = 2.5f
+        private val step = 0.05f
+        private var currentSpeed = 1.1f
+
+        var onSpeedLive: ((Float) -> Unit)? = null
+        var onSpeedCommitted: ((Float) -> Unit)? = null
+
+        private val dp = context.resources.displayMetrics.density
+        private val minorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 1.3f * dp; strokeCap = Paint.Cap.ROUND }
+        private val majorPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 2.0f * dp; strokeCap = Paint.Cap.ROUND }
+        private val thumbPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 3.2f * dp; strokeCap = Paint.Cap.ROUND }
+        private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = 12f * dp; textAlign = Paint.Align.CENTER }
+        private val activeLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textSize = 13f * dp
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+        }
+
+        fun applyPalette(p: UiPalette) {
+            minorPaint.color = p.mutedText
+            majorPaint.color = p.secondaryText
+            thumbPaint.color = p.primaryText
+            labelPaint.color = p.secondaryText
+            activeLabelPaint.color = p.accentBlue
+            invalidate()
+        }
+
+        fun setSpeed(speed: Float) {
+            currentSpeed = snap(speed)
+            invalidate()
+        }
+
+        private fun snap(raw: Float): Float {
+            val clamped = raw.coerceIn(minSpeed, maxSpeed)
+            return ((clamped / step).roundToInt() * step).coerceIn(minSpeed, maxSpeed)
+        }
+
+        private fun xForSpeed(spd: Float): Float {
+            val pad = 18f * dp
+            val usable = (width - pad * 2f).coerceAtLeast(1f)
+            return pad + ((spd - minSpeed) / (maxSpeed - minSpeed)) * usable
+        }
+
+        private fun speedForX(x: Float): Float {
+            val pad = 18f * dp
+            val usable = (width - pad * 2f).coerceAtLeast(1f)
+            val frac = ((x - pad) / usable).coerceIn(0f, 1f)
+            return snap(minSpeed + frac * (maxSpeed - minSpeed))
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val totalSteps = ((maxSpeed - minSpeed) / step).roundToInt()
+            val topLabelY = 22f * dp
+            val rulerTop = 36f * dp
+            val minorH = 14f * dp
+            val midH = 20f * dp
+            val majorH = 28f * dp
+
+            for (i in 0..totalSteps) {
+                val spd = minSpeed + i * step
+                val x = xForSpeed(spd)
+                val isMajor = (i % 10 == 0) // 0.5, 1.0, 1.5, 2.0, 2.5
+                val isMid = (i % 5 == 0) && !isMajor
+                when {
+                    isMajor -> {
+                        canvas.drawLine(x, rulerTop, x, rulerTop + majorH, majorPaint)
+                        if (abs(spd - currentSpeed) > 0.14f) {
+                            canvas.drawText(String.format(Locale.US, "%.1f", spd), x, topLabelY, labelPaint)
+                        }
+                    }
+                    isMid -> canvas.drawLine(x, rulerTop + 2f * dp, x, rulerTop + midH, majorPaint)
+                    else -> canvas.drawLine(x, rulerTop + 4f * dp, x, rulerTop + 4f * dp + minorH, minorPaint)
+                }
+            }
+
+            // Active thumb indicator + floating speed label
+            val cx = xForSpeed(currentSpeed)
+            canvas.drawLine(cx, rulerTop - 4f * dp, cx, rulerTop + majorH + 8f * dp, thumbPaint)
+            canvas.drawText(String.format(Locale.US, "%.2f×", currentSpeed).replace("0×", "×"), cx, topLabelY, activeLabelPaint)
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    val s = speedForX(event.x)
+                    if (abs(s - currentSpeed) >= 0.001f) {
+                        currentSpeed = s
+                        invalidate()
+                        onSpeedLive?.invoke(currentSpeed)
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    currentSpeed = speedForX(event.x)
+                    invalidate()
+                    onSpeedCommitted?.invoke(currentSpeed)
+                    return true
+                }
+            }
+            return super.onTouchEvent(event)
+        }
     }
 }

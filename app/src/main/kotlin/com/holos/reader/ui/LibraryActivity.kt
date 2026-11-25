@@ -84,9 +84,21 @@ class LibraryActivity : Activity() {
         buildUi()
         applyTheme()
 
-        // Open EPUB directly if launched via "Open with HolosReader"
-        intent?.data?.let { importSingleUri(it) }
+        // Open EPUB directly if launched via "Open with HolosReader" (clear data immediately to prevent duplicate import)
+        intent?.data?.let { uri ->
+            intent?.data = null
+            importSingleUri(uri)
+        }
         checkModelStatus()
+    }
+
+    override fun onNewIntent(newIntent: Intent?) {
+        super.onNewIntent(newIntent)
+        setIntent(newIntent)
+        newIntent?.data?.let { uri ->
+            newIntent.data = null
+            importSingleUri(uri)
+        }
     }
 
     override fun onResume() {
@@ -601,25 +613,26 @@ class LibraryActivity : Activity() {
     private fun AlertDialog.Builder.showThemed(): AlertDialog = UiTheme.showThemedDialog(this, prefs.theme)
 
     private fun showImportMenu() {
-        val opts = arrayOf(
-            "З локального файлу (.epub)",
-            "Імпортувати папку з EPUB",
-            "Зі вставленого тексту",
-        )
-        UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Додати книгу")
-            .setItems(opts) { _, which ->
-                when (which) {
-                    0 -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        UiTheme.showIconMenuDialog(
+            this,
+            prefs.theme,
+            "Додати книгу",
+            listOf(
+                IconMenuItem(R.drawable.ic_book, "З локального файлу (.epub)", "Обрати один EPUB на пристрої") {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
                         type = "*/*"
                         putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/epub+zip", "application/octet-stream"))
                     }, REQ_PICK_FILE)
-                    1 -> startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_PICK_DIR)
-                    2 -> showPasteTextDialog()
-                }
-            }
-            .showThemed()
+                },
+                IconMenuItem(R.drawable.ic_layout, "Імпортувати папку з EPUB", "Пакетне додавання всієї бібліотеки") {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_PICK_DIR)
+                },
+                IconMenuItem(R.drawable.ic_font, "Зі вставленого тексту", "Створити книгу з буфера обміну") {
+                    showPasteTextDialog()
+                },
+            ),
+        )
     }
 
     private fun showPasteTextDialog() {
@@ -658,32 +671,37 @@ class LibraryActivity : Activity() {
     }
 
     private fun showViewOptionsMenu() {
-        val opts = arrayOf(
-            "${if (!prefs.isGridView) "✓ " else ""}Список (List)",
-            "${if (prefs.isGridView) "✓ " else ""}Сітка (Grid)",
-            "Колонок у сітці: ${prefs.gridColumns} (змінити 2/3/4)",
-            "Сортування: Останні прочитані",
-            "Сортування: За назвою",
-            "Сортування: За автором",
-            "Сортування: За прогресом",
-            "Фільтр статусу: Усі / Читаю / Непрочитані / Прочитані",
+        UiTheme.showIconMenuDialog(
+            this,
+            prefs.theme,
+            "Вигляд полиці",
+            listOf(
+                IconMenuItem(R.drawable.ic_menu, "Список (List)", checked = !prefs.isGridView) {
+                    prefs.isGridView = false; refreshBooks()
+                },
+                IconMenuItem(R.drawable.ic_layout, "Сітка (Grid)", "Колонок: ${prefs.gridColumns}", checked = prefs.isGridView) {
+                    prefs.isGridView = true; refreshBooks()
+                },
+                IconMenuItem(R.drawable.ic_more_horiz, "Колонок у сітці: ${prefs.gridColumns}", "Перемкнути 2 / 3 / 4") {
+                    prefs.gridColumns = when (prefs.gridColumns) { 2 -> 3; 3 -> 4; else -> 2 }; refreshBooks()
+                },
+                IconMenuItem(R.drawable.ic_timer, "Сортування: Останні прочитані", checked = prefs.sortBy == "RECENT") {
+                    prefs.sortBy = "RECENT"; refreshBooks()
+                },
+                IconMenuItem(R.drawable.ic_font, "Сортування: За назвою", checked = prefs.sortBy == "TITLE") {
+                    prefs.sortBy = "TITLE"; refreshBooks()
+                },
+                IconMenuItem(R.drawable.ic_book, "Сортування: За автором", checked = prefs.sortBy == "AUTHOR") {
+                    prefs.sortBy = "AUTHOR"; refreshBooks()
+                },
+                IconMenuItem(R.drawable.ic_stats, "Сортування: За прогресом", checked = prefs.sortBy == "PROGRESS") {
+                    prefs.sortBy = "PROGRESS"; refreshBooks()
+                },
+                IconMenuItem(R.drawable.ic_label, "Фільтр статусу", "Усі / Читаю / Непрочитані / Прочитані") {
+                    showStatusFilterDialog()
+                },
+            ),
         )
-        UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Вигляд полиці")
-            .setItems(opts) { _, which ->
-                when (which) {
-                    0 -> prefs.isGridView = false
-                    1 -> prefs.isGridView = true
-                    2 -> prefs.gridColumns = when (prefs.gridColumns) { 2 -> 3; 3 -> 4; else -> 2 }
-                    3 -> prefs.sortBy = "RECENT"
-                    4 -> prefs.sortBy = "TITLE"
-                    5 -> prefs.sortBy = "AUTHOR"
-                    6 -> prefs.sortBy = "PROGRESS"
-                    7 -> showStatusFilterDialog()
-                }
-                refreshBooks()
-            }
-            .showThemed()
     }
 
     private fun showStatusFilterDialog() {
@@ -699,35 +717,38 @@ class LibraryActivity : Activity() {
     }
 
     private fun showAppMenu() {
-        val darkOn = prefs.theme == ReaderTheme.DARK
-        val opts = arrayOf(
-            "Налаштування читання (шрифт, макет, тема, TTS)",
-            "Статистика читання",
-            "Словник наголосів (stress_user.txt)",
-            "${if (darkOn) "✓ " else ""}Темна тема (Dark Mode)",
-            "${if (prefs.openLastBookOnStart) "✓ " else ""}Відкривати останню книгу при запуску",
-            "Перевірити / завантажити модель HolosTTS",
+        val darkOn = UiTheme.palette(prefs.theme).isDark
+        UiTheme.showIconMenuDialog(
+            this,
+            prefs.theme,
+            "HolosReader",
+            listOf(
+                IconMenuItem(R.drawable.ic_settings, "Налаштування читання", "Шрифт, макет, тема, поведінка, TTS") {
+                    startActivity(Intent(this, ReaderSettingsActivity::class.java))
+                },
+                IconMenuItem(R.drawable.ic_stats, "Статистика читання", "Графіки часу, активність та серії") {
+                    startActivity(Intent(this, StatisticsActivity::class.java))
+                },
+                IconMenuItem(R.drawable.ic_font, "Словник наголосів", "Редагувати stress_user.txt") {
+                    startActivity(Intent(this, StressEditorActivity::class.java))
+                },
+                IconMenuItem(R.drawable.ic_palette, "Темна тема", "Швидке перемикання Dark / Light", checked = darkOn) {
+                    prefs.theme = if (darkOn) ReaderTheme.LIGHT else ReaderTheme.DARK
+                    applyTheme()
+                    renderBooks()
+                },
+                IconMenuItem(R.drawable.ic_book, "Відкривати останню книгу", "Автостарт при запуску додатка", checked = prefs.openLastBookOnStart) {
+                    prefs.openLastBookOnStart = !prefs.openLastBookOnStart
+                },
+                IconMenuItem(R.drawable.ic_download, "Модель HolosTTS", "Перевірити або завантажити голоси") {
+                    modelBanner.visibility = View.VISIBLE
+                    downloadModelBtn.visibility = View.VISIBLE
+                },
+                IconMenuItem(R.drawable.ic_info, "Про програму (About)", "GitHub, HolosTTS, словники та джерела") {
+                    UiTheme.showAboutDialog(this, prefs.theme)
+                },
+            ),
         )
-        UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("HolosReader")
-            .setItems(opts) { _, which ->
-                when (which) {
-                    0 -> startActivity(Intent(this, ReaderSettingsActivity::class.java))
-                    1 -> startActivity(Intent(this, StatisticsActivity::class.java))
-                    2 -> startActivity(Intent(this, StressEditorActivity::class.java))
-                    3 -> {
-                        prefs.theme = if (darkOn) ReaderTheme.LIGHT else ReaderTheme.DARK
-                        applyTheme()
-                        renderBooks()
-                    }
-                    4 -> prefs.openLastBookOnStart = !prefs.openLastBookOnStart
-                    5 -> {
-                        modelBanner.visibility = View.VISIBLE
-                        downloadModelBtn.visibility = View.VISIBLE
-                    }
-                }
-            }
-            .showThemed()
     }
 
     private fun showStatsDialog() {
