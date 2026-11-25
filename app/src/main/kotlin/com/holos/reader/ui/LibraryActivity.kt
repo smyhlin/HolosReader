@@ -211,7 +211,7 @@ class LibraryActivity : Activity() {
         // Persistent Floating Mini-Player Pill (bottom)
         miniPlayerPill = buildMiniPlayerPill()
 
-        // Multi-Select Bottom Action Panel (local-only: Open, Tag, Status, Details, Delete, Cancel)
+        // Multi-Select Bottom Action Panel
         multiSelectBar = buildMultiSelectPanel().apply { visibility = View.GONE }
 
         frameRoot.addView(mainCol, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -237,19 +237,14 @@ class LibraryActivity : Activity() {
             ellipsize = TextUtils.TruncateAt.END
             tag = "primary_text"
         }
-        val playBtn = TextView(this).apply {
-            text = "▶"
-            textSize = 16f
-            gravity = Gravity.CENTER
+        val playBtn = ImageView(this).apply {
+            setImageResource(R.drawable.ic_play)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(d(10), d(10), d(10), d(10))
             tag = "play_circle"
         }
-        val closeBtn = TextView(this).apply {
-            text = "✕"
-            textSize = 16f
-            gravity = Gravity.CENTER
-            tag = "secondary_icon"
-            setPadding(d(10), d(6), d(6), d(6))
-            setOnClickListener { miniPlayerPill.visibility = View.GONE }
+        val closeBtn = UiTheme.iconView(this, R.drawable.ic_close, padDp = 8, tagName = "secondary_icon") {
+            miniPlayerPill.visibility = View.GONE
         }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -261,7 +256,7 @@ class LibraryActivity : Activity() {
             addView(miniCover, LinearLayout.LayoutParams(d(38), d(38)))
             addView(miniTitle, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { leftMargin = d(12); rightMargin = d(8) })
             addView(playBtn, LinearLayout.LayoutParams(d(38), d(38)))
-            addView(closeBtn)
+            addView(closeBtn, LinearLayout.LayoutParams(d(34), d(34)).apply { leftMargin = d(4) })
             setOnClickListener {
                 prefs.lastBookId?.let { id -> db.getBook(id)?.let { openBook(it) } }
             }
@@ -269,17 +264,17 @@ class LibraryActivity : Activity() {
     }
 
     private fun buildMultiSelectPanel(): LinearLayout {
-        fun actionTile(icon: String, label: String, isDanger: Boolean = false, onClick: () -> Unit): LinearLayout {
+        fun actionTile(iconRes: Int, label: String, isDanger: Boolean = false, onClick: () -> Unit): LinearLayout {
             return LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
                 setPadding(d(6), d(10), d(6), d(10))
-                addView(TextView(context).apply {
-                    text = icon
-                    textSize = 20f
-                    gravity = Gravity.CENTER
-                    if (isDanger) setTextColor(0xFFE53935.toInt()) else tag = "primary_icon"
-                })
+                val iv = ImageView(context).apply {
+                    setImageResource(iconRes)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    if (isDanger) setColorFilter(0xFFE53935.toInt()) else tag = "primary_icon"
+                }
+                addView(iv, LinearLayout.LayoutParams(d(22), d(22)).apply { bottomMargin = d(4) })
                 addView(TextView(context).apply {
                     text = label
                     textSize = 11f
@@ -292,18 +287,18 @@ class LibraryActivity : Activity() {
 
         val row1 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(actionTile("📖", "Відкрити") {
+            addView(actionTile(R.drawable.ic_book, "Відкрити") {
                 selectedIds.firstOrNull()?.let { id -> db.getBook(id)?.let { openBook(it) } }
                 exitSelectionMode()
             }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(actionTile("🏷", "Тег") { showTagSelectedDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(actionTile("✓", "Статус") { showStatusSelectedDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_label, "Тег") { showTagSelectedDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_check, "Статус") { showStatusSelectedDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
         val row2 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(actionTile("ℹ", "Деталі") { showSelectedDetailsDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(actionTile("🗑", "Видалити", isDanger = true) { deleteSelectedBooks() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(actionTile("✕", "Скасувати") { exitSelectionMode() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_info, "Деталі") { showSelectedDetailsDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_delete, "Видалити", isDanger = true) { deleteSelectedBooks() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_close, "Скасувати") { exitSelectionMode() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
 
         return LinearLayout(this).apply {
@@ -346,6 +341,7 @@ class LibraryActivity : Activity() {
                 "play_circle" -> {
                     v.background = UiTheme.circle(p.playBtnBg)
                     (v as? TextView)?.setTextColor(p.playBtnFg)
+                    (v as? ImageView)?.setColorFilter(p.playBtnFg)
                 }
             }
             if (v is android.view.ViewGroup) {
@@ -721,7 +717,7 @@ class LibraryActivity : Activity() {
                         applyTheme()
                         renderBooks()
                     }
-                    2 -> showStatsDialog()
+                    2 -> startActivity(Intent(this, StatisticsActivity::class.java))
                     3 -> startActivity(Intent(this, StressEditorActivity::class.java))
                     4 -> {
                         modelBanner.visibility = View.VISIBLE

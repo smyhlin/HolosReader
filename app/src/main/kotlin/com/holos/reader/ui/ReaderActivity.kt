@@ -5,7 +5,10 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.animation.ValueAnimator
+import android.graphics.Color
 import android.graphics.Typeface
+import android.view.animation.DecelerateInterpolator
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -15,6 +18,7 @@ import android.text.SpannableStringBuilder
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.text.style.BackgroundColorSpan
+import android.text.style.ForegroundColorSpan
 import android.text.style.RelativeSizeSpan
 import android.text.style.StrikethroughSpan
 import android.text.style.StyleSpan
@@ -83,6 +87,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private var chapterTitle: String = ""
     private var currentBlocks: List<ReaderBlock> = emptyList()
     private var activeBlockIndex: Int = -1
+    private var activeWordStart: Int = -1
+    private var activeWordEnd: Int = -1
+    private var activeWordAlpha: Float = 1f
+    private var wordAnimator: ValueAnimator? = null
     private var chromeVisible: Boolean = true
 
     // Views
@@ -99,7 +107,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var miniCoverImg: ImageView
     private lateinit var miniTitleTv: TextView
     private lateinit var miniChapterTv: TextView
-    private lateinit var miniPlayBtn: TextView
+    private lateinit var miniPlayBtn: ImageView
 
     // Bottom Minimalist Icon Bar
     private lateinit var bottomIconBar: LinearLayout
@@ -154,6 +162,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     override fun onDestroy() {
         autoScrolling = false
+        wordAnimator?.cancel()
         autoScrollHandler.removeCallbacksAndMessages(null)
         saveProgress()
         if (::controller.isInitialized) controller.stop()
@@ -303,15 +312,15 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             addView(miniChapterTv)
         }
 
-        val prevBtn = toolbarIcon("⏮") { jumpBlock(-1) }
-        miniPlayBtn = TextView(this).apply {
-            text = "▶"
-            textSize = 16f
-            gravity = Gravity.CENTER
+        val prevBtn = UiTheme.iconView(this, R.drawable.ic_skip_prev, padDp = 6, tagName = "tb_icon") { jumpBlock(-1) }
+        miniPlayBtn = ImageView(this).apply {
+            setImageResource(R.drawable.ic_play)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(d(10), d(10), d(10), d(10))
             setOnClickListener { togglePlayPause() }
         }
-        val nextBtn = toolbarIcon("⏭") { jumpBlock(+1) }
-        val closeBtn = toolbarIcon("✕") {
+        val nextBtn = UiTheme.iconView(this, R.drawable.ic_skip_next, padDp = 6, tagName = "tb_icon") { jumpBlock(+1) }
+        val closeBtn = UiTheme.iconView(this, R.drawable.ic_close, padDp = 6, tagName = "tb_icon") {
             controller.stop()
             ReaderAudioService.stop(this)
             miniPlayerPill.visibility = View.GONE
@@ -357,7 +366,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         miniTitleTv.setTextColor(p.primaryText)
         miniChapterTv.setTextColor(p.secondaryText)
         miniPlayBtn.background = UiTheme.circle(p.playBtnBg)
-        miniPlayBtn.setTextColor(p.playBtnFg)
+        miniPlayBtn.setColorFilter(p.playBtnFg)
 
         fun tintIcons(vg: ViewGroup) {
             for (i in 0 until vg.childCount) {
@@ -475,7 +484,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     override fun onPlaybackStateChanged(isPlaying: Boolean, isPaused: Boolean, statusText: String) {
         runOnUiThread {
-            miniPlayBtn.text = if (isPlaying && !isPaused) "⏸" else "▶"
+            miniPlayBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
             if (audioSheet.isVisible()) {
                 audioSheet.updateState(activeBlockIndex, isPlaying, isPaused)
             }
@@ -489,7 +498,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     override fun onActiveBlockChanged(blockIndex: Int) {
         runOnUiThread {
+            wordAnimator?.cancel()
             activeBlockIndex = blockIndex
+            activeWordStart = -1
+            activeWordEnd = -1
+            activeWordAlpha = 1f
             blocksAdapter.notifyDataSetChanged()
             // Smoothly keep active block in the middle third of the screen
             val first = blocksListView.firstVisiblePosition
@@ -504,6 +517,75 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         }
     }
 
+    override fun onActiveWordChanged(blockIndex: Int, wordStart: Int, wordEnd: Int) {
+        runOnUiThread {
+            if (blockIndex != activeBlockIndex) return@runOnUiThread
+            activeWordStart = wordStart
+            activeWordEnd = wordEnd
+            audioSheet.updateActiveWord(wordStart, wordEnd)
+
+            wordAnimator?.cancel()
+            val anim = ValueAnimator.ofFloat(0.20f, 1.0f).apply {
+                duration = 130L
+                interpolator = DecelerateInterpolator()
+                addUpdateListener { va ->
+                    activeWordAlpha = va.animatedValue as Float
+                    updateActiveBlockTextInPlace()
+                }
+            }
+            wordAnimator = anim
+            anim.start()
+        }
+    }
+
+    private fun updateActiveBlockTextInPlace() {
+        val idx = activeBlockIndex
+        if (idx !in currentBlocks.indices) return
+        val first = blocksListView.firstVisiblePosition
+        val child = blocksListView.getChildAt(idx - first) as? TextView ?: return
+        val block = currentBlocks[idx]
+        if (block.type == BlockType.IMAGE || block.type == BlockType.HR) return
+        child.text = buildBlockSpannable(block, idx, UiTheme.palette(prefs.theme))
+    }
+
+    private fun buildBlockSpannable(block: ReaderBlock, position: Int, p: UiPalette): SpannableStringBuilder {
+        val ssb = SpannableStringBuilder(block.text)
+        for (sp in block.spans) {
+            val s = sp.start.coerceIn(0, ssb.length)
+            val e = sp.end.coerceIn(s, ssb.length)
+            if (e <= s) continue
+            val spanObj: Any = when (sp.style) {
+                SpanStyle.BOLD -> StyleSpan(Typeface.BOLD)
+                SpanStyle.ITALIC -> StyleSpan(Typeface.ITALIC)
+                SpanStyle.UNDERLINE -> UnderlineSpan()
+                SpanStyle.STRIKE -> StrikethroughSpan()
+                SpanStyle.CODE -> TypefaceSpan("monospace")
+                SpanStyle.SUP -> SuperscriptSpan()
+                SpanStyle.SUB -> SubscriptSpan()
+            }
+            ssb.setSpan(spanObj, s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (sp.style == SpanStyle.SUP || sp.style == SpanStyle.SUB) {
+                ssb.setSpan(RelativeSizeSpan(0.75f), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        if (prefs.bionicReading && block.type != BlockType.TABLE_ROW) {
+            BionicTextHelper.applyBionic(ssb)
+        }
+        if (position == activeBlockIndex && activeBlockIndex >= 0) {
+            ssb.setSpan(BackgroundColorSpan(p.inlineHighlightBg), 0, ssb.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (activeWordStart in 0 until ssb.length && activeWordEnd in (activeWordStart + 1)..ssb.length) {
+                val alphaByte = (52 + (158 * activeWordAlpha)).toInt().coerceIn(40, 218)
+                val wordBg = (alphaByte shl 24) or (p.accentBlue and 0x00FFFFFF)
+                ssb.setSpan(BackgroundColorSpan(wordBg), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                if (activeWordAlpha >= 0.35f) {
+                    ssb.setSpan(ForegroundColorSpan(Color.WHITE), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                }
+                ssb.setSpan(StyleSpan(Typeface.BOLD), activeWordStart, activeWordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        return ssb
+    }
+
     override fun onChapterFinished() {
         runOnUiThread {
             val total = book?.chapterCount ?: 0
@@ -511,7 +593,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 loadChapter(chapterIndex + 1, scrollToBlock = 0, autoPlay = true)
             } else {
                 ReaderAudioService.stop(this)
-                miniPlayBtn.text = "▶"
+                miniPlayBtn.setImageResource(R.drawable.ic_play)
             }
         }
     }
@@ -519,7 +601,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     override fun onError(message: String) {
         runOnUiThread {
             ReaderAudioService.stop(this)
-            miniPlayBtn.text = "▶"
+            miniPlayBtn.setImageResource(R.drawable.ic_play)
             Toast.makeText(this, message, Toast.LENGTH_LONG).show()
         }
     }
@@ -575,12 +657,13 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val dialog = UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Зміст (${b.chapterCount} розд.)")
             .setView(container)
-            .showThemed()
+            .create()
 
         listView.setOnItemClickListener { _, _, position, _ ->
             dialog.dismiss()
             loadChapter(entries[position].spineIndex, scrollToBlock = 0, autoPlay = controller.isPlaying)
         }
+        dialog.show()
     }
 
     private fun addCurrentBookmark() {
@@ -595,7 +678,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val b = book ?: return
         val list = db.listBookmarks(b.id)
         if (list.isEmpty()) {
-            Toast.makeText(this, "Закладок ще немає. Натисніть закладку зверху.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Закладок ще немає. Натисніть значок закладки зверху.", Toast.LENGTH_SHORT).show()
             return
         }
         val labels = list.map { "Розд. ${it.chapterIndex + 1}: ${it.excerpt}" }.toTypedArray()
@@ -627,6 +710,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             "Шрифт більший (A+)",
             "Шрифт менший (A-)",
             "Шрифт: ${if (prefs.useSerif) "Засічки → Без засічок" else "Без засічок → Засічки"}",
+            "${if (prefs.bionicReading) "✓ " else ""}Bionic Reading (жирний початок слів)",
         )
         UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Вигляд тексту")
@@ -638,6 +722,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     3 -> prefs.fontSizeSp = prefs.fontSizeSp + 2f
                     4 -> prefs.fontSizeSp = prefs.fontSizeSp - 2f
                     5 -> prefs.useSerif = !prefs.useSerif
+                    6 -> prefs.bionicReading = !prefs.bionicReading
                 }
                 applyTheme()
             }
@@ -772,31 +857,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 return tv
             }
 
-            // Render rich inline spans + inline highlight on active spoken paragraph!
-            val ssb = SpannableStringBuilder(block.text)
-            for (sp in block.spans) {
-                val s = sp.start.coerceIn(0, ssb.length)
-                val e = sp.end.coerceIn(s, ssb.length)
-                if (e <= s) continue
-                val spanObj: Any = when (sp.style) {
-                    SpanStyle.BOLD -> StyleSpan(Typeface.BOLD)
-                    SpanStyle.ITALIC -> StyleSpan(Typeface.ITALIC)
-                    SpanStyle.UNDERLINE -> UnderlineSpan()
-                    SpanStyle.STRIKE -> StrikethroughSpan()
-                    SpanStyle.CODE -> TypefaceSpan("monospace")
-                    SpanStyle.SUP -> SuperscriptSpan()
-                    SpanStyle.SUB -> SubscriptSpan()
-                }
-                ssb.setSpan(spanObj, s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                if (sp.style == SpanStyle.SUP || sp.style == SpanStyle.SUB) {
-                    ssb.setSpan(RelativeSizeSpan(0.75f), s, e, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                }
-            }
-            if (position == activeBlockIndex && activeBlockIndex >= 0) {
-                ssb.setSpan(BackgroundColorSpan(p.inlineHighlightBg), 0, ssb.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-            }
-
-            tv.text = ssb
+            // Render rich inline spans + Bionic Reading + active paragraph & animated word highlight
+            tv.text = buildBlockSpannable(block, position, p)
             tv.setTextColor(if (block.type == BlockType.CAPTION || block.type == BlockType.FOOTNOTE) p.secondaryText else p.primaryText)
             tv.gravity = if (block.type == BlockType.HEADING_1 || block.type == BlockType.CAPTION) Gravity.CENTER_HORIZONTAL else Gravity.START
             tv.background = if (block.type == BlockType.TABLE_ROW) UiTheme.rounded(p.cardBg, d(8).toFloat()) else null
@@ -908,32 +970,45 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     private fun showReaderMenu() {
         val darkOn = prefs.theme == ReaderTheme.DARK
+        val adaptiveOn = prefs.adaptiveVoicesEnabled
         val opts = arrayOf(
+            "${if (adaptiveOn) "✓ " else ""}Адаптивна озвучка (Оповідач / Система / Діалоги)",
+            "${if (prefs.bionicReading) "✓ " else ""}Bionic Reading (жирний початок слів)",
             "${if (autoScrolling) "✓ " else ""}Автопрокрутка (Auto Scroll)",
             "${if (darkOn) "✓ " else ""}Темна тема (Dark Mode)",
             "Кольорові теми (5 палітр)",
             "Словник наголосів (stress_user.txt)",
-            "Статистика книги",
+            "Статистика читання",
         )
         UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Меню читання")
             .setItems(opts) { _, which ->
                 when (which) {
-                    0 -> toggleAutoScroll()
+                    0 -> {
+                        miniPlayerPill.visibility = View.VISIBLE
+                        audioSheet.showVoiceSettings(
+                            bookTitle = book?.title.orEmpty(),
+                            chapterTitle = chapterTitle,
+                            coverBmp = coverBitmap,
+                            activeIdx = activeBlockIndex.coerceAtLeast(0),
+                            isPlaying = controller.isPlaying,
+                            isPaused = controller.isPaused,
+                        )
+                    }
                     1 -> {
+                        prefs.bionicReading = !prefs.bionicReading
+                        applyTheme()
+                    }
+                    2 -> toggleAutoScroll()
+                    3 -> {
                         prefs.theme = if (darkOn) ReaderTheme.LIGHT else ReaderTheme.DARK
                         applyTheme()
                     }
-                    2 -> toggleColorSwatchBar()
-                    3 -> startActivity(Intent(this, StressEditorActivity::class.java))
-                    4 -> {
-                        val b = book ?: return@setItems
-                        val mins = (b.readingTimeSec / 60L)
-                        UiTheme.dialogBuilder(this, prefs.theme)
-                            .setTitle(b.title)
-                            .setMessage("Розділ: ${chapterIndex + 1} / ${b.chapterCount} (${b.progressPercent}%)\nЧас читання: $mins хв")
-                            .setPositiveButton("OK", null)
-                            .showThemed()
+                    4 -> toggleColorSwatchBar()
+                    5 -> startActivity(Intent(this, StressEditorActivity::class.java))
+                    6 -> {
+                        saveProgress()
+                        startActivity(Intent(this, StatisticsActivity::class.java))
                     }
                 }
             }
