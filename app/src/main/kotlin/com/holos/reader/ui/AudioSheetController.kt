@@ -1,7 +1,9 @@
 package com.holos.reader.ui
 
 import android.app.Activity
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
+import com.holos.reader.R
 import android.graphics.Typeface
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -103,6 +105,10 @@ class AudioSheetController(
     private lateinit var offlineBadgeTv: TextView
 
     // Voice picker page
+    private lateinit var voiceBackBtn: ImageView
+    private lateinit var voiceHeaderTv: TextView
+    private lateinit var voiceFilterRow: LinearLayout
+    private val voiceFilterTabs = ArrayList<Pair<String, TextView>>()
     private lateinit var voiceListContainer: LinearLayout
     private var voiceFilter: String = "ALL" // ALL, FEMALE, MALE
     private var abLoopStart: Int = -1
@@ -220,12 +226,33 @@ class AudioSheetController(
         elapsedTv.setTextColor(p.secondaryText)
         remainingTv.setTextColor(p.secondaryText)
 
+        scrubber.progressTintList = ColorStateList.valueOf(p.accentBlue)
+        scrubber.thumbTintList = ColorStateList.valueOf(p.primaryText)
+        scrubber.progressBackgroundTintList = ColorStateList.valueOf(p.divider)
+
         playCircleBtn.background = UiTheme.circle(p.playBtnBg)
         playCircleBtn.setTextColor(p.playBtnFg)
 
         applyCardTheme(playerPage, p)
+        applyCardTheme(voicePage, p)
+        autoAdvBtn.setTextColor(if (prefs.autoAdvanceChapter) p.accentBlue else p.secondaryText)
+        abBtn.setTextColor(if (abLoopStart >= 0) p.accentBlue else p.secondaryText)
+
+        voiceBackBtn.setColorFilter(p.primaryText)
+        voiceHeaderTv.setTextColor(p.primaryText)
+        styleVoiceFilterTabs(p)
         if (voicePage.visibility == View.VISIBLE) {
             renderVoiceList()
+        }
+    }
+
+    private fun styleVoiceFilterTabs(p: UiPalette) {
+        voiceFilterRow.background = UiTheme.rounded(p.cardBg, d(14).toFloat())
+        for ((key, tv) in voiceFilterTabs) {
+            val active = key == voiceFilter
+            tv.background = if (active) UiTheme.rounded(p.playBtnBg, d(10).toFloat()) else null
+            tv.setTextColor(if (active) p.playBtnFg else p.secondaryText)
+            tv.setTypeface(null, if (active) Typeface.BOLD else Typeface.NORMAL)
         }
     }
 
@@ -234,7 +261,10 @@ class AudioSheetController(
             val child = root.getChildAt(i)
             when (child.tag) {
                 "pill_card" -> child.background = UiTheme.rounded(p.cardBg, d(16).toFloat())
-                "icon_btn" -> (child as? TextView)?.setTextColor(p.primaryText)
+                "icon_btn" -> {
+                    (child as? TextView)?.setTextColor(p.primaryText)
+                    (child as? ImageView)?.setColorFilter(p.primaryText)
+                }
                 "muted_icon" -> (child as? TextView)?.setTextColor(p.secondaryText)
                 "card_title" -> (child as? TextView)?.setTextColor(p.primaryText)
                 "card_sub" -> (child as? TextView)?.setTextColor(p.secondaryText)
@@ -250,6 +280,7 @@ class AudioSheetController(
         coverImg = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             setBackgroundColor(0x22888888)
+            UiTheme.clipRounded(this, d(8).toFloat())
         }
         titleTv = TextView(activity).apply {
             textSize = 15f
@@ -368,6 +399,8 @@ class AudioSheetController(
 
         autoAdvBtn = iconBtn("→|", 16f, "muted_icon") {
             prefs.autoAdvanceChapter = !prefs.autoAdvanceChapter
+            val p = UiTheme.palette(prefs.theme)
+            autoAdvBtn.setTextColor(if (prefs.autoAdvanceChapter) p.accentBlue else p.secondaryText)
             Toast.makeText(
                 activity,
                 if (prefs.autoAdvanceChapter) "Автоперехід розділів: увімк." else "Автоперехід розділів: вимк.",
@@ -394,6 +427,8 @@ class AudioSheetController(
                 callbacks.onSeekBlock(target)
                 Toast.makeText(activity, "Повернення до точки A", Toast.LENGTH_SHORT).show()
             }
+            val p = UiTheme.palette(prefs.theme)
+            abBtn.setTextColor(if (abLoopStart >= 0) p.accentBlue else p.secondaryText)
         }
 
         val transport = LinearLayout(activity).apply {
@@ -488,11 +523,8 @@ class AudioSheetController(
             gravity = Gravity.CENTER_VERTICAL
             tag = "pill_card"
             setPadding(d(14), d(12), d(14), d(12))
-            addView(TextView(activity).apply {
-                text = "⬇"
-                textSize = 18f
-                tag = "icon_btn"
-                setPadding(0, 0, d(12), 0)
+            addView(UiTheme.iconView(activity, R.drawable.ic_download, padDp = 4, tagName = "icon_btn"), LinearLayout.LayoutParams(d(32), d(32)).apply {
+                rightMargin = d(10)
             })
             addView(offlineCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
             addView(offlineBadgeTv)
@@ -506,18 +538,12 @@ class AudioSheetController(
     private fun buildVoicePage(): LinearLayout {
         val page = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
 
-        val backBtn = TextView(activity).apply {
-            text = "‹"
-            textSize = 28f
-            tag = "icon_btn"
-            setPadding(d(4), 0, d(14), 0)
-            setOnClickListener {
-                previewCancel.set(true)
-                voicePage.visibility = View.GONE
-                playerPage.visibility = View.VISIBLE
-            }
+        voiceBackBtn = UiTheme.iconView(activity, R.drawable.ic_chevron_left, padDp = 6, tagName = "icon_btn") {
+            previewCancel.set(true)
+            voicePage.visibility = View.GONE
+            playerPage.visibility = View.VISIBLE
         }
-        val headerTv = TextView(activity).apply {
+        voiceHeaderTv = TextView(activity).apply {
             text = "Оберіть голос (HolosTTS)"
             textSize = 17f
             setTypeface(typeface, Typeface.BOLD)
@@ -527,31 +553,32 @@ class AudioSheetController(
         val topRow = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(backBtn)
-            addView(headerTv, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(voiceBackBtn, LinearLayout.LayoutParams(d(36), d(36)))
+            addView(voiceHeaderTv, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(View(activity), LinearLayout.LayoutParams(d(36), d(1)))
         }
         page.addView(topRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(12) })
 
         // Segmented filter: All | Female | Male
-        val filterRow = LinearLayout(activity).apply {
+        voiceFilterRow = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
-            tag = "pill_card"
             setPadding(d(4), d(4), d(4), d(4))
         }
         fun filterTab(label: String, key: String): TextView = TextView(activity).apply {
             text = label
             textSize = 13f
             gravity = Gravity.CENTER
-            setPadding(d(14), d(8), d(14), d(8))
+            setPadding(d(16), d(8), d(16), d(8))
             setOnClickListener {
                 voiceFilter = key
+                styleVoiceFilterTabs(UiTheme.palette(prefs.theme))
                 renderVoiceList()
             }
-        }
-        filterRow.addView(filterTab("Усі", "ALL"))
-        filterRow.addView(filterTab("Жіночі", "FEMALE"))
-        filterRow.addView(filterTab("Чоловічі", "MALE"))
-        page.addView(filterRow, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = d(12) })
+        }.also { voiceFilterTabs.add(key to it) }
+        voiceFilterRow.addView(filterTab("Усі", "ALL"))
+        voiceFilterRow.addView(filterTab("Жіночі", "FEMALE"))
+        voiceFilterRow.addView(filterTab("Чоловічі", "MALE"))
+        page.addView(voiceFilterRow, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = d(12) })
 
         voiceListContainer = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
         val scroll = ScrollView(activity).apply {
@@ -663,42 +690,51 @@ class AudioSheetController(
         previewCancel.set(true)
         previewWorker.execute {
             previewCancel.set(false)
-            val engine = HolosEngineHolder.getEngine(activity) ?: return@execute
-            val stressifier = HolosEngineHolder.getStressifier(activity)
-            val track = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                        .setSampleRate(engine.sampleRate)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(2 * engine.sampleRate * 4)
-                .build()
             try {
-                HolosSafeSynthesizer.synthesizeParagraphStreaming(
-                    engine = engine,
-                    stressifier = stressifier,
-                    rawParagraph = "Привіт! Я читатиму для тебе цю книгу українською.",
-                    voice = voice,
-                    speed = prefs.speechSpeed,
-                    cancelled = previewCancel,
-                    customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
-                ) { chunk ->
-                    track.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
-                    if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+                val engine = HolosEngineHolder.getEngine(activity) ?: run {
+                    activity.runOnUiThread { Toast.makeText(activity, "Спочатку завантажте модель HolosTTS", Toast.LENGTH_SHORT).show() }
+                    return@execute
                 }
-                Thread.sleep(250)
-                track.stop()
-            } finally {
-                track.release()
+                val stressifier = HolosEngineHolder.getStressifier(activity)
+                val track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                            .setSampleRate(engine.sampleRate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setBufferSizeInBytes(2 * engine.sampleRate * 4)
+                    .build()
+                try {
+                    HolosSafeSynthesizer.synthesizeParagraphStreaming(
+                        engine = engine,
+                        stressifier = stressifier,
+                        rawParagraph = "Привіт! Я читатиму для тебе цю книгу українською.",
+                        voice = voice,
+                        speed = prefs.speechSpeed,
+                        cancelled = previewCancel,
+                        customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
+                    ) { chunk ->
+                        track.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+                        if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+                    }
+                    Thread.sleep(250)
+                    track.stop()
+                } finally {
+                    track.release()
+                }
+            } catch (t: Throwable) {
+                activity.runOnUiThread {
+                    Toast.makeText(activity, "Помилка прев’ю: ${t.message}", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -722,7 +758,9 @@ class AudioSheetController(
                 return@execute
             }
             val stressifier = HolosEngineHolder.getStressifier(activity)
-            val voice = prefs.selectedVoice?.takeIf { it in engine.voices } ?: engine.voices.firstOrNull()
+            val voice = prefs.selectedVoice?.takeIf {
+                it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
+            } ?: engine.voices.firstOrNull()
             val tmp = File(outFile.path + ".part")
             var totalPcmBytes = 0L
             try {
@@ -738,6 +776,7 @@ class AudioSheetController(
                             voice = voice,
                             speed = prefs.speechSpeed,
                             cancelled = offlineRenderCancel,
+                            customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
                         ) { floats ->
                             val buf = ByteArray(floats.size * 2)
                             val bb = ByteBuffer.wrap(buf).order(ByteOrder.LITTLE_ENDIAN)
