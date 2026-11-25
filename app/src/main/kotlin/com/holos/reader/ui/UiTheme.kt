@@ -202,28 +202,40 @@ object UiTheme {
     fun applySystemBars(activity: Activity, theme: ReaderTheme) {
         val p = palette(theme)
         val window = activity.window ?: return
-        window.statusBarColor = p.canvasBg
-        window.navigationBarColor = p.canvasBg
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val ctrl = window.insetsController ?: return
-            val flags = if (p.isDark) 0 else (
-                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
-                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-                )
-            ctrl.setSystemBarsAppearance(
-                flags,
-                WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
-                    WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
-            )
-        } else {
-            val decor = window.decorView
-            var vis = decor.systemUiVisibility
-            vis = if (p.isDark) {
-                vis and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv() and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
-            } else {
-                vis or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        try {
+            window.statusBarColor = p.canvasBg
+            window.navigationBarColor = p.canvasBg
+        } catch (_: Throwable) {
+        }
+        val decor = try {
+            window.decorView
+        } catch (_: Throwable) {
+            return
+        }
+        decor.post {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val ctrl = decor.windowInsetsController ?: window.insetsController ?: return@post
+                    val flags = if (p.isDark) 0 else (
+                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                        )
+                    ctrl.setSystemBarsAppearance(
+                        flags,
+                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+                            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+                    )
+                } else {
+                    var vis = decor.systemUiVisibility
+                    vis = if (p.isDark) {
+                        vis and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv() and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
+                    } else {
+                        vis or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                    }
+                    decor.systemUiVisibility = vis
+                }
+            } catch (_: Throwable) {
             }
-            decor.systemUiVisibility = vis
         }
     }
 
@@ -352,6 +364,7 @@ object UiTheme {
      */
     fun showAboutDialog(activity: Activity, theme: ReaderTheme) {
         val p = palette(theme)
+        val en = AppStrings.isEnglish(activity)
         val dp = activity.resources.displayMetrics.density
         fun d(v: Int): Int = (v * dp).toInt()
 
@@ -375,19 +388,23 @@ object UiTheme {
             setTextColor(p.primaryText)
         })
         col.addView(TextView(activity).apply {
-            text = "Версія 5.0.0 · Офлайн EPUB 3 читалкa та українська ONNX-озвучка"
+            text = if (en) {
+                "Version 5.1.0 · Offline EPUB 3 Reader & Ukrainian ONNX Neural TTS"
+            } else {
+                "Версія 5.1.0 · Офлайн EPUB 3 читалка та українська ONNX-озвучка"
+            }
             textSize = 13f
             setTextColor(p.secondaryText)
             setPadding(0, d(4), 0, d(14))
         })
 
         val links = listOf(
-            Triple("HolosReader (GitHub)", "Вихідний код та релізи програми", "https://github.com/smyhlin/HolosReader"),
-            Triple("HolosTTS (Hugging Face)", "Українська нейромережева TTS-модель ONNX", "https://huggingface.co/patriotyk/HolosTTS"),
-            Triple("HolosTTS Voice Cloning", "Клонування голосів (.pt) для HolosReader", "https://huggingface.co/spaces/patriotyk/HolosTTS"),
-            Triple("Ukrainian Word Stress", "Словник українських наголосів (2,88 млн словоформ)", "https://github.com/lang-uk/ukrainian-word-stress"),
-            Triple("VESUM / dict_uk", "Морфологічний словник української мови", "https://github.com/brown-uk/dict_uk"),
-            Triple("ONNX Runtime Android", "Локальний рушій інференсу Microsoft", "https://github.com/microsoft/onnxruntime"),
+            Triple("HolosReader (GitHub)", if (en) "Source code and releases" else "Вихідний код та релізи програми", "https://github.com/smyhlin/HolosReader"),
+            Triple("HolosTTS (Hugging Face)", if (en) "Ukrainian neural ONNX TTS model" else "Українська нейромережева TTS-модель ONNX", "https://huggingface.co/patriotyk/HolosTTS"),
+            Triple("HolosTTS Voice Cloning", if (en) "Voice cloning (.pt) for HolosReader" else "Клонування голосів (.pt) для HolosReader", "https://huggingface.co/spaces/patriotyk/HolosTTS"),
+            Triple("Ukrainian Word Stress", if (en) "Ukrainian stress dictionary (2.88M forms)" else "Словник українських наголосів (2,88 млн словоформ)", "https://github.com/lang-uk/ukrainian-word-stress"),
+            Triple("VESUM / dict_uk", if (en) "Ukrainian morphological dictionary" else "Морфологічний словник української мови", "https://github.com/brown-uk/dict_uk"),
+            Triple("ONNX Runtime Android", if (en) "Local neural inference engine by Microsoft" else "Локальний рушій інференсу Microsoft", "https://github.com/microsoft/onnxruntime"),
         )
 
         links.forEachIndexed { idx, (label, desc, url) ->
@@ -428,7 +445,7 @@ object UiTheme {
         showThemedDialog(
             dialogBuilder(activity, theme)
                 .setView(scroll)
-                .setPositiveButton("Закрити", null),
+                .setPositiveButton(if (en) "Close" else "Закрити", null),
             theme,
         )
     }

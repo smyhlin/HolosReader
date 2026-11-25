@@ -1,10 +1,10 @@
 package com.holos.reader.ui
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
-import android.os.Build
 import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.view.Gravity
@@ -19,28 +19,32 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.holos.reader.R
+import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.HolosVoiceCatalog
 import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.ReaderTheme
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Unified 5-tab Reader & TTS Settings screen:
+ * Unified 5-tab Reader & TTS Settings screen (v5.1):
  * - Crash-proof initialization & drag-down-to-close top handle (`—`)
- * - Labeled icon tabs (Шрифт / Макет / Тема / Поведінка / Озвучка)
+ * - Bilingual UI (Ukrainian & English) with live zero-restart switching
+ * - EPUB Font Override toggle (default OFF — respects embedded EPUB font)
+ * - ONNX Hardware Acceleration selector (AUTO / NNAPI GPU/NPU / XNNPACK / CPU) + live resetEngine()
  * - 9-palette visual `Aa` Theme Grid + live typography preview
  */
 class ReaderSettingsActivity : Activity() {
 
-    private data class TabSpec(val id: Int, val titleUk: String, val iconRes: Int)
+    private data class TabSpec(val id: Int, val titleUk: String, val titleEn: String, val iconRes: Int)
 
     private val tabs = listOf(
-        TabSpec(0, "Шрифт", R.drawable.ic_font),
-        TabSpec(1, "Макет", R.drawable.ic_layout),
-        TabSpec(2, "Тема", R.drawable.ic_palette),
-        TabSpec(3, "Поведінка", R.drawable.ic_touch),
-        TabSpec(4, "Озвучка", R.drawable.ic_headphones),
+        TabSpec(0, "Шрифт", "Font", R.drawable.ic_font),
+        TabSpec(1, "Макет", "Layout", R.drawable.ic_layout),
+        TabSpec(2, "Тема", "Theme", R.drawable.ic_palette),
+        TabSpec(3, "Поведінка", "Behavior", R.drawable.ic_touch),
+        TabSpec(4, "Озвучка", "Audio", R.drawable.ic_headphones),
     )
 
     private lateinit var prefs: ReaderPreferences
@@ -54,22 +58,30 @@ class ReaderSettingsActivity : Activity() {
     private val dp get() = resources.displayMetrics.density
     private fun d(v: Int): Int = (v * dp).toInt()
     private val p get() = UiTheme.palette(prefs.theme)
+    private fun tr(uk: String, en: String): String = AppStrings.t(this, uk, en)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
             prefs = ReaderPreferences(this)
-            activeTabIndex = (intent?.getIntExtra(EXTRA_TAB_INDEX, 0) ?: 0).coerceIn(0, tabs.lastIndex)
+            activeTabIndex = (savedInstanceState?.getInt(STATE_TAB_INDEX)
+                ?: intent?.getIntExtra(EXTRA_TAB_INDEX, 0)
+                ?: 0).coerceIn(0, tabs.lastIndex)
             rebuildFullUi()
         } catch (t: Throwable) {
             val tv = TextView(this).apply {
-                text = "Помилка налаштувань: ${t.javaClass.simpleName}: ${t.message}"
+                text = "Settings error: ${t.javaClass.simpleName}: ${t.message}"
                 setTextColor(Color.WHITE)
                 setBackgroundColor(0xFF161618.toInt())
                 setPadding(32, 64, 32, 32)
             }
             setContentView(tv)
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(STATE_TAB_INDEX, activeTabIndex)
     }
 
     private fun rebuildFullUi() {
@@ -105,7 +117,7 @@ class ReaderSettingsActivity : Activity() {
             setColorFilter(pal.primaryText)
         }
         val titleTv = TextView(this).apply {
-            text = activeTab.titleUk
+            text = tr(activeTab.titleUk, activeTab.titleEn)
             textSize = 18f
             setTypeface(null, Typeface.BOLD)
             setTextColor(pal.primaryText)
@@ -165,7 +177,7 @@ class ReaderSettingsActivity : Activity() {
                     setColorFilter(if (isSelected) pal.accentBlue else pal.secondaryText)
                 }, LinearLayout.LayoutParams(d(20), d(20)).apply { bottomMargin = d(3) })
                 addView(TextView(context).apply {
-                    text = tab.titleUk
+                    text = tr(tab.titleUk, tab.titleEn)
                     textSize = 10f
                     maxLines = 1
                     gravity = Gravity.CENTER
@@ -212,122 +224,162 @@ class ReaderSettingsActivity : Activity() {
             background = UiTheme.rounded(p.cardBg, d(16).toFloat(), p.divider, 1)
         }
         fun refreshPreview() {
-            val sample = "Навичка II «Бенкет»: Зайці 3-го рівня тепер ледве могли подряпати її — оболонка стала майже невразливою."
+            val sample = tr(
+                "Навичка II «Бенкет»: Зайці 3-го рівня тепер ледве могли подряпати її — оболонка стала майже невразливою.",
+                "Skill II «Feast»: Level 3 rabbits could barely scratch it now — the shell had become nearly impervious.",
+            )
             val ssb = SpannableStringBuilder(sample)
             if (prefs.bionicReading) BionicTextHelper.applyBionic(ssb)
             previewTv.text = ssb
             previewTv.textSize = prefs.fontSizeSp
-            previewTv.typeface = resolveTypeface(prefs)
+            previewTv.typeface = resolveTypeface(this, prefs)
             previewTv.setLineSpacing(0f, prefs.lineSpacingMult)
             previewTv.letterSpacing = prefs.letterSpacingEm
         }
 
-        host.addView(sectionLabel("Розмір і насиченість"))
+        host.addView(groupedCard(listOf(
+            toggleRow(
+                label = tr("Перевизначати шрифт книги", "Override Book Font"),
+                subtitle = tr(
+                    "Вимкнено: використовувати вбудований шрифт EPUB, якщо є",
+                    "Off: respect embedded EPUB font & CSS hint when available",
+                ),
+                initial = prefs.overrideBookFont,
+                onChanged = { prefs.overrideBookFont = it; refreshPreview() },
+            ),
+        )))
+
+        host.addView(sectionLabel(tr("Розмір і насиченість", "Size & Weight")))
         host.addView(groupedCard(listOf(
             stepperRow(
-                label = "Розмір шрифту (sp)",
+                label = tr("Розмір шрифту (sp)", "Font Size (sp)"),
                 valueText = { prefs.fontSizeSp.toInt().toString() },
                 onMinus = { prefs.fontSizeSp = prefs.fontSizeSp - 1f; refreshPreview() },
                 onPlus = { prefs.fontSizeSp = prefs.fontSizeSp + 1f; refreshPreview() },
             ),
             stepperRow(
-                label = "Насиченість (Weight)",
+                label = tr("Насиченість (Weight)", "Font Weight"),
                 valueText = { prefs.fontWeight.toString() },
                 onMinus = { prefs.fontWeight = prefs.fontWeight - 100; refreshPreview() },
                 onPlus = { prefs.fontWeight = prefs.fontWeight + 100; refreshPreview() },
             ),
         )))
 
-        host.addView(sectionLabel("Сімейство шрифту та читання"))
-        val familyLabels = mapOf("SANS" to "Без засічок (Sans)", "SERIF" to "Із засічками (Serif)", "MONO" to "Моноширинний")
+        host.addView(sectionLabel(tr("Книжкові шрифти та читання", "Reading Fonts")))
+        val fontOptions = listOf(
+            "NOTO_SERIF" to tr("Noto Serif (книжковий)", "Noto Serif (Book)"),
+            "NOTO_SERIF_DISPLAY" to tr("Noto Serif Display (літературний)", "Noto Serif Display (Editorial)"),
+            "DEJAVU_SERIF" to tr("DejaVu Serif (e-ink стиль)", "DejaVu Serif (E-Ink)"),
+            "LIBERATION_SERIF" to tr("Liberation Serif (друкована книга)", "Liberation Serif (Classic Print)"),
+            "CARLITO" to tr("Carlito (м’який без засічок)", "Carlito (Soft Sans)"),
+            "NOTO_SANS" to tr("Noto Sans (сучасний)", "Noto Sans (Modern)"),
+            "DEJAVU_SANS" to tr("DejaVu Sans (широкий)", "DejaVu Sans (Wide)"),
+            "NOTO_MONO" to tr("Noto Sans Mono (моноширинний)", "Noto Sans Mono (Monospace)"),
+        )
+        val familyLabels = fontOptions.toMap() + mapOf(
+            "SERIF" to tr("Noto Serif (книжковий)", "Noto Serif (Book)"),
+            "SANS" to tr("Carlito (м’який без засічок)", "Carlito (Soft Sans)"),
+            "MONO" to tr("Noto Sans Mono (моноширинний)", "Noto Sans Mono (Monospace)"),
+        )
         host.addView(groupedCard(listOf(
             pickerRow(
-                label = "Основний шрифт",
-                currentLabel = { familyLabels[prefs.fontFamily] ?: "Без засічок (Sans)" },
-                options = listOf("SANS" to "Без засічок (Sans-Serif)", "SERIF" to "Із засічками (Serif)", "MONO" to "Моноширинний (Monospace)"),
+                label = tr("Основний шрифт", "Preferred Font"),
+                currentLabel = { familyLabels[prefs.fontFamily] ?: tr("Carlito (м’який без засічок)", "Carlito (Soft Sans)") },
+                options = fontOptions,
                 onPicked = { prefs.fontFamily = it; refreshPreview() },
             ),
             toggleRow(
                 label = "Bionic Reading",
-                subtitle = "Жирний початок кожного слова для швидкого читання",
+                subtitle = tr(
+                    "Жирний початок кожного слова для швидкого читання",
+                    "Bold word prefixes to guide eye fixation",
+                ),
                 initial = prefs.bionicReading,
                 onChanged = { prefs.bionicReading = it; refreshPreview() },
             ),
         )))
 
-        host.addView(sectionLabel("Попередній перегляд"))
+        host.addView(sectionLabel(tr("Попередній перегляд", "Preview")))
         host.addView(previewTv, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(8) })
         refreshPreview()
     }
 
     // ==================== TAB 1: LAYOUT ====================
     private fun renderLayoutTab(host: LinearLayout) {
-        host.addView(sectionLabel("Абзац"))
+        host.addView(sectionLabel(tr("Абзац", "Paragraph")))
         host.addView(groupedCard(listOf(
             stepperRow(
-                label = "Відступ між абзацами (dp)",
+                label = tr("Відступ між абзацами (dp)", "Paragraph Margin (dp)"),
                 valueText = { prefs.paragraphMarginDp.toString() },
                 onMinus = { prefs.paragraphMarginDp -= 2 },
                 onPlus = { prefs.paragraphMarginDp += 2 },
             ),
             stepperRow(
-                label = "Міжрядковий інтервал",
+                label = tr("Міжрядковий інтервал", "Line Spacing"),
                 valueText = { String.format(Locale.US, "%.1f", prefs.lineSpacingMult) },
                 onMinus = { prefs.lineSpacingMult = ((prefs.lineSpacingMult * 10).toInt() - 1) / 10f },
                 onPlus = { prefs.lineSpacingMult = ((prefs.lineSpacingMult * 10).toInt() + 1) / 10f },
             ),
             stepperRow(
-                label = "Міжлітерний інтервал",
+                label = tr("Міжлітерний інтервал", "Letter Spacing"),
                 valueText = { String.format(Locale.US, "%.2f", prefs.letterSpacingEm) },
                 onMinus = { prefs.letterSpacingEm = ((prefs.letterSpacingEm * 100).toInt() - 2) / 100f },
                 onPlus = { prefs.letterSpacingEm = ((prefs.letterSpacingEm * 100).toInt() + 2) / 100f },
             ),
             stepperRow(
-                label = "Червоний рядок (dp)",
+                label = tr("Червоний рядок (dp)", "First-Line Indent (dp)"),
                 valueText = { prefs.textIndentDp.toString() },
                 onMinus = { prefs.textIndentDp -= 8 },
                 onPlus = { prefs.textIndentDp += 8 },
             ),
             toggleRow(
-                label = "Вирівнювання по ширині",
-                subtitle = "Рівний правий край тексту (Full Justification)",
+                label = tr("Вирівнювання по ширині", "Full Justification"),
+                subtitle = tr("Рівний правий край тексту", "Align both left and right edges"),
                 initial = prefs.fullJustification,
                 onChanged = { prefs.fullJustification = it },
             ),
         )))
 
-        host.addView(sectionLabel("Поля та колонтитули"))
+        host.addView(sectionLabel(tr("Поля та колонтитули", "Margins & Header/Footer")))
         host.addView(groupedCard(listOf(
             stepperRow(
-                label = "Бокові поля (dp)",
+                label = tr("Бокові поля (dp)", "Side Margins (dp)"),
                 valueText = { prefs.sideMarginDp.toString() },
                 onMinus = { prefs.sideMarginDp -= 4 },
                 onPlus = { prefs.sideMarginDp += 4 },
             ),
             toggleRow(
-                label = "Показувати назву розділу зверху",
+                label = tr("Показувати назву розділу зверху", "Show Chapter Header"),
                 initial = prefs.showHeader,
                 onChanged = { prefs.showHeader = it },
             ),
             toggleRow(
-                label = "Показувати номер розділу знизу",
+                label = tr("Показувати номер сторінки знизу", "Show Page & Chapter Footer"),
                 initial = prefs.showFooter,
                 onChanged = { prefs.showFooter = it },
             ),
             toggleRow(
-                label = "Тонка смуга прогресу розділу",
+                label = tr("Тонка смуга прогресу розділу", "Chapter Progress Bar"),
                 initial = prefs.showProgressBar,
                 onChanged = { prefs.showProgressBar = it },
             ),
         )))
 
-        host.addView(sectionLabel("Екран"))
-        val orientLabels = mapOf("AUTO" to "Авто", "PORTRAIT" to "Книжкова", "LANDSCAPE" to "Альбомна")
+        host.addView(sectionLabel(tr("Екран", "Screen")))
+        val orientLabels = mapOf(
+            "AUTO" to tr("Авто", "Auto"),
+            "PORTRAIT" to tr("Книжкова", "Portrait"),
+            "LANDSCAPE" to tr("Альбомна", "Landscape"),
+        )
         host.addView(groupedCard(listOf(
             pickerRow(
-                label = "Орієнтація екрана",
-                currentLabel = { orientLabels[prefs.screenOrientation] ?: "Авто" },
-                options = listOf("AUTO" to "Автоматично", "PORTRAIT" to "Книжкова (Portrait)", "LANDSCAPE" to "Альбомна (Landscape)"),
+                label = tr("Орієнтація екрана", "Screen Orientation"),
+                currentLabel = { orientLabels[prefs.screenOrientation] ?: tr("Авто", "Auto") },
+                options = listOf(
+                    "AUTO" to tr("Автоматично", "Automatic"),
+                    "PORTRAIT" to tr("Книжкова (Portrait)", "Portrait"),
+                    "LANDSCAPE" to tr("Альбомна (Landscape)", "Landscape"),
+                ),
                 onPicked = { prefs.screenOrientation = it },
             )
         )))
@@ -336,7 +388,7 @@ class ReaderSettingsActivity : Activity() {
     // ==================== TAB 2: THEME ====================
     private fun renderThemeTab(host: LinearLayout) {
         val themes = ReaderTheme.values().toList()
-        host.addView(sectionLabel("Кольорова тема (${themes.size} палітр)"))
+        host.addView(sectionLabel(tr("Кольорова тема (${themes.size} палітр)", "Color Theme (${themes.size} palettes)")))
 
         val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         var idx = 0
@@ -368,7 +420,7 @@ class ReaderSettingsActivity : Activity() {
                             gravity = Gravity.CENTER
                         })
                         addView(TextView(context).apply {
-                            text = t.label
+                            text = AppStrings.themeLabel(this@ReaderSettingsActivity, t)
                             textSize = 12f
                             setTextColor(tp.secondaryText)
                             gravity = Gravity.CENTER
@@ -391,17 +443,17 @@ class ReaderSettingsActivity : Activity() {
             topMargin = d(8); bottomMargin = d(12)
         })
 
-        host.addView(sectionLabel("Ілюстрації та діалоги"))
+        host.addView(sectionLabel(tr("Ілюстрації та діалоги", "Illustrations & Dialogue")))
         host.addView(groupedCard(listOf(
             toggleRow(
-                label = "Інвертувати зображення у темній темі",
-                subtitle = "Корисно для чорно-білих схем і діаграм",
+                label = tr("Інвертувати зображення у темній темі", "Invert Images in Dark Mode"),
+                subtitle = tr("Корисно для чорно-білих схем і діаграм", "Helpful for black-and-white diagrams"),
                 initial = prefs.invertImagesInDark,
                 onChanged = { prefs.invertImagesInDark = it },
             ),
             toggleRow(
-                label = "Підсвічувати діалоги (—)",
-                subtitle = "М’який акцент на репліках прямої мови в тексті",
+                label = tr("Підсвічувати діалоги (—)", "Highlight Dialogues (—)"),
+                subtitle = tr("М’який акцент на репліках прямої мови в тексті", "Subtle accent tint on spoken dialogue lines"),
                 initial = prefs.highlightDialogues,
                 onChanged = { prefs.highlightDialogues = it },
             ),
@@ -410,48 +462,68 @@ class ReaderSettingsActivity : Activity() {
 
     // ==================== TAB 3: BEHAVIOR ====================
     private fun renderBehaviorTab(host: LinearLayout) {
-        host.addView(sectionLabel("Навігація та прокрутка"))
+        host.addView(sectionLabel(tr("Мова інтерфейсу", "Interface Language")))
+        host.addView(groupedCard(listOf(
+            pickerRow(
+                label = tr("Мова додатка", "App Language"),
+                currentLabel = { AppStrings.languageDisplayName(this, prefs.appLanguage) },
+                options = listOf(
+                    AppStrings.LANG_SYSTEM to tr("Системна (авто)", "System (auto)"),
+                    AppStrings.LANG_UK to "Українська",
+                    AppStrings.LANG_EN to "English",
+                ),
+                onPicked = {
+                    prefs.appLanguage = it
+                    rebuildFullUi()
+                },
+            )
+        )))
+
+        host.addView(sectionLabel(tr("Навігація та прокрутка", "Navigation & Scrolling")))
         host.addView(groupedCard(listOf(
             toggleRow(
-                label = "Приховати смугу прокрутки",
+                label = tr("Приховати смугу прокрутки", "Hide Scrollbar"),
                 initial = prefs.hideScrollbar,
                 onChanged = { prefs.hideScrollbar = it },
             ),
             toggleRow(
-                label = "Гортати кнопками гучності",
-                subtitle = "Гучність +/− плавно прокручує сторінку в читалці",
+                label = tr("Гортати кнопками гучності", "Volume Key Scrolling"),
+                subtitle = tr("Гучність +/− плавно прокручує сторінку в читалці", "Volume +/− smoothly scrolls pages"),
                 initial = prefs.volumeKeyScroll,
                 onChanged = { prefs.volumeKeyScroll = it },
             ),
             toggleRow(
-                label = "Автоперехід на наступний розділ",
-                subtitle = "Після завершення озвучення розділу автоматично починати наступний",
+                label = tr("Автоперехід на наступний розділ", "Auto-Advance Chapter"),
+                subtitle = tr(
+                    "Після завершення озвучення розділу автоматично починати наступний",
+                    "Automatically continue TTS into the next chapter",
+                ),
                 initial = prefs.autoAdvanceChapter,
                 onChanged = { prefs.autoAdvanceChapter = it },
             ),
             stepperRow(
-                label = "Швидкість автопрокрутки",
+                label = tr("Швидкість автопрокрутки", "Auto-Scroll Speed"),
                 valueText = { "${prefs.autoScrollSpeed}×" },
                 onMinus = { prefs.autoScrollSpeed -= 1 },
                 onPlus = { prefs.autoScrollSpeed += 1 },
             ),
         )))
 
-        host.addView(sectionLabel("Пристрій"))
+        host.addView(sectionLabel(tr("Пристрій", "Device")))
         host.addView(groupedCard(listOf(
             toggleRow(
-                label = "Не вимикати екран під час читання",
+                label = tr("Не вимикати екран під час читання", "Keep Screen Awake"),
                 initial = prefs.keepScreenAwake,
                 onChanged = { prefs.keepScreenAwake = it },
             ),
             toggleRow(
-                label = "Повноекранний режим",
-                subtitle = "Приховувати системний статус-бар у читалці",
+                label = tr("Повноекранний режим", "Fullscreen Mode"),
+                subtitle = tr("Приховувати системний статус-бар у читалці", "Hide system status bar while reading"),
                 initial = prefs.fullscreenMode,
                 onChanged = { prefs.fullscreenMode = it },
             ),
             toggleRow(
-                label = "Відкривати останню книгу при запуску",
+                label = tr("Відкривати останню книгу при запуску", "Open Last Book on Launch"),
                 initial = prefs.openLastBookOnStart,
                 onChanged = { prefs.openLastBookOnStart = it },
             ),
@@ -460,64 +532,129 @@ class ReaderSettingsActivity : Activity() {
 
     // ==================== TAB 4: TTS ====================
     private fun renderTtsTab(host: LinearLayout) {
-        host.addView(sectionLabel("Голос та синтез"))
+        host.addView(sectionLabel(tr("Голос та рушій ONNX", "Voice & ONNX Engine")))
+        val accelLabels = mapOf(
+            HolosEngineHolder.EP_AUTO to tr("Авто (NNAPI→XNN→CPU)", "Auto (NNAPI→XNN→CPU)"),
+            HolosEngineHolder.EP_NNAPI to "NNAPI (GPU / NPU)",
+            HolosEngineHolder.EP_XNNPACK to "XNNPACK (SIMD)",
+            HolosEngineHolder.EP_CPU to "CPU",
+        )
         host.addView(groupedCard(listOf(
             toggleRow(
-                label = "Адаптивна озвучка (3 ролі)",
-                subtitle = "Оповідач · [СИСТЕМА] · Діалоги (—)",
+                label = tr("Адаптивна озвучка (3 ролі)", "Adaptive Voices (3 Roles)"),
+                subtitle = tr("Оповідач · [СИСТЕМА] · Діалоги (—)", "Narrator · [SYSTEM] · Dialogues (—)"),
                 initial = prefs.adaptiveVoicesEnabled,
                 onChanged = { prefs.adaptiveVoicesEnabled = it },
             ),
             stepperRow(
-                label = "Швидкість озвучення",
+                label = tr("Швидкість озвучення", "Speech Speed"),
                 valueText = { String.format(Locale.US, "%.2f×", prefs.speechSpeed) },
                 onMinus = { prefs.speechSpeed = ((prefs.speechSpeed * 20).toInt() - 1) / 20f },
                 onPlus = { prefs.speechSpeed = ((prefs.speechSpeed * 20).toInt() + 1) / 20f },
             ),
+            pickerRow(
+                label = tr("Прискорення ONNX", "ONNX Accelerator"),
+                subtitle = tr(
+                    "Активний рушій: ${HolosEngineHolder.activeAccelerator}",
+                    "Active runtime: ${HolosEngineHolder.activeAccelerator}",
+                ),
+                currentLabel = { accelLabels[prefs.onnxAccelerator] ?: "Auto" },
+                options = listOf(
+                    HolosEngineHolder.EP_AUTO to tr("Авто (NNAPI → XNNPACK → CPU)", "Auto (NNAPI → XNNPACK → CPU)"),
+                    HolosEngineHolder.EP_NNAPI to tr("NNAPI (Adreno GPU / NPU)", "NNAPI (Adreno GPU / NPU)"),
+                    HolosEngineHolder.EP_XNNPACK to tr("XNNPACK (NEON SIMD)", "XNNPACK (NEON SIMD)"),
+                    HolosEngineHolder.EP_CPU to tr("CPU (стандартний)", "CPU (Standard)"),
+                ),
+                onPicked = {
+                    prefs.onnxAccelerator = it
+                    HolosEngineHolder.resetEngine()
+                    Toast.makeText(
+                        this,
+                        tr("Рушій ONNX перезапуститься при наступному відтворенні", "ONNX engine will reload on next playback"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                },
+            ),
             stepperRow(
-                label = "Потоки CPU (ONNX)",
+                label = tr("Потоки CPU (ONNX)", "CPU Threads (ONNX)"),
                 valueText = { prefs.cpuThreads.toString() },
-                onMinus = { prefs.cpuThreads -= 1 },
-                onPlus = { prefs.cpuThreads += 1 },
+                onMinus = {
+                    prefs.cpuThreads -= 1
+                    HolosEngineHolder.resetEngine()
+                },
+                onPlus = {
+                    prefs.cpuThreads += 1
+                    HolosEngineHolder.resetEngine()
+                },
             ),
             actionRow(
-                label = "Словник наголосів (stress_user.txt)",
-                subtitle = "Поточний диктор: ${HolosVoiceCatalog.displayName(prefs.selectedVoice)}",
+                label = tr("Словник наголосів (stress_user.txt)", "Stress Dictionary (stress_user.txt)"),
+                subtitle = tr(
+                    "Поточний диктор: ${HolosVoiceCatalog.displayName(prefs.selectedVoice)}",
+                    "Active voice: ${HolosVoiceCatalog.displayName(prefs.selectedVoice)}",
+                ),
                 trailing = "›",
                 onClick = { startActivity(Intent(this, StressEditorActivity::class.java)) },
             ),
         )))
 
-        host.addView(sectionLabel("Підсвічування TTS"))
-        val granLabels = mapOf("WORD" to "Слово (1:1)", "PARAGRAPH" to "Абзац", "OFF" to "Вимкнено")
-        val styleLabels = mapOf("HIGHLIGHTER" to "Маркер", "UNDERLINE" to "Підкреслення", "TEXT_COLOR" to "Колір тексту")
+        host.addView(sectionLabel(tr("Підсвічування TTS", "TTS Highlighting")))
+        val granLabels = mapOf(
+            "WORD" to tr("Слово (1:1)", "Word (1:1)"),
+            "PARAGRAPH" to tr("Абзац", "Paragraph"),
+            "OFF" to tr("Вимкнено", "Off"),
+        )
+        val styleLabels = mapOf(
+            "HIGHLIGHTER" to tr("Маркер", "Highlighter"),
+            "UNDERLINE" to tr("Підкреслення", "Underline"),
+            "TEXT_COLOR" to tr("Колір тексту", "Text Color"),
+        )
         host.addView(groupedCard(listOf(
             pickerRow(
-                label = "Деталізація",
-                currentLabel = { granLabels[prefs.ttsHighlightGranularity] ?: "Слово (1:1)" },
-                options = listOf("WORD" to "Слово (1:1 анімація)", "PARAGRAPH" to "Лише абзац", "OFF" to "Вимкнено"),
+                label = tr("Деталізація", "Granularity"),
+                currentLabel = { granLabels[prefs.ttsHighlightGranularity] ?: tr("Слово (1:1)", "Word (1:1)") },
+                options = listOf(
+                    "WORD" to tr("Слово (1:1 анімація)", "Word (1:1 animation)"),
+                    "PARAGRAPH" to tr("Лише абзац", "Paragraph only"),
+                    "OFF" to tr("Вимкнено", "Off"),
+                ),
                 onPicked = { prefs.ttsHighlightGranularity = it },
             ),
             pickerRow(
-                label = "Стиль виділення",
-                currentLabel = { styleLabels[prefs.ttsHighlightStyle] ?: "Маркер" },
-                options = listOf("HIGHLIGHTER" to "Маркер (Highlighter)", "UNDERLINE" to "Підкреслення (Underline)", "TEXT_COLOR" to "Колір тексту"),
+                label = tr("Стиль виділення", "Highlight Style"),
+                currentLabel = { styleLabels[prefs.ttsHighlightStyle] ?: tr("Маркер", "Highlighter") },
+                options = listOf(
+                    "HIGHLIGHTER" to tr("Маркер (Highlighter)", "Highlighter"),
+                    "UNDERLINE" to tr("Підкреслення (Underline)", "Underline"),
+                    "TEXT_COLOR" to tr("Колір тексту", "Text Color"),
+                ),
                 onPicked = { prefs.ttsHighlightStyle = it },
             ),
             quickColorRow(),
         )))
 
-        host.addView(sectionLabel("Кеш офлайн-аудіо"))
-        val cacheDir = File(cacheDir, "offline_chapters")
-        val cacheMb = (cacheDir.listFiles()?.sumOf { it.length() } ?: 0L) / (1024.0 * 1024.0)
+        host.addView(sectionLabel(tr("Кеш офлайн-аудіо", "Offline Audio Cache")))
+        val persistentDir = File(filesDir, "offline_chapters")
+        val legacyCacheDir = File(cacheDir, "offline_chapters")
+        val totalBytes = (persistentDir.listFiles()?.sumOf { it.length() } ?: 0L) +
+            (legacyCacheDir.listFiles()?.sumOf { it.length() } ?: 0L)
+        val cacheMb = totalBytes / (1024.0 * 1024.0)
         host.addView(groupedCard(listOf(
             actionRow(
-                label = "Очистити кеш збережених розділів",
-                subtitle = String.format(Locale.US, "Зайнято: %.1f МБ", cacheMb),
-                trailing = "Очистити",
+                label = tr("Очистити збережені розділи", "Clear Offline Chapter Audio"),
+                subtitle = tr(
+                    String.format(Locale.US, "Зайнято: %.1f МБ", cacheMb),
+                    String.format(Locale.US, "Used: %.1f MB", cacheMb),
+                ),
+                trailing = tr("Очистити", "Clear"),
                 onClick = {
-                    cacheDir.listFiles()?.forEach { it.delete() }
-                    Toast.makeText(this, "Кеш офлайн-аудіо очищено", Toast.LENGTH_SHORT).show()
+                    persistentDir.listFiles()?.forEach { it.delete() }
+                    legacyCacheDir.listFiles()?.forEach { it.delete() }
+                    Toast.makeText(
+                        this,
+                        tr("Офлайн-аудіо очищено", "Offline audio cleared"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
                     rebuildFullUi()
                 },
             )
@@ -653,6 +790,7 @@ class ReaderSettingsActivity : Activity() {
 
     private fun pickerRow(
         label: String,
+        subtitle: String? = null,
         currentLabel: () -> String,
         options: List<Pair<String, String>>,
         onPicked: (String) -> Unit,
@@ -664,15 +802,27 @@ class ReaderSettingsActivity : Activity() {
             background = UiTheme.rounded(p.inlineHighlightBg, d(10).toFloat())
             setPadding(d(12), d(7), d(12), d(7))
         }
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(d(16), d(12), d(14), d(12))
+        val textCol = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             addView(TextView(context).apply {
                 text = label
                 textSize = 15f
                 setTextColor(p.primaryText)
-            }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = d(8) })
+            })
+            if (!subtitle.isNullOrBlank()) {
+                addView(TextView(context).apply {
+                    text = subtitle
+                    textSize = 12f
+                    setTextColor(p.secondaryText)
+                    setPadding(0, d(2), 0, 0)
+                })
+            }
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(d(16), d(12), d(14), d(12))
+            addView(textCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = d(8) })
             addView(chipTv)
             setOnClickListener {
                 val labels = options.map { it.second }.toTypedArray()
@@ -767,7 +917,7 @@ class ReaderSettingsActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setPadding(d(16), d(12), d(14), d(12))
             addView(TextView(context).apply {
-                text = "Колір маркера"
+                text = tr("Колір маркера", "Highlight Color")
                 textSize = 15f
                 setTextColor(p.primaryText)
             }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
@@ -777,21 +927,40 @@ class ReaderSettingsActivity : Activity() {
 
     companion object {
         const val EXTRA_TAB_INDEX = "tab_index"
+        private const val STATE_TAB_INDEX = "state_tab_index"
 
-        fun resolveTypeface(prefs: ReaderPreferences): Typeface {
-            val base = when (prefs.fontFamily) {
-                "SERIF" -> Typeface.SERIF
-                "MONO" -> Typeface.MONOSPACE
-                else -> Typeface.SANS_SERIF
+        private val fontCache = ConcurrentHashMap<String, Typeface>()
+
+        fun resolveTypeface(
+            context: Context,
+            prefs: ReaderPreferences,
+            bookTypeface: Typeface? = null,
+        ): Typeface {
+            if (!prefs.overrideBookFont && bookTypeface != null) {
+                return bookTypeface
             }
-            return try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                    Typeface.create(base, prefs.fontWeight, false)
-                } else {
-                    if (prefs.fontWeight >= 600) Typeface.create(base, Typeface.BOLD) else base
+            val bold = prefs.fontWeight >= 600
+            val assetName = when (prefs.fontFamily) {
+                "NOTO_SERIF", "SERIF" -> if (bold) "fonts/NotoSerif-Bold.ttf" else "fonts/NotoSerif-Regular.ttf"
+                "NOTO_SERIF_DISPLAY" -> if (bold) "fonts/NotoSerifDisplay-Bold.ttf" else "fonts/NotoSerifDisplay-Regular.ttf"
+                "DEJAVU_SERIF" -> if (bold) "fonts/DejaVuSerif-Bold.ttf" else "fonts/DejaVuSerif.ttf"
+                "LIBERATION_SERIF" -> if (bold) "fonts/LiberationSerif-Bold.ttf" else "fonts/LiberationSerif-Regular.ttf"
+                "NOTO_SANS" -> if (bold) "fonts/NotoSans-Bold.ttf" else "fonts/NotoSans-Regular.ttf"
+                "DEJAVU_SANS" -> if (bold) "fonts/DejaVuSans-Bold.ttf" else "fonts/DejaVuSans.ttf"
+                "NOTO_MONO", "MONO" -> if (bold) "fonts/NotoSansMono-Bold.ttf" else "fonts/NotoSansMono-Regular.ttf"
+                else -> if (bold) "fonts/Carlito-Bold.ttf" else "fonts/Carlito-Regular.ttf"
+            }
+            return fontCache.getOrPut(assetName) {
+                try {
+                    Typeface.createFromAsset(context.applicationContext.assets, assetName)
+                } catch (_: Throwable) {
+                    val fb = when {
+                        prefs.fontFamily.contains("SERIF") -> Typeface.SERIF
+                        prefs.fontFamily.contains("MONO") -> Typeface.MONOSPACE
+                        else -> Typeface.SANS_SERIF
+                    }
+                    if (bold) Typeface.create(fb, Typeface.BOLD) else fb
                 }
-            } catch (_: Throwable) {
-                base
             }
         }
     }
