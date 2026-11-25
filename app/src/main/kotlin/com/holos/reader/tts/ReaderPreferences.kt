@@ -41,8 +41,8 @@ class ReaderPreferences(context: Context) {
         set(v) = prefs.edit().putString("voice_dialogue", v).apply()
 
     var speechSpeed: Float
-        get() = prefs.getFloat("speed", 1.1f).coerceIn(0.6f, 2.0f)
-        set(v) = prefs.edit().putFloat("speed", v.coerceIn(0.6f, 2.0f)).apply()
+        get() = prefs.getFloat("speed", 1.1f).coerceIn(0.5f, 2.5f)
+        set(v) = prefs.edit().putFloat("speed", v.coerceIn(0.5f, 2.5f)).apply()
 
     var cpuThreads: Int
         get() = prefs.getInt("threads", 4).coerceIn(1, 8)
