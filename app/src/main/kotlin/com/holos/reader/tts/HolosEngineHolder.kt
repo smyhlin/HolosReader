@@ -2,12 +2,16 @@ package com.holos.reader.tts
 
 import ai.onnxruntime.OrtSession
 import android.content.Context
+import android.util.Log
 import com.holos.reader.g2p.NeuralAccentor
 import com.holos.reader.g2p.UkrainianStressDict
 import com.holos.reader.g2p.UkrainianStressifier
 import com.holos.reader.g2p.UserStressOverrides
 import com.holos.tts.HolosOnnx
 import java.io.File
+import java.io.FileNotFoundException
+import java.io.InputStream
+import java.io.PushbackInputStream
 import java.util.zip.GZIPInputStream
 
 /**
@@ -19,7 +23,9 @@ import java.util.zip.GZIPInputStream
  */
 object HolosEngineHolder {
 
+    private const val TAG = "HolosEngineHolder"
     private const val STRESS_ASSET_GZ = "uk_stress.bin.gz"
+    private const val STRESS_ASSET_RAW = "uk_stress.bin"
     private const val STRESS_UNPACKED = "uk_stress_v2.bin"
     private const val ACCENTOR_ASSET = "accentor-lite.onnx"
     private const val USER_STRESS_FILE = "stress_user.txt"
@@ -67,17 +73,22 @@ object HolosEngineHolder {
             stressifier?.let { return it }
             val appCtx = context.applicationContext
 
-            // 1. Unpack & mmap v2 stress dictionary (2.88M wordforms + 36,414 tagged homographs)
+            // 1. Unpack & mmap v2 stress dictionary (handles both .bin.gz and AAPT-stripped .bin)
             val outFile = File(appCtx.filesDir, STRESS_UNPACKED)
-            if (!outFile.exists() || outFile.length() == 0L) {
-                unpackStressDict(appCtx, outFile)
-            }
             val dict = try {
-                UkrainianStressDict(outFile)
-            } catch (_: Exception) {
-                outFile.delete()
-                unpackStressDict(appCtx, outFile)
-                UkrainianStressDict(outFile)
+                if (!outFile.exists() || outFile.length() == 0L) {
+                    unpackStressDict(appCtx, outFile)
+                }
+                try {
+                    UkrainianStressDict(outFile)
+                } catch (_: Exception) {
+                    outFile.delete()
+                    unpackStressDict(appCtx, outFile)
+                    UkrainianStressDict(outFile)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Stress dictionary unavailable, falling back to neural accentor", e)
+                null
             }
             stressDict = dict
 
@@ -88,7 +99,8 @@ object HolosEngineHolder {
                     copyAsset(appCtx, ACCENTOR_ASSET, accentorFile)
                 }
                 NeuralAccentor(accentorFile).also { neuralAccentor = it }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w(TAG, "Neural accentor unavailable, falling back to rule heuristics", e)
                 null
             }
 
@@ -117,12 +129,29 @@ object HolosEngineHolder {
         }
     }
 
+    private fun openStressAsset(context: Context): InputStream {
+        return try {
+            context.assets.open(STRESS_ASSET_GZ)
+        } catch (_: FileNotFoundException) {
+            // Android AAPT automatically strips `.gz` and decompresses gzipped assets at APK build time.
+            context.assets.open(STRESS_ASSET_RAW)
+        }
+    }
+
     private fun unpackStressDict(context: Context, target: File) {
         val part = File(target.path + ".part")
         try {
-            context.assets.open(STRESS_ASSET_GZ).use { raw ->
-                GZIPInputStream(raw, 1 shl 16).use { gz ->
-                    part.outputStream().use { out -> gz.copyTo(out, 1 shl 16) }
+            openStressAsset(context).use { raw ->
+                val pb = PushbackInputStream(raw, 2)
+                val header = ByteArray(2)
+                val read = pb.read(header)
+                if (read > 0) pb.unread(header, 0, read)
+                val isGzip = read == 2 &&
+                    (header[0].toInt() and 0xFF) == 0x1F &&
+                    (header[1].toInt() and 0xFF) == 0x8B
+                val source: InputStream = if (isGzip) GZIPInputStream(pb, 1 shl 16) else pb
+                source.use { input ->
+                    part.outputStream().use { out -> input.copyTo(out, 1 shl 16) }
                 }
             }
             if (target.exists()) target.delete()

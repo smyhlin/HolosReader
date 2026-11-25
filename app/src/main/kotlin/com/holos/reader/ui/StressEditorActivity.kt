@@ -1,20 +1,22 @@
 package com.holos.reader.ui
 
 import android.app.Activity
+import android.graphics.Color
 import android.graphics.Typeface
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Bundle
 import android.text.InputType
+import android.view.Gravity
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
-import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import com.holos.reader.R
 import com.holos.reader.g2p.UkrainianIpa
 import com.holos.reader.g2p.UkrainianTextNormalizer
 import com.holos.reader.tts.HolosEngineHolder
@@ -38,30 +40,57 @@ class StressEditorActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val dp = resources.displayMetrics.density
-        val pad = (16 * dp).toInt()
-        val gap = (10 * dp).toInt()
+        val prefs = ReaderPreferences(this)
+        val p = UiTheme.palette(prefs.theme)
+        UiTheme.applySystemBars(this, prefs.theme)
 
+        val dp = resources.displayMetrics.density
+        fun d(v: Int): Int = (v * dp).toInt()
+
+        val backBtn = UiTheme.iconView(this, R.drawable.ic_chevron_left, padDp = 8) { finish() }.apply {
+            setColorFilter(p.primaryText)
+        }
         val title = TextView(this).apply {
-            text = "Власні наголоси (stress_user.txt)"
+            text = "Власні наголоси"
             textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
+            setTextColor(p.primaryText)
         }
+        val topBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(backBtn, LinearLayout.LayoutParams(d(40), d(40)))
+            addView(title, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { leftMargin = d(6) })
+        }
+
         val hint = TextView(this).apply {
             text = "Поставте + після наголошеної голосної (напр., ка+ва) або задайте заміну (Сюань=Сюа+нь). " +
                 "Ці правила мають найвищий пріоритет над основним словником."
             textSize = 13f
+            setTextColor(p.secondaryText)
         }
 
         dictEditor = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             typeface = Typeface.MONOSPACE
+            textSize = 14f
             minLines = 7
+            gravity = Gravity.TOP or Gravity.START
+            setTextColor(p.primaryText)
+            setHintTextColor(p.mutedText)
+            setPadding(d(12), d(12), d(12), d(12))
+            background = UiTheme.rounded(p.cardBg, d(12).toFloat(), p.divider, 1)
             setText(HolosEngineHolder.getUserOverrides(this@StressEditorActivity).getRawText())
         }
 
-        val saveBtn = Button(this).apply {
+        val saveBtn = TextView(this).apply {
             text = "Зберегти словник"
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = UiTheme.rounded(p.accentBlue, d(12).toFloat())
+            setPadding(d(14), d(12), d(14), d(12))
             setOnClickListener {
                 HolosEngineHolder.saveUserOverrides(this@StressEditorActivity, dictEditor.text.toString())
                 Toast.makeText(
@@ -74,35 +103,52 @@ class StressEditorActivity : Activity() {
 
         val testLabel = TextView(this).apply {
             text = "Перевірка вимови (наголоси + IPA + звук):"
+            textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
+            setTextColor(p.primaryText)
         }
         testInput = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            textSize = 14f
+            setTextColor(p.primaryText)
+            setHintTextColor(p.mutedText)
+            setPadding(d(12), d(12), d(12), d(12))
+            background = UiTheme.rounded(p.cardBg, d(12).toFloat(), p.divider, 1)
             setText("Замок стояв на пагорбі. Герой відкрив ранобе про ісекай.")
         }
-        val testBtn = Button(this).apply {
+        val testBtn = TextView(this).apply {
             text = "Перевірити та озвучити"
+            textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            setTextColor(p.primaryText)
+            background = UiTheme.rounded(p.cardBg, d(12).toFloat(), p.accentBlue, 2)
+            setPadding(d(14), d(12), d(14), d(12))
             setOnClickListener { runTest() }
         }
         previewOut = TextView(this).apply {
             textSize = 13f
+            setTextColor(p.secondaryText)
+            setLineSpacing(0f, 1.3f)
         }
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-            addView(title)
-            addView(hint, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = gap / 2 })
-            addView(dictEditor, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = gap })
-            addView(saveBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = gap / 2 })
-            addView(testLabel, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = gap * 2 })
-            addView(testInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = gap / 2 })
-            addView(testBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = gap / 2 })
-            addView(previewOut, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = gap })
+            setBackgroundColor(p.canvasBg)
+            setPadding(d(16), d(12), d(16), d(24))
+            addView(topBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+            addView(hint, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(8) })
+            addView(dictEditor, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(12) })
+            addView(saveBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(10) })
+            addView(testLabel, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(22) })
+            addView(testInput, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(8) })
+            addView(testBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(10) })
+            addView(previewOut, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(12) })
         }
 
         setContentView(ScrollView(this).apply {
             fitsSystemWindows = true
+            setBackgroundColor(p.canvasBg)
             addView(root)
         })
     }
@@ -120,51 +166,60 @@ class StressEditorActivity : Activity() {
         cancelTest.set(false)
 
         worker.execute {
-            val stressifier = HolosEngineHolder.getStressifier(this)
-            val norm = UkrainianTextNormalizer.normalize(raw)
-            val stressed = stressifier.stressify(norm)
-            val ipa = UkrainianIpa.transcribe(stressed)
-            runOnUiThread {
-                previewOut.text = "Нормалізація: $norm\n\nНаголоси: $stressed\n\nIPA: $ipa"
-            }
-
-            val engine = try { HolosEngineHolder.getEngine(this) } catch (_: Exception) { null } ?: return@execute
-            val prefs = ReaderPreferences(this)
-            val voice = prefs.selectedVoice?.takeIf { it in engine.voices } ?: engine.voices.firstOrNull()
-            val track = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                        .setSampleRate(engine.sampleRate)
-                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                        .build()
-                )
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(2 * engine.sampleRate * 4)
-                .build()
-
             try {
-                HolosSafeSynthesizer.synthesizeParagraphStreaming(
-                    engine = engine,
-                    stressifier = stressifier,
-                    rawParagraph = raw,
-                    voice = voice,
-                    speed = prefs.speechSpeed,
-                    cancelled = cancelTest,
-                ) { chunk ->
-                    track.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
-                    if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+                val stressifier = HolosEngineHolder.getStressifier(this)
+                val norm = UkrainianTextNormalizer.normalize(raw)
+                val stressed = stressifier.stressify(norm)
+                val ipa = UkrainianIpa.transcribe(stressed)
+                runOnUiThread {
+                    previewOut.text = "Нормалізація: $norm\n\nНаголоси: $stressed\n\nIPA: $ipa"
                 }
-                Thread.sleep(300)
-                track.stop()
-            } finally {
-                track.release()
+
+                val engine = try { HolosEngineHolder.getEngine(this) } catch (_: Exception) { null } ?: return@execute
+                val prefs = ReaderPreferences(this)
+                val voice = prefs.selectedVoice?.takeIf {
+                    it.startsWith(com.holos.reader.tts.CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
+                } ?: engine.voices.firstOrNull()
+                val track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                            .setSampleRate(engine.sampleRate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build()
+                    )
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .setBufferSizeInBytes(2 * engine.sampleRate * 4)
+                    .build()
+
+                try {
+                    HolosSafeSynthesizer.synthesizeParagraphStreaming(
+                        engine = engine,
+                        stressifier = stressifier,
+                        rawParagraph = raw,
+                        voice = voice,
+                        speed = prefs.speechSpeed,
+                        cancelled = cancelTest,
+                        customVoicesDir = HolosEngineHolder.getCustomVoicesDir(this),
+                    ) { chunk ->
+                        track.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
+                        if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+                    }
+                    Thread.sleep(300)
+                    track.stop()
+                } finally {
+                    track.release()
+                }
+            } catch (t: Throwable) {
+                runOnUiThread {
+                    Toast.makeText(this, "Помилка тесту: ${t.message}", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }

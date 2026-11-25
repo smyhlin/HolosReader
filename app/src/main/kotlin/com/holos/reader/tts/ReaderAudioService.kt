@@ -9,9 +9,12 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ServiceInfo
 import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
+import com.holos.reader.R
 import com.holos.reader.ui.ReaderActivity
 
 /**
@@ -48,7 +51,17 @@ class ReaderAudioService : Service() {
             else -> {
                 currentTitle = intent?.getStringExtra(EXTRA_TITLE) ?: "HolosReader"
                 currentSubtitle = intent?.getStringExtra(EXTRA_SUBTITLE) ?: "Озвучення книги…"
-                startForeground(NOTIF_ID, buildNotification(currentTitle, currentSubtitle))
+                val notif = buildNotification(currentTitle, currentSubtitle)
+                try {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+                    } else {
+                        startForeground(NOTIF_ID, notif)
+                    }
+                } catch (e: Exception) {
+                    Log.w("ReaderAudioService", "startForeground failed", e)
+                    stopSelf()
+                }
             }
         }
         return START_NOT_STICKY
@@ -94,7 +107,7 @@ class ReaderAudioService : Service() {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(if (paused) "На паузі" else subtitle)
-            .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+            .setSmallIcon(R.drawable.ic_stat_holos)
             .setOngoing(true)
             .setContentIntent(openIntent)
             .addAction(Notification.Action.Builder(null, pauseLabel, pauseIntent).build())
@@ -135,15 +148,22 @@ class ReaderAudioService : Service() {
                 putExtra(EXTRA_TITLE, title)
                 putExtra(EXTRA_SUBTITLE, subtitle)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.w("ReaderAudioService", "Unable to start foreground service", e)
             }
         }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, ReaderAudioService::class.java))
+            try {
+                context.stopService(Intent(context, ReaderAudioService::class.java))
+            } catch (_: Exception) {
+            }
         }
     }
 }

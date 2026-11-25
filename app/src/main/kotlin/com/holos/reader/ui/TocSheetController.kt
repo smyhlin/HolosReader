@@ -3,6 +3,7 @@ package com.holos.reader.ui
 import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.text.Editable
 import android.text.TextUtils
 import android.text.TextWatcher
@@ -18,6 +19,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
+import com.holos.reader.R
 import com.holos.reader.epub.BookDatabase
 import com.holos.reader.epub.BookRecord
 import com.holos.reader.epub.BookmarkRecord
@@ -25,11 +27,11 @@ import com.holos.reader.epub.TocEntry
 import com.holos.reader.tts.ReaderPreferences
 
 /**
- * Full-screen Readest-style TOC & Bookmarks sheet (Screenshot 8):
- * - Top bar: Back `<`, live Search `🔍` (instant SQLite LIKE across 6,000+ chapters), Jump-to-Current
- * - Book header: cover thumbnail, title, author, chapter count
- * - Virtualized ListView with right-aligned chapter numbers AND a highlighted blue `📖 Current position` row
- * - Bottom 2-tab switcher: TOC (`☰`) | Bookmarks (`🔖`)
+ * Full-screen Readest-style TOC & Bookmarks sheet:
+ * - Top bar: Back, live Search (instant SQLite LIKE across 6,000+ chapters), Jump-to-Current
+ * - Book header: rounded cover thumbnail, title, author, chapter count
+ * - Virtualized ListView with right-aligned chapter numbers AND a highlighted Current Position row
+ * - Bottom 2-tab switcher: TOC | Bookmarks
  */
 class TocSheetController(
     private val activity: Activity,
@@ -40,6 +42,8 @@ class TocSheetController(
 ) {
     val root: FrameLayout
     private val sheet: LinearLayout
+    private val backBtn: ImageView
+    private val jumpCurBtn: ImageView
     private val searchInput: EditText
     private val coverImg: ImageView
     private val titleTv: TextView
@@ -91,11 +95,11 @@ class TocSheetController(
             if (activeTab == 0) {
                 when (val item = tocRows[position]) {
                     is RowItem.CurrentMarker -> {
-                        left.text = "📖  Поточна позиція"
+                        left.text = "●  Поточна позиція"
                         left.setTextColor(p.accentBlue)
                         left.setTypeface(null, Typeface.BOLD)
                         right.text = "${item.chapterIndex + 1}"
-                        right.setTextColor(p.secondaryText)
+                        right.setTextColor(p.accentBlue)
                     }
                     is RowItem.Chapter -> {
                         val indent = "  ".repeat(item.entry.depth.coerceAtMost(3))
@@ -108,7 +112,7 @@ class TocSheetController(
                 }
             } else {
                 val bm = bookmarks[position]
-                left.text = "🔖  ${bm.excerpt}"
+                left.text = bm.excerpt
                 left.setTextColor(p.primaryText)
                 left.setTypeface(null, Typeface.NORMAL)
                 right.text = "Розд. ${bm.chapterIndex + 1}"
@@ -128,19 +132,14 @@ class TocSheetController(
             setPadding(0, d(8), 0, d(8))
         }
 
-        // Top bar: Back < | Search EditText | Jump to current
-        val backBtn = TextView(activity).apply {
-            text = "‹"
-            textSize = 30f
-            tag = "primary"
-            setPadding(d(16), d(2), d(12), d(2))
-            setOnClickListener { hide() }
-        }
+        // Top bar: Back | Search EditText | Jump to current
+        backBtn = UiTheme.iconView(activity, R.drawable.ic_chevron_left, padDp = 10) { hide() }
         searchInput = EditText(activity).apply {
             background = null
             hint = "Пошук розділу…"
             textSize = 14f
             isSingleLine = true
+            setPadding(d(6), d(8), d(6), d(8))
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -149,36 +148,30 @@ class TocSheetController(
                 override fun afterTextChanged(s: Editable?) {}
             })
         }
-        val jumpCurBtn = TextView(activity).apply {
-            text = "◎"
-            textSize = 20f
-            tag = "primary"
-            setPadding(d(12), d(6), d(16), d(6))
-            setOnClickListener { scrollToCurrent() }
-        }
+        jumpCurBtn = UiTheme.iconView(activity, R.drawable.ic_target, padDp = 10) { scrollToCurrent() }
         val topBar = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(backBtn)
+            setPadding(d(6), 0, d(6), 0)
+            addView(backBtn, LinearLayout.LayoutParams(d(44), d(44)))
             addView(searchInput, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(jumpCurBtn)
+            addView(jumpCurBtn, LinearLayout.LayoutParams(d(44), d(44)))
         }
 
         // Book header: cover + title + author
         coverImg = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             setBackgroundColor(0x22888888)
+            UiTheme.clipRounded(this, d(6).toFloat())
         }
         titleTv = TextView(activity).apply {
             textSize = 15f
             setTypeface(typeface, Typeface.BOLD)
-            tag = "primary"
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
         }
         authorTv = TextView(activity).apply {
             textSize = 13f
-            tag = "secondary"
             maxLines = 1
         }
         val bookHeader = LinearLayout(activity).apply {
@@ -218,15 +211,17 @@ class TocSheetController(
 
         // Bottom Tabs: TOC | Bookmarks
         tocTabBtn = TextView(activity).apply {
-            text = "☰  Зміст"
+            text = "Зміст"
             textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
             setPadding(d(12), d(12), d(12), d(12))
             setOnClickListener { switchTab(0) }
         }
         bmTabBtn = TextView(activity).apply {
-            text = "🔖  Закладки"
+            text = "Закладки"
             textSize = 14f
+            setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
             setPadding(d(12), d(12), d(12), d(12))
             setOnClickListener { switchTab(1) }
@@ -268,10 +263,14 @@ class TocSheetController(
         val p = UiTheme.palette(prefs.theme)
         root.setBackgroundColor(p.sheetBg)
         sheet.setBackgroundColor(p.sheetBg)
+        backBtn.setColorFilter(p.primaryText)
+        jumpCurBtn.setColorFilter(p.primaryText)
         searchInput.setTextColor(p.primaryText)
         searchInput.setHintTextColor(p.mutedText)
         titleTv.setTextColor(p.primaryText)
         authorTv.setTextColor(p.secondaryText)
+        listView.divider = ColorDrawable(p.divider)
+        listView.dividerHeight = 1
         styleTabs(p)
         adapter.notifyDataSetChanged()
     }

@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#161618</item>
+        <item name="android:colorBackground">#161618</item>
+        <item name="android:statusBarColor">#161618</item>
+        <item name="android:navigationBarColor">#161618</item>
+        <item name="android:colorAccent">#5E9BFF</item>
         <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
     </style>
 </resources>
