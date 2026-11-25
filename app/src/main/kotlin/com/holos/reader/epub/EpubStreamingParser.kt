@@ -255,8 +255,14 @@ object EpubStreamingParser {
         while (i < len) {
             val ch = fragment[i]
             if (ch == '<') {
-                val closeIdx = fragment.indexOf('>', i + 1)
-                if (closeIdx < 0) break
+                val nextCh = if (i + 1 < len) fragment[i + 1] else ' '
+                val looksLikeTag = nextCh == '/' || nextCh == '!' || nextCh == '?' || nextCh in 'a'..'z' || nextCh in 'A'..'Z'
+                val closeIdx = if (looksLikeTag) fragment.indexOf('>', i + 1) else -1
+                if (closeIdx < 0) {
+                    appendCollapsedWhitespace(sb, "<")
+                    i++
+                    continue
+                }
                 val rawTag = fragment.substring(i + 1, closeIdx).trim()
                 i = closeIdx + 1
 
@@ -467,18 +473,41 @@ object EpubStreamingParser {
         return RE_WS.replace(decodeEntities(xml.substring(gt + 1, close)), " ").trim().takeIf { it.isNotEmpty() }
     }
 
+    private const val MAX_TEXT_ENTRY_BYTES = 16 * 1024 * 1024
+    private const val MAX_BINARY_ENTRY_BYTES = 32 * 1024 * 1024
+    private val RE_ENTITY = Regex("&(#x?[0-9a-fA-F]+|[a-zA-Z]+);")
+
+    private fun readStreamBounded(stream: java.io.InputStream, maxBytes: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16384)
+        var total = 0
+        stream.use { input ->
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                total += n
+                if (total > maxBytes) {
+                    throw IllegalArgumentException("EPUB entry exceeds $maxBytes bytes")
+                }
+                out.write(buf, 0, n)
+            }
+        }
+        return out.toByteArray()
+    }
+
     fun readEntryText(zip: ZipFile, path: String): String? {
         val entry = zip.getEntry(path)
             ?: zip.entries().asSequence().firstOrNull { it.name.equals(path, ignoreCase = true) }
             ?: return null
-        return zip.getInputStream(entry).use { it.bufferedReader(Charsets.UTF_8).readText() }
+        val bytes = readStreamBounded(zip.getInputStream(entry), MAX_TEXT_ENTRY_BYTES)
+        return String(bytes, Charsets.UTF_8)
     }
 
     fun extractEntryBytes(zip: ZipFile, entryPath: String): ByteArray? {
         val entry = zip.getEntry(entryPath)
             ?: zip.entries().asSequence().firstOrNull { it.name.equals(entryPath, ignoreCase = true) }
             ?: return null
-        return zip.getInputStream(entry).use { it.readBytes() }
+        return readStreamBounded(zip.getInputStream(entry), MAX_BINARY_ENTRY_BYTES)
     }
 
     private fun parentDir(path: String): String {
@@ -499,43 +528,64 @@ object EpubStreamingParser {
         return stack.joinToString("/")
     }
 
-    private fun decodeHref(href: String): String = try {
-        URLDecoder.decode(href, "UTF-8")
-    } catch (_: Exception) {
-        href
+    /** RFC 3986 percent-decoding that preserves literal '+' in EPUB filenames. */
+    fun decodeHref(href: String): String {
+        if ('%' !in href) return href
+        val out = java.io.ByteArrayOutputStream(href.length)
+        var i = 0
+        val n = href.length
+        while (i < n) {
+            val c = href[i]
+            if (c == '%' && i + 2 < n) {
+                val hi = Character.digit(href[i + 1], 16)
+                val lo = Character.digit(href[i + 2], 16)
+                if (hi >= 0 && lo >= 0) {
+                    out.write((hi shl 4) or lo)
+                    i += 3
+                    continue
+                }
+            }
+            val bytes = c.toString().toByteArray(Charsets.UTF_8)
+            out.write(bytes)
+            i++
+        }
+        return String(out.toByteArray(), Charsets.UTF_8)
     }
 
+    /** Single-pass XML/HTML entity decoder so `&amp;lt;` safely decodes to `&lt;` (never `<`). */
     fun decodeEntities(input: String): String {
         if ('&' !in input) return input
-        var s = input
-            .replace("&nbsp;", " ")
-            .replace("&amp;", "&")
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&mdash;", "—")
-            .replace("&ndash;", "–")
-            .replace("&hellip;", "…")
-            .replace("&laquo;", "«")
-            .replace("&raquo;", "»")
-            .replace("&ldquo;", "“")
-            .replace("&rdquo;", "”")
-            .replace("&lsquo;", "‘")
-            .replace("&rsquo;", "’")
-            .replace("&shy;", "")
-
-        if ("&#" in s) {
-            s = RE_NUMERIC_ENTITY.replace(s) { m ->
-                val raw = m.groupValues[1]
+        return RE_ENTITY.replace(input) { m ->
+            val name = m.groupValues[1]
+            if (name.startsWith("#")) {
+                val raw = name.substring(1)
                 val code = if (raw.startsWith("x", ignoreCase = true)) {
                     raw.substring(1).toIntOrNull(16)
                 } else {
                     raw.toIntOrNull(10)
                 }
                 if (code != null && code in 1..0x10FFFF) String(Character.toChars(code)) else m.value
+            } else {
+                when (name) {
+                    "nbsp" -> " "
+                    "amp" -> "&"
+                    "lt" -> "<"
+                    "gt" -> ">"
+                    "quot" -> "\""
+                    "apos" -> "'"
+                    "mdash" -> "—"
+                    "ndash" -> "–"
+                    "hellip" -> "…"
+                    "laquo" -> "«"
+                    "raquo" -> "»"
+                    "ldquo" -> "“"
+                    "rdquo" -> "”"
+                    "lsquo" -> "‘"
+                    "rsquo" -> "’"
+                    "shy" -> ""
+                    else -> m.value
+                }
             }
         }
-        return s
     }
 }

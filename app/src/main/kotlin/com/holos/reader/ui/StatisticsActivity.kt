@@ -21,6 +21,8 @@ import com.holos.reader.epub.BookDatabase
 import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.ReaderTheme
 import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.max
@@ -270,7 +272,7 @@ class StatisticsActivity : Activity() {
             addView(nextYearBtn, LinearLayout.LayoutParams(d(34), d(34)).apply { leftMargin = d(4) })
         }
 
-        yearHeatmap = YearHeatmapView(this, palette, prefs.theme == ReaderTheme.DARK)
+        yearHeatmap = YearHeatmapView(this, palette, palette.isDark)
 
         yearTotalTv = TextView(this).apply {
             textSize = 13f
@@ -286,7 +288,7 @@ class StatisticsActivity : Activity() {
                 textSize = 11f
                 setTextColor(palette.secondaryText)
             })
-            val colors = heatmapColors(prefs.theme == ReaderTheme.DARK, palette)
+            val colors = heatmapColors(palette.isDark, palette)
             for (c in colors) {
                 addView(
                     View(this@StatisticsActivity).apply {
@@ -458,10 +460,8 @@ class StatisticsActivity : Activity() {
         val activeDays = map.filterValues { it > 0L }.keys.sorted()
         if (activeDays.isEmpty()) return 0 to 0
 
-        fun parseEpochDay(key: String): Long? {
-            val d = try { dayFmt.parse(key) } catch (_: Exception) { null } ?: return null
-            return d.time / 86_400_000L
-        }
+        fun parseEpochDay(key: String): Long? =
+            try { LocalDate.parse(key).toEpochDay() } catch (_: Exception) { null }
 
         val days = activeDays.mapNotNull { parseEpochDay(it) }.distinct().sorted()
         if (days.isEmpty()) return 0 to 0
@@ -670,18 +670,17 @@ class StatisticsActivity : Activity() {
             val gridTop = topY + labelH + 4f * dp
             val gridH = (blockH - labelH - 4f * dp).coerceAtLeast(28f)
 
+            val startDate = LocalDate.of(year, startMonth + 1, 1)
+            val endMonthDate = LocalDate.of(year, endMonth + 1, 1)
+            val endDate = endMonthDate.withDayOfMonth(endMonthDate.lengthOfMonth())
+
+            // Compute total week columns in this 6-month half (DST-safe via LocalDate)
+            val firstDow = startDate.dayOfWeek.value - 1 // Mon=0 .. Sun=6
+            val daysInHalf = ChronoUnit.DAYS.between(startDate, endDate).toInt() + 1
             val cal = Calendar.getInstance().apply {
-                set(year, startMonth, 1, 0, 0, 0)
+                set(year, startMonth, 1, 12, 0, 0)
                 set(Calendar.MILLISECOND, 0)
             }
-            val endCal = Calendar.getInstance().apply {
-                set(year, endMonth, 1, 0, 0, 0)
-                set(Calendar.DAY_OF_MONTH, getActualMaximum(Calendar.DAY_OF_MONTH))
-            }
-
-            // Compute total week columns in this 6-month half
-            val firstDow = (cal.get(Calendar.DAY_OF_WEEK) + 5) % 7 // Mon=0 .. Sun=6
-            val daysInHalf = ((endCal.timeInMillis - cal.timeInMillis) / 86_400_000L).toInt() + 1
             val totalCols = ((firstDow + daysInHalf + 6) / 7).coerceAtLeast(26)
 
             val gap = 2.6f * dp

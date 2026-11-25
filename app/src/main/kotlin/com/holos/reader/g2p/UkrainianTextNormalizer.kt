@@ -36,13 +36,13 @@ object UkrainianTextNormalizer {
 
     // Roman numerals after chapter/skill/rank/title nouns (supports Latin I/V/X and Cyrillic І/ІІ/ІІІ)
     private val RE_CHAPTER_ROMAN = Regex(
-        "(?iu)(?<![\\p{L}])(розділ[уаі]?|глав[аиіу]?|том[уаі]?|книг[аиу]?|частин[аиу]?|акт[уаі]?|епізод[уаі]?|" +
+        "(?<![\\p{L}])((?iu:розділ[уаі]?|глав[аиіу]?|том[уаі]?|книг[аиу]?|частин[аиу]?|акт[уаі]?|епізод[уаі]?|" +
             "навичк[аиу]?|вміння|рівень|рівн[яюі]|ранг[уаі]?|ступ[іе]н[ьяюі]?|етап[уаі]?|стаді[яюї]|фаз[аиу]?|" +
             "клас[уаі]?|тір[уаі]?|тир[уаі]?|поверх[уаі]?|кол[оау]|сфер[аиу]?|печатк[аиу]?|форм[аиу]?|версі[яюї]|" +
             "покоління|століття|сцен[аиу]?|ді[яюї]|пункт[уаі]?|арк[аиу]?|квест[уаі]?|ліг[аиу]?|орден[уаі]?|" +
             "легіон[уаі]?|сері[яюї]|модел[ьі]|тип[уаі]?|марк[аиу]?|категорі[яюї]|груп[аиу]?|сектор[уаі]?|" +
             "зон[аиу]?|блок[уаі]?|веж[аіу]|епох[аиу]?|ер[аиу]|вік[уаі]?|корол[ььяюі]|імператор[ауі]?|цар[ььяюі]?|" +
-            "княз[ььяюі]?|герцог[ауі]?|пап[аиу]|патріарх[ауі]?|лорд[ауі]?|майст[е]?р[ауі]?|маг[ауі]?|святий)\\s+([IVXLCDMІ]+)(?![\\p{L}])"
+            "княз[ььяюі]?|герцог[ауі]?|пап[аиу]|патріарх[ауі]?|лорд[ауі]?|майст[е]?р[ауі]?|маг[ауі]?|святий))\\s+([IVXLCDMІ]+)(?![\\p{L}])"
     )
     // Standalone uppercase multi-char Roman numerals (II, III, IV, VI, VII, VIII, IX, XI..XX, or Cyrillic ІІ, ІІІ)
     private val RE_STANDALONE_ROMAN = Regex(
@@ -129,7 +129,7 @@ object UkrainianTextNormalizer {
         Regex("\\bEXP\\b") to "експа",
         Regex("\\bDPS\\b") to "ді-пі-ес",
         Regex("\\bAOE\\b", RegexOption.IGNORE_CASE) to "аое",
-        Regex("\\bLVL\\b|\\bLv\\.?", RegexOption.IGNORE_CASE) to "рівень ",
+        Regex("\\b(?:LVL|Lv)(?=\\.|\\s|\\d|$)", RegexOption.IGNORE_CASE) to "рівень ",
         Regex("\\bNPC\\b") to "ен-пі-сі",
         Regex("\\bRPG\\b") to "ар-пі-джі",
         Regex("\\bVR\\b") to "ві-ар",
@@ -198,6 +198,13 @@ object UkrainianTextNormalizer {
 
         // 1. Preserve patriotyk Space inline `+` stress (e.g. "Му+дрого" -> "Му́дрого") BEFORE math `+`
         text = RE_INLINE_PLUS_STRESS.replace(text, "$1$ACUTE")
+
+        // 1b. Expand '№', '²', '³', '™' BEFORE NFKC (NFKC decomposes №->No, ²->2, ³->3, ™->TM)
+        text = text
+            .replace("№", " номер ")
+            .replace("²", " в квадраті ")
+            .replace("³", " в кубі ")
+            .replace("™", " торгова марка ")
 
         // 2. NFKC normalization (matches spaces/patriotyk/HolosTTS/app.py), preserving combining acute
         text = Normalizer.normalize(text, Normalizer.Form.NFKC)
@@ -299,6 +306,8 @@ object UkrainianTextNormalizer {
             val b = m.groupValues[2].toLongOrNull()
             if (a != null && b != null) "${numberToWords(a)} — ${numberToWords(b)}" else m.value
         }
+        // Strip English-style thousands commas (10,000 -> 10000) before decimal handling
+        text = Regex("(?<!\\d)(\\d{1,3}(?:,\\d{3})+)(?!\\d)").replace(text) { m -> m.groupValues[1].replace(",", "") }
         text = RE_DECIMAL.replace(text) { m -> decimalToWords("${m.groupValues[1]},${m.groupValues[2]}") }
         text = RE_INT.replace(text) { m ->
             val rawNum = m.value
@@ -371,22 +380,8 @@ object UkrainianTextNormalizer {
 
     private fun dayGenitive(day: Int): String = DAYS_GEN.getOrElse(day) { numberToWords(day.toLong()) }
 
-    private fun yearGenitive(year: Int): String {
-        val rem100 = year % 100
-        val head = year - rem100
-        val headWords = if (head > 0) numberToWords(head.toLong()) else ""
-        val tail = when {
-            rem100 == 0 -> ""
-            rem100 in 1..31 -> DAYS_GEN[rem100]
-            else -> {
-                val t = (rem100 / 10) * 10
-                val u = rem100 % 10
-                if (u == 0) "${numberToWords(t.toLong())}го"
-                else "${numberToWords(t.toLong())} ${DAYS_GEN[u]}"
-            }
-        }
-        return listOf(headWords, tail).filter { it.isNotEmpty() }.joinToString(" ")
-    }
+    private fun yearGenitive(year: Int): String =
+        ordinalToWords(year, "го") ?: numberToWords(year.toLong())
 
     private fun ordinalToWords(n: Int, suf: String): String? {
         if (n < 0 || n > 999_999) return null
@@ -517,7 +512,9 @@ object UkrainianTextNormalizer {
 
     fun numberToWords(n: Long, feminine: Boolean = false): String {
         if (n == 0L) return "нуль"
+        if (n == Long.MIN_VALUE) return "мінус " + "9223372036854775808".map { digitToWord(it) }.joinToString(" ")
         if (n < 0L) return "мінус ${numberToWords(-n, feminine)}"
+        if (n >= 1_000_000_000_000L) return n.toString().map { digitToWord(it) }.joinToString(" ")
         val parts = mutableListOf<String>()
         var rem = n
         val billions = rem / 1_000_000_000L

@@ -32,6 +32,12 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     private val booksDir = File(appCtx.filesDir, "books").apply { mkdirs() }
     private val coversDir = File(appCtx.filesDir, "covers").apply { mkdirs() }
 
+    override fun onConfigure(db: SQLiteDatabase) {
+        super.onConfigure(db)
+        db.setForeignKeyConstraintsEnabled(true)
+        try { db.enableWriteAheadLogging() } catch (_: Exception) {}
+    }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE books (
@@ -147,9 +153,12 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     /**
      * Batch-imports all `.epub` files from a user-selected directory (ACTION_OPEN_DOCUMENT_TREE).
      */
-    fun importFromDirectoryTree(treeUri: Uri): Int {
-        val docId = DocumentsContract.getTreeDocumentId(treeUri)
-        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
+    fun importFromDirectoryTree(treeUri: Uri): Int =
+        importDirectoryRecursive(treeUri, DocumentsContract.getTreeDocumentId(treeUri), depth = 0)
+
+    private fun importDirectoryRecursive(treeUri: Uri, parentDocId: String, depth: Int): Int {
+        if (depth > 6) return 0
+        val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
         val cols = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
@@ -161,7 +170,9 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 val childId = c.getString(0)
                 val name = c.getString(1) ?: continue
                 val mime = c.getString(2) ?: ""
-                if (name.endsWith(".epub", ignoreCase = true) || mime == "application/epub+zip") {
+                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    imported += importDirectoryRecursive(treeUri, childId, depth + 1)
+                } else if (name.endsWith(".epub", ignoreCase = true) || mime == "application/epub+zip") {
                     val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
                     try {
                         importFromUri(fileUri, name)
@@ -201,7 +212,8 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 EpubStreamingParser.extractEntryBytes(zip, meta.coverEntryPath)
             }
             if (bytes != null && bytes.isNotEmpty()) {
-                val ext = meta.coverEntryPath.substringAfterLast('.', "jpg").lowercase()
+                val rawExt = meta.coverEntryPath.substringAfterLast('.', "jpg").lowercase()
+                val ext = if (rawExt in setOf("jpg", "jpeg", "png", "webp", "gif")) rawExt else "jpg"
                 coverName = "$id.$ext"
                 File(coversDir, coverName).writeBytes(bytes)
             }
@@ -287,8 +299,8 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         val where = mutableListOf<String>()
         val args = mutableListOf<String>()
         if (searchQuery.isNotBlank()) {
-            where.add("(title LIKE ? OR author LIKE ? OR tags LIKE ?)")
-            val q = "%${searchQuery.trim()}%"
+            where.add("(title LIKE ? ESCAPE '\\' OR author LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')")
+            val q = "%${escapeLike(searchQuery.trim())}%"
             args.add(q); args.add(q); args.add(q)
         }
         if (statusFilter != "ALL") {
@@ -334,7 +346,33 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         return out
     }
 
-    fun getBook(bookId: String): BookRecord? = listBooks().firstOrNull { it.id == bookId }
+    fun getBook(bookId: String): BookRecord? {
+        readableDatabase.rawQuery(
+            "SELECT id,file_name,title,author,description,language,cover_file,chapter_count," +
+                "last_chapter,last_block,status,tags,reading_time_sec,added_at,last_read_at " +
+                "FROM books WHERE id=? LIMIT 1",
+            arrayOf(bookId)
+        ).use { c ->
+            if (!c.moveToFirst()) return null
+            return BookRecord(
+                id = c.getString(0),
+                fileName = c.getString(1),
+                title = c.getString(2),
+                author = c.getString(3),
+                description = c.getString(4),
+                language = c.getString(5),
+                coverFileName = if (c.isNull(6)) null else c.getString(6),
+                chapterCount = c.getInt(7),
+                lastChapterIndex = c.getInt(8),
+                lastBlockIndex = c.getInt(9),
+                status = ReadingStatus.fromCode(c.getString(10)),
+                tags = c.getString(11),
+                readingTimeSec = c.getLong(12),
+                addedAtMs = c.getLong(13),
+                lastReadAtMs = c.getLong(14),
+            )
+        }
+    }
 
     fun getSpineItem(bookId: String, index: Int): SpineItem? {
         readableDatabase.rawQuery(
@@ -364,8 +402,8 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             sql = "SELECT title, href, spine_idx, depth FROM toc WHERE book_id=? ORDER BY ord ASC"
             args = arrayOf(bookId)
         } else {
-            sql = "SELECT title, href, spine_idx, depth FROM toc WHERE book_id=? AND title LIKE ? ORDER BY ord ASC"
-            args = arrayOf(bookId, "%${filter.trim()}%")
+            sql = "SELECT title, href, spine_idx, depth FROM toc WHERE book_id=? AND title LIKE ? ESCAPE '\\' ORDER BY ord ASC"
+            args = arrayOf(bookId, "%${escapeLike(filter.trim())}%")
         }
         readableDatabase.rawQuery(sql, args).use { c ->
             while (c.moveToNext()) {
@@ -376,37 +414,36 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     fun updateProgress(bookId: String, chapterIndex: Int, blockIndex: Int, addSeconds: Long = 0L) {
-        val existing = getBook(bookId) ?: return
-        val newStatus = when {
-            existing.chapterCount > 0 && chapterIndex >= existing.chapterCount - 1 && blockIndex > 0 -> ReadingStatus.FINISHED
-            else -> ReadingStatus.READING
-        }
-        val safeAddSec = addSeconds.coerceAtLeast(0L)
-        val now = System.currentTimeMillis()
-        writableDatabase.update(
-            "books",
-            ContentValues().apply {
-                put("last_chapter", chapterIndex)
-                put("last_block", blockIndex)
-                put("status", newStatus.code)
-                put("reading_time_sec", existing.readingTimeSec + safeAddSec)
-                put("last_read_at", now)
-            },
-            "id=?",
-            arrayOf(bookId)
-        )
-        val pagesDelta = when {
-            chapterIndex > existing.lastChapterIndex -> (chapterIndex - existing.lastChapterIndex).coerceAtMost(20).toLong()
-            chapterIndex == existing.lastChapterIndex && blockIndex > existing.lastBlockIndex && (blockIndex - existing.lastBlockIndex) >= 6 -> 1L
-            else -> 0L
-        }
-        if (safeAddSec > 0L || pagesDelta > 0L) {
-            val dayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
-            writableDatabase.execSQL(
-                "INSERT INTO reading_activity(day_key, seconds, pages) VALUES(?,?,?) " +
-                    "ON CONFLICT(day_key) DO UPDATE SET seconds = seconds + excluded.seconds, pages = pages + excluded.pages",
-                arrayOf<Any>(dayKey, safeAddSec, pagesDelta)
+        val db = writableDatabase
+        db.beginTransaction()
+        try {
+            val existing = getBook(bookId) ?: return
+            val newStatus = when {
+                existing.chapterCount > 0 && chapterIndex >= existing.chapterCount - 1 && blockIndex > 0 -> ReadingStatus.FINISHED
+                else -> ReadingStatus.READING
+            }
+            val safeAddSec = addSeconds.coerceAtLeast(0L)
+            val now = System.currentTimeMillis()
+            db.execSQL(
+                "UPDATE books SET last_chapter=?, last_block=?, status=?, reading_time_sec = reading_time_sec + ?, last_read_at=? WHERE id=?",
+                arrayOf<Any>(chapterIndex, blockIndex, newStatus.code, safeAddSec, now, bookId)
             )
+            val pagesDelta = when {
+                chapterIndex > existing.lastChapterIndex -> (chapterIndex - existing.lastChapterIndex).coerceAtMost(20).toLong()
+                chapterIndex == existing.lastChapterIndex && blockIndex > existing.lastBlockIndex && (blockIndex - existing.lastBlockIndex) >= 6 -> 1L
+                else -> 0L
+            }
+            if (safeAddSec > 0L || pagesDelta > 0L) {
+                val dayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
+                db.execSQL(
+                    "INSERT INTO reading_activity(day_key, seconds, pages) VALUES(?,?,?) " +
+                        "ON CONFLICT(day_key) DO UPDATE SET seconds = seconds + excluded.seconds, pages = pages + excluded.pages",
+                    arrayOf<Any>(dayKey, safeAddSec, pagesDelta)
+                )
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
         }
     }
 
@@ -437,14 +474,24 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     fun getReadingStats(): ReadingStats {
-        val all = listBooks()
-        return ReadingStats(
-            totalBooks = all.size,
-            readingBooks = all.count { it.status == ReadingStatus.READING },
-            finishedBooks = all.count { it.status == ReadingStatus.FINISHED },
-            totalReadingSec = all.sumOf { it.readingTimeSec },
-            totalChaptersRead = all.sumOf { if (it.status == ReadingStatus.FINISHED) it.chapterCount else it.lastChapterIndex },
-        )
+        readableDatabase.rawQuery(
+            "SELECT COUNT(*), " +
+                "SUM(CASE WHEN status='READING' THEN 1 ELSE 0 END), " +
+                "SUM(CASE WHEN status='FINISHED' THEN 1 ELSE 0 END), " +
+                "COALESCE(SUM(reading_time_sec), 0), " +
+                "COALESCE(SUM(CASE WHEN status='FINISHED' THEN chapter_count ELSE last_chapter END), 0) " +
+                "FROM books",
+            null
+        ).use { c ->
+            if (!c.moveToFirst()) return ReadingStats(0, 0, 0, 0L, 0)
+            return ReadingStats(
+                totalBooks = c.getInt(0),
+                readingBooks = c.getInt(1),
+                finishedBooks = c.getInt(2),
+                totalReadingSec = c.getLong(3),
+                totalChaptersRead = c.getInt(4),
+            )
+        }
     }
 
     fun getDailyActivity(): Map<String, Long> {
@@ -515,12 +562,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     fun deleteBooks(bookIds: Collection<String>) {
-        for (id in bookIds) {
-            getBook(id)?.let {
-                getBookFile(it).delete()
-                getCoverFile(it)?.delete()
-            }
-        }
+        val records = bookIds.mapNotNull { getBook(it) }
         val db = writableDatabase
         db.beginTransaction()
         try {
@@ -534,7 +576,16 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         } finally {
             db.endTransaction()
         }
+        val offlineDir = File(appCtx.filesDir, "offline_chapters")
+        for (rec in records) {
+            getBookFile(rec).delete()
+            getCoverFile(rec)?.delete()
+            offlineDir.listFiles { f -> f.name.startsWith("${rec.id}_") }?.forEach { it.delete() }
+        }
     }
+
+    private fun escapeLike(raw: String): String =
+        raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     companion object {
         private const val DB_NAME = "holos_reader.db"
