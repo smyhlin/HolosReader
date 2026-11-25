@@ -517,7 +517,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     // --- Dialogs (Searchable 6,000+ TOC, Bookmarks, Typography, Speed, Sleep, Image Zoom) ---
 
-    private fun openTocSheet(0) {
+    private fun showTocDialog() {
         val b = book ?: return
         var entries: List<TocEntry> = db.queryToc(b.id)
         val searchBox = EditText(this).apply {
@@ -581,7 +581,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         Toast.makeText(this, "Закладку додано ($chapterTitle)", Toast.LENGTH_SHORT).show()
     }
 
-    private fun openTocSheet(1) {
+    private fun showBookmarksDialog() {
         val b = book ?: return
         val list = db.listBookmarks(b.id)
         if (list.isEmpty()) {
@@ -600,8 +600,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     private fun cycleTheme() {
         prefs.theme = when (prefs.theme) {
-            ReaderTheme.LIGHT -> ReaderTheme.SEPIA
-            ReaderTheme.SEPIA -> ReaderTheme.DARK
+            ReaderTheme.LIGHT -> ReaderTheme.GRAY
+            ReaderTheme.GRAY -> ReaderTheme.SEPIA
+            ReaderTheme.SEPIA -> ReaderTheme.GREEN
+            ReaderTheme.GREEN -> ReaderTheme.DARK
             ReaderTheme.DARK -> ReaderTheme.LIGHT
         }
         applyTheme()
