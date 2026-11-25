@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <exclude domain="file" path="books/" />
+    <exclude domain="file" path="covers/" />
+    <exclude domain="file" path="offline_chapters/" />
+    <exclude domain="file" path="uk_stress_v2.bin" />
+    <exclude domain="file" path="accentor-lite.onnx" />
+    <exclude domain="external" path="." />
+</full-backup-content>
