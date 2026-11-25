@@ -2,13 +2,17 @@ package com.holos.reader.g2p
 
 /**
  * Splits long EPUB paragraphs into sentence/clause chunks safely below HolosTTS's
- * 1000-frame (~25 s) utterance limit while minimizing latency to first audio.
+ * 1000-frame (~25 s) utterance limit while respecting Ukrainian abbreviations & initials.
  */
 object SentenceSplitter {
 
     private const val DEFAULT_MAX_CHARS = 200
-    private val SENTENCE_SPLIT = Regex("(?<=[.!?…])\\s+")
     private val CLAUSE_SPLIT = Regex("(?<=[;:,])\\s+")
+    private val ABBREV_ENDINGS = setOf(
+        "р.", "рр.", "ст.", "м.", "с.", "смт.", "обл.", "вул.", "просп.", "пл.",
+        "проф.", "доц.", "акад.", "ім.", "тис.", "млн.", "млрд.", "див.", "пор.",
+        "т.", "д.", "п.", "н.", "е.", "др.", "пн.", "пд.", "зх.", "сх.",
+    )
 
     fun split(text: String, maxChars: Int = DEFAULT_MAX_CHARS): List<String> {
         val cleaned = text.trim()
@@ -16,7 +20,7 @@ object SentenceSplitter {
         if (cleaned.length <= maxChars) return listOf(cleaned)
 
         val result = mutableListOf<String>()
-        val sentences = SENTENCE_SPLIT.split(cleaned)
+        val sentences = splitSentencesSafe(cleaned)
 
         for (rawSentence in sentences) {
             val sentence = rawSentence.trim()
@@ -39,6 +43,46 @@ object SentenceSplitter {
             }
         }
         return merged
+    }
+
+    private fun splitSentencesSafe(text: String): List<String> {
+        val out = ArrayList<String>()
+        val n = text.length
+        var start = 0
+        var i = 0
+        while (i < n) {
+            val ch = text[i]
+            if ((ch == '.' || ch == '!' || ch == '?' || ch == '…') && i + 1 < n && text[i + 1].isWhitespace()) {
+                val shouldKeepTogether = if (ch == '.') {
+                    val tokenStart = lastTokenStart(text, i)
+                    val token = text.substring(tokenStart, i + 1)
+                    val low = token.lowercase()
+                    low in ABBREV_ENDINGS || (token.length == 2 && token[0].isUpperCase())
+                } else false
+
+                if (!shouldKeepTogether) {
+                    val seg = text.substring(start, i + 1).trim()
+                    if (seg.isNotEmpty()) out.add(seg)
+                    var nextStart = i + 1
+                    while (nextStart < n && text[nextStart].isWhitespace()) nextStart++
+                    start = nextStart
+                    i = nextStart
+                    continue
+                }
+            }
+            i++
+        }
+        if (start < n) {
+            val tail = text.substring(start).trim()
+            if (tail.isNotEmpty()) out.add(tail)
+        }
+        return out
+    }
+
+    private fun lastTokenStart(text: String, endDotIdx: Int): Int {
+        var j = endDotIdx - 1
+        while (j >= 0 && !text[j].isWhitespace() && text[j] != '(' && text[j] != '«') j--
+        return j + 1
     }
 
     private fun splitLongSentence(sentence: String, maxChars: Int, out: MutableList<String>) {

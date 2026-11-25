@@ -2,11 +2,11 @@ package com.holos.reader.g2p
 
 /**
  * 4-tier on-device Ukrainian Stress Engine:
- * - Tier 0: User overrides (`stress_user.txt`) — highest priority for book character names & homographs
+ * - Tier 0: User overrides (`stress_user.txt`, including multi-word phrase overrides)
  * - Tier 1: 2,886,186-word binary dictionary (`uk_stress.bin` v2 from «Словники України»)
  *   - Unambiguous words resolve in ~0.02 ms via `MappedByteBuffer`
- *   - Ambiguous homographs (36,414 forms) are resolved using Ukrainian syntactic context
- *     (preposition case government, subject pronouns, negation, numerals) over preserved morphological tags
+ *   - Ambiguous homographs (36,414 forms) resolved using up to 3-token syntactic lookback
+ *     (preposition case government across intervening adjectives, subject pronouns, numerals)
  * - Tier 2: Bundled 1.17 MB ONNX neural accentor (`accentor-lite.onnx`) for OOV words & neutral homographs
  * - Tier 3: Prefix-stripping stem lookup + penultimate-syllable safety fallback
  */
@@ -18,6 +18,7 @@ class UkrainianStressifier(
 
     companion object {
         // 0-based vowel index for unambiguous high-frequency Ukrainian pronouns
+        // Standard Ukrainian orthoepy: вона́, воно́, вони́, її́, його́, мене́, тебе́, себе́, мені́, тобі́, собі́
         private val PRONOUN_VOWEL_INDEX = mapOf(
             "вона" to 1, "воно" to 1, "вони" to 1,
             "її" to 1, "його" to 1, "мене" to 1, "тебе" to 1, "себе" to 1,
@@ -27,7 +28,7 @@ class UkrainianStressifier(
         const val ACUTE = '\u0301'
         const val GRAVE = '\u0300'
         private const val VOWELS = "аеєиіїоуюяАЕЄИІЇОУЮЯ"
-        private val WORD_REGEX = Regex("[А-ЩЬЮЯҐЄІЇа-щьюяґєії'’\\u0301\\u0300]+")
+        private val WORD_REGEX = Regex("[А-ЩЬЮЯҐЄІЇа-щьюяґєії'’ʼ\\u0301\\u0300]+")
         private val APOSTROPHE_REGEX = Regex("[’`ʼ]")
 
         private val UNSTRESSED_WORDS = setOf(
@@ -36,41 +37,38 @@ class UkrainianStressifier(
             "і", "й", "та", "а", "але", "бо", "що", "щоб", "як", "чи", "ні", "не", "би", "б", "же", "ж"
         )
 
-        // Prepositions governing Genitive case (e.g. "біля вікна́", "без голови́", "до руки́", "від стіни́")
         private val GEN_PREPOSITIONS = setOf(
             "біля", "до", "від", "без", "для", "після", "коло", "поряд", "посеред",
             "навколо", "крім", "окрім", "замість", "проти", "серед", "край", "близько",
             "вздовж", "уздовж", "поруч", "усередині", "всередині", "зверху", "знизу", "з"
         )
-        // Prepositions governing Locative case ("у лісі", "на стіні", "при вході")
         private val LOC_PREPOSITIONS = setOf("у", "в", "на", "при", "по")
-        // Prepositions governing Instrumental case ("під столом", "над головою", "між ними")
         private val INS_PREPOSITIONS = setOf("над", "під", "перед", "між", "поміж", "понад", "попід")
-        // Prepositions governing Dative case
         private val DAT_PREPOSITIONS = setOf("завдяки", "назустріч", "всупереч", "подібно")
-        // Subject pronouns / negation strongly favoring VERB over NOUN/ADJ
         private val VERB_CUES = setOf("я", "ти", "він", "вона", "воно", "ми", "ви", "вони", "не")
-        // Plural numerals (2, 3, 4, many) favoring Number=Plur ("дві ру́ки", "три го́лови", "багато ві́кон")
         private val PLURAL_CUES = setOf(
             "два", "дві", "три", "чотири", "обоє", "обидва", "обидві",
             "всі", "усі", "ці", "ті", "мої", "твої", "свої", "наші", "ваші", "їхні"
         )
+        private val NON_NOUN_NEXT = setOf(
+            "і", "й", "та", "а", "але", "бо", "що", "щоб", "як", "чи", "не", "у", "в", "на", "до", "від", "з"
+        )
     }
 
-    fun stressify(text: String): String {
+    fun stressify(rawText: String): String {
+        val text = overrides?.applyPhraseOverrides(rawText) ?: rawText
         val matches = WORD_REGEX.findAll(text).toList()
         if (matches.isEmpty()) return text
 
         val sb = StringBuilder(text.length + matches.size * 2)
         var cursor = 0
-        var prevLower: String? = null
+        val recentTokens = ArrayDeque<String>(3)
 
         for ((idx, m) in matches.withIndex()) {
             val between = text.substring(cursor, m.range.first)
             sb.append(between)
-            // Sentence boundary resets contextual clue
             if (between.any { it == '.' || it == '!' || it == '?' || it == '…' || it == '\n' }) {
-                prevLower = null
+                recentTokens.clear()
             }
 
             val word = m.value
@@ -80,16 +78,22 @@ class UkrainianStressifier(
                 if (gap.any { it == '.' || it == '!' || it == '?' || it == '…' || it == '\n' }) null
                 else APOSTROPHE_REGEX.replace(nm.value.lowercase(), "'")
             }
-            sb.append(stressWord(word, normalized, prevLower, nextLower))
-            prevLower = normalized
+            sb.append(stressWord(word, normalized, recentTokens.toList(), nextLower))
+
+            if (recentTokens.size >= 3) recentTokens.removeFirst()
+            recentTokens.addLast(normalized)
             cursor = m.range.last + 1
         }
         sb.append(text.substring(cursor))
         return sb.toString()
     }
 
-    private fun stressWord(word: String, normalized: String, prevLower: String?, nextLower: String?): String {
-        // Respect existing explicit stress marks
+    private fun stressWord(
+        word: String,
+        normalized: String,
+        recentTokens: List<String>,
+        nextLower: String?,
+    ): String {
         if (word.indexOf(ACUTE) >= 0 || word.indexOf(GRAVE) >= 0) return word
 
         // Tier 0: User-defined stress / pronunciation overrides
@@ -103,7 +107,6 @@ class UkrainianStressifier(
         if (vowelIndices.size <= 1) return word
         if (normalized in UNSTRESSED_WORDS) return word
 
-        // Unambiguous high-frequency Ukrainian pronouns (prevents rare homographs like во́на [currency] or ї́ї)
         PRONOUN_VOWEL_INDEX[normalized]?.let { vIdx ->
             if (vIdx in vowelIndices.indices) {
                 return insertStressMarks(word, intArrayOf(vowelIndices[vIdx] + 1))
@@ -117,14 +120,14 @@ class UkrainianStressifier(
                 return insertStressMarks(word, single)
             }
             is StressLookupResult.Ambiguous -> {
-                val chosen = disambiguateHomograph(word, normalized, res.variants, prevLower, nextLower)
+                val chosen = disambiguateHomograph(normalized, res.variants, recentTokens, nextLower)
                 val single = pickSingleStress(normalized, chosen)
                 return insertStressMarks(word, single)
             }
             null -> Unit
         }
 
-        // Tier 2: Bundled 1.17 MB ONNX neural accentor for OOV words (fantasy/LitRPG names, neologisms)
+        // Tier 2: Bundled 1.17 MB ONNX neural accentor for OOV words
         val neuralPos = neuralAccentor?.predictInsertPosition(normalized)
         if (neuralPos != null && isAfterVowel(word, neuralPos)) {
             return insertStressMarks(word, intArrayOf(neuralPos))
@@ -154,10 +157,6 @@ class UkrainianStressifier(
         return insertStressMarks(word, intArrayOf(fallbackInsertPos))
     }
 
-    /**
-     * Some dictionary entries store two alternative stress positions (e.g. наза́вжди́, нена́си́тна).
-     * Emitting two primary acute marks degrades HolosTTS prosody; pick a single canonical stress.
-     */
     private fun pickSingleStress(normalized: String, positions: IntArray): IntArray {
         if (positions.size <= 1) return positions
         val neuralPos = neuralAccentor?.predictInsertPosition(normalized)
@@ -168,53 +167,60 @@ class UkrainianStressifier(
     }
 
     private fun disambiguateHomograph(
-        word: String,
         normalized: String,
         variants: List<StressVariant>,
-        prevLower: String?,
+        recentTokens: List<String>,
         nextLower: String?,
     ): IntArray {
-        // 0. Numeral disambiguation (e.g. "со́рок секунд" vs "соро́к" birds)
-        if (variants.any { it.hasTag(MorphTag.UPOS_NUM) } && nextLower != null) {
+        val prevLower = recentTokens.lastOrNull()
+
+        // 0. Numeral disambiguation (e.g. "со́рок секунд", but NOT when followed by preposition/conjunction)
+        if (variants.any { it.hasTag(MorphTag.UPOS_NUM) } && nextLower != null && nextLower !in NON_NOUN_NEXT) {
             variants.firstOrNull { it.hasTag(MorphTag.UPOS_NUM) }?.let { return it.positions }
         }
+
+        // 1. Immediate verb/plural cues
         if (prevLower != null) {
-            // 1. Preposition case government (highest precision for Gen/Loc/Ins/Dat homographs)
-            if (prevLower in GEN_PREPOSITIONS) {
-                variants.firstOrNull { it.hasTag(MorphTag.CASE_GEN) && it.hasTag(MorphTag.NUM_SING) }
-                    ?.let { return it.positions }
-                variants.firstOrNull { it.hasTag(MorphTag.CASE_GEN) }
-                    ?.let { return it.positions }
-            }
-            if (prevLower in LOC_PREPOSITIONS) {
-                variants.firstOrNull { it.hasTag(MorphTag.CASE_LOC) }
-                    ?.let { return it.positions }
-            }
-            if (prevLower in INS_PREPOSITIONS) {
-                variants.firstOrNull { it.hasTag(MorphTag.CASE_INS) }
-                    ?.let { return it.positions }
-            }
-            if (prevLower in DAT_PREPOSITIONS) {
-                variants.firstOrNull { it.hasTag(MorphTag.CASE_DAT) }
-                    ?.let { return it.positions }
-            }
-            // 2. Subject pronoun / negation -> prefer VERB over NOUN/ADJ
             if (prevLower in VERB_CUES) {
                 variants.firstOrNull { it.isVerb() }?.let { return it.positions }
             }
-            // 3. Plural determiner / numeral -> prefer Number=Plur (e.g. "дві ру́ки", "ці ві́кна")
             if (prevLower in PLURAL_CUES) {
                 variants.firstOrNull { it.hasTag(MorphTag.NUM_PLUR) }?.let { return it.positions }
             }
         }
 
-        // 4. If neural accentor is available and predicts one of the valid dictionary variants, use it!
+        // 2. Up to 3-token lookback for preposition case government across intervening adjectives
+        //    (e.g., "біля великого вікна́", "у старому лі́сі")
+        for (i in recentTokens.indices.reversed()) {
+            val tok = recentTokens[i]
+            if (tok in GEN_PREPOSITIONS) {
+                variants.firstOrNull { it.hasTag(MorphTag.CASE_GEN) && it.hasTag(MorphTag.NUM_SING) }
+                    ?.let { return it.positions }
+                variants.firstOrNull { it.hasTag(MorphTag.CASE_GEN) }
+                    ?.let { return it.positions }
+                break
+            }
+            if (tok in LOC_PREPOSITIONS) {
+                variants.firstOrNull { it.hasTag(MorphTag.CASE_LOC) }?.let { return it.positions }
+                break
+            }
+            if (tok in INS_PREPOSITIONS) {
+                variants.firstOrNull { it.hasTag(MorphTag.CASE_INS) }?.let { return it.positions }
+                break
+            }
+            if (tok in DAT_PREPOSITIONS) {
+                variants.firstOrNull { it.hasTag(MorphTag.CASE_DAT) }?.let { return it.positions }
+                break
+            }
+        }
+
+        // 3. Neural accentor tie-breaker restricted to valid dictionary variants
         val neuralPos = neuralAccentor?.predictInsertPosition(normalized)
         if (neuralPos != null) {
             variants.firstOrNull { neuralPos in it.positions }?.let { return it.positions }
         }
 
-        // 5. Default to primary Nominative/Singular or first dictionary variant
+        // 4. Default to Nominative or first dictionary variant
         return variants.firstOrNull { it.hasTag(MorphTag.CASE_NOM) }?.positions
             ?: variants.first().positions
     }

@@ -3,7 +3,7 @@ package com.holos.reader.g2p
 /**
  * 1:1 Kotlin port of patriotyk/ipa-uk (Wiktionary Module:uk-pronunciation).
  * Converts Ukrainian text with stress marks (acute U+0301 / grave U+0300) into IPA phonemes
- * expected by HolosTTS.
+ * expected by HolosTTS, preserving outer punctuation cleanly around each word.
  */
 object UkrainianIpa {
     const val ACUTE: Char = '\u0301'
@@ -14,7 +14,7 @@ object UkrainianIpa {
     private const val VOWEL_C = "[$VOWEL]"
     private const val CONSONANT_NO_W = "bdzʒɡɦmnlrpftskxʃj"
     private const val CONSONANT_NO_W_C = "[$CONSONANT_NO_W]"
-    private const val CONSONANT = CONSONANT_NO_W + "ʋβ̞wʍ"
+    private const val CONSONANT = CONSONANT_NO_W + "ʋwʍ"
     private const val CONSONANT_C = "[$CONSONANT]"
     private const val PALATALIZABLE = "tdsznlrbpʋfɡmkɦxʃʒ"
     private const val PALATALIZABLE_C = "[$PALATALIZABLE]"
@@ -30,8 +30,8 @@ object UkrainianIpa {
     private val PERM_SYL_ONSET = setOf(
         "spr", "str", "skr", "spl", "skl",
         "sp", "st", "sk", "sf", "sx",
-        "pr", "br", "tr", "dr", "kr", "gr", "ɦr", "fr", "xr",
-        "pl", "bl", "kl", "gl", "ɦl", "fl", "xl",
+        "pr", "br", "tr", "dr", "kr", "ɡr", "ɦr", "fr", "xr",
+        "pl", "bl", "kl", "ɡl", "ɦl", "fl", "xl",
     )
 
     private val VOICING = listOf(
@@ -159,6 +159,9 @@ object UkrainianIpa {
     private val RE_CLEAN_LEN = Regex("ʲ?ːʲ")
     private val RE_DARK_L = Regex("l([^ʲ])")
 
+    private fun isWordCoreChar(ch: Char): Boolean =
+        ch.isLetter() || ch == ACUTE || ch == GRAVE || ch == '\'' || ch == '’' || ch == 'ʼ' || ch == '`'
+
     fun decomposeGrave(text: String): String {
         val sb = StringBuilder(text.length)
         for (ch in text) {
@@ -170,17 +173,30 @@ object UkrainianIpa {
 
     /**
      * Converts stressed Ukrainian text to IPA phonemes.
-     * Note: When [checkAccent] is true, monosyllabic words get stressed vowel allophones
-     * (matching patriotyk/ipa-uk). For TTS we default [monosyllabicAllophones] = true
-     * without throwing on unstressed words.
+     * Strips outer punctuation before `#...#` boundary rules and reattaches it afterward.
      */
     fun transcribe(input: String, monosyllabicAllophones: Boolean = true): String {
         val text = RE_MULTI_SPACE.replace(decomposeGrave(input).lowercase(), " ")
         val parts = RE_SPLIT_WORD.split(text)
         val out = ArrayList<String>(parts.size)
 
-        for (rawWord in parts) {
-            var phonetic = "#$rawWord#"
+        for (rawToken in parts) {
+            if (rawToken.isEmpty()) continue
+            var start = 0
+            while (start < rawToken.length && !isWordCoreChar(rawToken[start])) start++
+            var end = rawToken.length
+            while (end > start && !isWordCoreChar(rawToken[end - 1])) end--
+
+            if (start >= end) {
+                out.add(rawToken)
+                continue
+            }
+
+            val leadingPunct = rawToken.substring(0, start)
+            val coreWord = rawToken.substring(start, end)
+            val trailingPunct = rawToken.substring(end)
+
+            var phonetic = "#$coreWord#"
 
             for ((regex, repl) in ORTHOGRAPHIC_REPLACEMENTS) {
                 phonetic = regex.replace(phonetic, repl)
@@ -195,7 +211,7 @@ object UkrainianIpa {
 
             phonetic = RE_VOWEL_BEFORE_STRESS.replace(phonetic, "$2$1")
 
-            if (monosyllabicAllophones) {
+            if (monosyllabicAllophones && 'ˈ' !in phonetic && 'ˌ' !in phonetic) {
                 val vowelCount = RE_IPA_VOWEL.findAll(phonetic).count()
                 if (vowelCount == 1) {
                     phonetic = RE_IPA_VOWEL.replace(phonetic, "⁀$0")
@@ -275,9 +291,9 @@ object UkrainianIpa {
             phonetic = RE_CLEAN_LEN.replace(phonetic, "ʲː")
             phonetic = RE_DARK_L.replace(phonetic, "ɫ$1")
 
-            out.add(phonetic)
+            out.add(leadingPunct + phonetic.replace("#", "") + trailingPunct)
         }
 
-        return out.joinToString(" ").replace("#", "")
+        return out.joinToString(" ")
     }
 }

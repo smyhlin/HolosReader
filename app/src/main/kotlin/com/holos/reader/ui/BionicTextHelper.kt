@@ -11,7 +11,7 @@ import kotlin.math.ceil
  */
 object BionicTextHelper {
 
-    private val RE_WORD = Regex("""[\p{L}\p{N}]+(?:['’ʼ-][\p{L}\p{N}]+)*""")
+    private val RE_WORD = Regex("""[\p{L}\p{N}\p{M}]+(?:['’ʼ-][\p{L}\p{N}\p{M}]+)*""")
     private const val VOWELS = "аеєиіїоуюяАЕЄИІЇОУЮЯaeiouyAEIOUY"
 
     data class WordSpan(
