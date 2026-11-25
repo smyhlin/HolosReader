@@ -13,13 +13,16 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Bonus: Exposes HolosReader's built-in HolosTTS engine as a standard Android system
- * TextToSpeechService so external apps (ReadEra, Moon+ Reader, etc.) can also use it!
+ * Exposes HolosReader's built-in HolosTTS engine as a standard Android system
+ * TextToSpeechService so external apps (ReadEra, Moon+ Reader, etc.) can also use it.
  */
 class HolosTtsService : TextToSpeechService() {
 
     private val stopFlag = AtomicBoolean(false)
     private val synthLock = Any()
+
+    @Volatile
+    private var serviceVoice: String? = null
 
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
         val code = lang?.lowercase(Locale.ROOT) ?: return TextToSpeech.LANG_NOT_SUPPORTED
@@ -38,7 +41,7 @@ class HolosTtsService : TextToSpeechService() {
 
     override fun onGetVoices(): List<Voice> {
         val locale = Locale("uk", "UA")
-        val names = try { HolosEngineHolder.getEngine(this)?.voices } catch (_: Exception) { null } ?: listOf("default")
+        val names = HolosEngineHolder.peekVoicesOrEmpty().ifEmpty { listOf("default") }
         return names.map { Voice(it, locale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_NORMAL, false, emptySet()) }
     }
 
@@ -47,7 +50,7 @@ class HolosTtsService : TextToSpeechService() {
 
     override fun onLoadVoice(voiceName: String?): Int {
         if (!voiceName.isNullOrBlank() && voiceName != "default") {
-            ReaderPreferences(this).selectedVoice = voiceName
+            serviceVoice = voiceName
         }
         return TextToSpeech.SUCCESS
     }
@@ -73,9 +76,11 @@ class HolosTtsService : TextToSpeechService() {
         val stressifier = HolosEngineHolder.getStressifier(this)
         val prefs = ReaderPreferences(this)
         val voice = request.voiceName?.takeIf { it in engine.voices }
+            ?: serviceVoice?.takeIf { it in engine.voices }
             ?: prefs.selectedVoice?.takeIf { it in engine.voices }
             ?: engine.voices.firstOrNull()
-        val rate = ((request.speechRate.takeIf { it > 0 } ?: 100) / 100f * prefs.speechSpeed).coerceIn(0.6f, 2.0f)
+        // Use caller's speechRate directly without double-multiplying by app's internal speed
+        val rate = ((request.speechRate.takeIf { it > 0 } ?: 100) / 100f).coerceIn(0.5f, 2.5f)
 
         if (callback.start(engine.sampleRate, AudioFormat.ENCODING_PCM_16BIT, 1) != TextToSpeech.SUCCESS) return
         synchronized(synthLock) {
@@ -99,7 +104,9 @@ class HolosTtsService : TextToSpeechService() {
     }
 
     private fun writePcm16(samples: FloatArray, callback: SynthesisCallback) {
-        val maxSamples = (callback.maxBufferSize.coerceAtLeast(4096) / 2).coerceAtLeast(1024)
+        val rawMaxBytes = callback.maxBufferSize
+        val safeMaxBytes = if (rawMaxBytes > 0) rawMaxBytes else 4096
+        val maxSamples = (safeMaxBytes / 2).coerceAtLeast(1)
         val bytes = ByteArray(maxSamples * 2)
         val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
         var off = 0

@@ -23,6 +23,11 @@ class ReaderPreferences(context: Context) {
     private val prefs: SharedPreferences =
         context.applicationContext.getSharedPreferences("holos_reader_prefs", Context.MODE_PRIVATE)
 
+    // --- App Language (SYSTEM / UK / EN) ---
+    var appLanguage: String
+        get() = prefs.getString("app_language", "SYSTEM") ?: "SYSTEM"
+        set(v) = prefs.edit().putString("app_language", v).apply()
+
     // --- TTS & Voices ---
     var selectedVoice: String?
         get() = prefs.getString("voice", null)
@@ -48,6 +53,11 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getInt("threads", 4).coerceIn(1, 8)
         set(v) = prefs.edit().putInt("threads", v.coerceIn(1, 8)).apply()
 
+    // AUTO, NNAPI, XNNPACK, CPU
+    var onnxAccelerator: String
+        get() = prefs.getString("onnx_accelerator", "AUTO") ?: "AUTO"
+        set(v) = prefs.edit().putString("onnx_accelerator", v).apply()
+
     // TTS Highlighting (Granularity: WORD / PARAGRAPH / OFF; Style: HIGHLIGHTER / UNDERLINE / TEXT_COLOR)
     var ttsHighlightGranularity: String
         get() = prefs.getString("tts_hl_gran", "WORD") ?: "WORD"
@@ -62,6 +72,11 @@ class ReaderPreferences(context: Context) {
         set(v) = prefs.edit().putInt("tts_hl_color", v).apply()
 
     // --- Font ---
+    // Default OFF: respect embedded EPUB font / CSS hint unless user enables override
+    var overrideBookFont: Boolean
+        get() = prefs.getBoolean("override_book_font", false)
+        set(v) = prefs.edit().putBoolean("override_book_font", v).apply()
+
     var fontSizeSp: Float
         get() = prefs.getFloat("font_sp", 19f).coerceIn(14f, 28f)
         set(v) = prefs.edit().putFloat("font_sp", v.coerceIn(14f, 28f)).apply()
@@ -70,7 +85,7 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getInt("font_weight", 400).coerceIn(300, 700)
         set(v) = prefs.edit().putInt("font_weight", v.coerceIn(300, 700)).apply()
 
-    // SANS, SERIF, MONO
+    // NOTO_SERIF, NOTO_SERIF_DISPLAY, DEJAVU_SERIF, LIBERATION_SERIF, CARLITO, NOTO_SANS, DEJAVU_SANS, NOTO_MONO
     var fontFamily: String
         get() = prefs.getString("font_family", if (useSerif) "SERIF" else "SANS") ?: "SANS"
         set(v) {

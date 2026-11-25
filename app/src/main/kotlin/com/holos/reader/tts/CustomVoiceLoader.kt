@@ -1,6 +1,7 @@
 package com.holos.reader.tts
 
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -11,12 +12,13 @@ import java.util.zip.ZipInputStream
  *
  * Directly imports `.pt` files downloaded from https://huggingface.co/spaces/patriotyk/HolosTTS
  * (PyTorch ZIP archive containing `archive/data/0` = 1,024 raw little-endian IEEE-754 float32 bytes)
- * WITHOUT requiring PyTorch on Android, as well as NumPy `.npy` and raw 1,024-byte `.bin` files!
+ * WITHOUT requiring PyTorch on Android, as well as NumPy `.npy` and raw 1,024-byte `.bin` files.
  */
 object CustomVoiceLoader {
 
     const val VOICE_DIM = 256
     private const val EXPECTED_BYTES = VOICE_DIM * 4 // 1024 bytes
+    private const val MAX_ENTRY_BYTES = 1024 * 1024  // 1 MiB safety cap against ZIP bombs
     const val CUSTOM_PREFIX = "custom:"
 
     /**
@@ -29,14 +31,14 @@ object CustomVoiceLoader {
             return readFloatsLE(bytes, 0)
         }
 
-        // 2. PyTorch .pt ZIP archive (magic "PK\x03\x04") — saved by torch.save() on HF Space!
+        // 2. PyTorch .pt ZIP archive (magic "PK\x03\x04")
         if (bytes.size > 30 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte()) {
             ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
                 while (true) {
                     val entry = zis.nextEntry ?: break
                     val name = entry.name
                     if (name.endsWith("/data/0") || name == "data/0") {
-                        val raw = zis.readBytes()
+                        val raw = readBounded(zis, MAX_ENTRY_BYTES)
                         require(raw.size >= EXPECTED_BYTES) {
                             "Неочікуваний розмір тензора у .pt файлі (${raw.size} байт, очікується $EXPECTED_BYTES)"
                         }
@@ -50,9 +52,13 @@ object CustomVoiceLoader {
         // 3. NumPy .npy float32 array (magic "\x93NUMPY")
         if (bytes.size > 12 && bytes[0] == 0x93.toByte() && String(bytes, 1, 5, Charsets.US_ASCII) == "NUMPY") {
             val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            val major = bytes[6].toInt()
+            val major = bytes[6].toInt() and 0xFF
+            require(major == 1 || major == 2) { "Непідтримувана версія .npy ($major)" }
             val headerStart = if (major == 1) 10 else 12
             val headerLen = if (major == 1) bb.getShort(8).toInt() and 0xFFFF else bb.getInt(8)
+            require(headerLen in 1..65536 && headerStart + headerLen <= bytes.size) {
+                "Некоректний заголовок .npy ($headerLen)"
+            }
             val dataStart = headerStart + headerLen
             require(bytes.size - dataStart >= EXPECTED_BYTES) {
                 "Файл .npy занадто малий для вектора з $VOICE_DIM float32"
@@ -67,7 +73,7 @@ object CustomVoiceLoader {
         require(vector.size == VOICE_DIM && vector.all { it.isFinite() }) { "Некоректний вектор голосу" }
         dir.mkdirs()
         val safeName = name.replace(Regex("[^\\p{L}\\p{N}_\\- ]"), "").trim().ifEmpty { "ClonedVoice" }
-        val outFile = File(dir, "$safeName.bin")
+        val outFile = resolveSafeChild(dir, "$safeName.bin")
         val bb = ByteBuffer.allocate(EXPECTED_BYTES).order(ByteOrder.LITTLE_ENDIAN)
         for (v in vector) bb.putFloat(v)
         outFile.writeBytes(bb.array())
@@ -85,9 +91,36 @@ object CustomVoiceLoader {
     fun loadCustomVoiceVector(dir: File, prefixedName: String): FloatArray? {
         if (!prefixedName.startsWith(CUSTOM_PREFIX)) return null
         val name = prefixedName.removePrefix(CUSTOM_PREFIX)
-        val file = File(dir, "$name.bin")
+        if (name.isEmpty() || name.contains('/') || name.contains('\\') || name.contains("..")) return null
+        val file = try {
+            resolveSafeChild(dir, "$name.bin")
+        } catch (_: Exception) {
+            return null
+        }
         if (!file.exists() || file.length() != EXPECTED_BYTES.toLong()) return null
         return readFloatsLE(file.readBytes(), 0)
+    }
+
+    private fun resolveSafeChild(dir: File, fileName: String): File {
+        val canonicalDir = dir.canonicalFile
+        val prefix = canonicalDir.path.let { if (it.endsWith(File.separator)) it else it + File.separator }
+        val candidate = File(canonicalDir, fileName).canonicalFile
+        require(candidate.path.startsWith(prefix)) { "Unsafe voice path: $fileName" }
+        return candidate
+    }
+
+    private fun readBounded(stream: ZipInputStream, maxBytes: Int): ByteArray {
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0
+        while (true) {
+            val n = stream.read(buf)
+            if (n <= 0) break
+            total += n
+            require(total <= maxBytes) { "Запис у .pt перевищує ліміт $maxBytes байт" }
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 
     private fun readFloatsLE(bytes: ByteArray, offset: Int): FloatArray {

@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - Full novel/LitRPG normalization + Space prosody rules (NFKC, ` - ` -> `: `, terminal punctuation)
  * - Supports both preset voices AND imported custom cloned `.pt`/`.npy`/`.bin` 256-float vectors
  * - Enforces the post-encoder 1,000-frame (25 s) bisection guard (HF Discussion #3)
+ * - Cooperative per-window cancellation passed directly into [HolosOnnx.stream]
  */
 object HolosSafeSynthesizer {
 
@@ -88,7 +89,11 @@ object HolosSafeSynthesizer {
 
         if (cancelled.get()) return
         var pending: FloatArray? = null
-        engine.stream(encoded, trimSilence = true) { audio ->
+        engine.stream(
+            encoded = encoded,
+            trimSilence = true,
+            isCancelled = { cancelled.get() },
+        ) { audio ->
             if (cancelled.get()) return@stream
             // Soft-clamp to prevent DAC clipping clicks
             for (k in audio.indices) {
@@ -100,8 +105,8 @@ object HolosSafeSynthesizer {
         }
         pending?.let { last ->
             if (!cancelled.get()) {
-                // Apply gentle 8 ms fade-out on utterance tail to eliminate clicks/abrupt cutoffs
-                val fadeOut = minOf(192, last.size)
+                // Apply gentle 3 ms fade-out on utterance tail to eliminate clicks without clipping final syllables
+                val fadeOut = minOf(72, last.size)
                 val start = last.size - fadeOut
                 for (i in 0 until fadeOut) {
                     last[start + i] *= (fadeOut - 1 - i).toFloat() / fadeOut.toFloat()

@@ -9,7 +9,10 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.nio.LongBuffer
+import java.util.concurrent.locks.ReentrantReadWriteLock
 import java.util.zip.ZipFile
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 import kotlin.math.max
 import kotlin.math.min
 
@@ -18,18 +21,8 @@ import kotlin.math.min
  * onnx-int8/ folders of the Hugging Face repository; on a phone's CPU the
  * INT8 one is faster.
  *
- * The encoder predicts features and durations per token, the prosody stage
- * F0 and energy per frame, and the decoder the audio. With [streaming], the
- * default, a source stage computes the excitation and the decoder works in
- * windows, so stream() gives the audio chunk by chunk and generate() joins
- * the chunks. Without it, the bundle's whole-utterance decoder computes
- * generate() in one call, which is faster, and stream() is not available.
- * The input is a phoneme string, as for the Python packages.
- *
- * [options] are the ONNX Runtime session options of every stage, for a thread
- * count or an execution provider. By default ONNX Runtime picks the threads,
- * and they do not spin between the stages. The calls block until the audio
- * is computed, so call them off the main thread.
+ * Thread-safe against concurrent [close] via [ReentrantReadWriteLock] and
+ * supports cooperative cancellation between streaming decoder windows.
  */
 class HolosOnnx @JvmOverloads constructor(
     bundle: File,
@@ -60,7 +53,12 @@ class HolosOnnx @JvmOverloads constructor(
         val durations: IntArray get() = tokenDurations.clone()
     }
 
-    private val manifest = loadManifest(File(bundle, MANIFEST))
+    private val rwLock = ReentrantReadWriteLock()
+    @Volatile
+    private var closed = false
+
+    private val bundleCanonical = bundle.canonicalFile
+    private val manifest = loadManifest(File(bundleCanonical, MANIFEST))
 
     /** Samples per second of the audio. */
     val sampleRate = manifest.getInt("sample_rate")
@@ -74,7 +72,11 @@ class HolosOnnx @JvmOverloads constructor(
     private val vocab = manifest.getJSONArray("vocab").let { names ->
         (0 until names.length()).associateBy { names.getString(it) }
     }
-    private val presets = if (manifest.has("voices")) readVoices(File(bundle, manifest.getString("voices"))) else LinkedHashMap()
+    private val presets = if (manifest.has("voices")) {
+        readVoices(resolveSafeChild(bundleCanonical, manifest.getString("voices")))
+    } else {
+        LinkedHashMap()
+    }
     private val streamInfo = if (streaming) {
         requireNotNull(manifest.optJSONObject("streaming")) { "The bundle $bundle has no window decoder for streaming" }
     } else {
@@ -99,17 +101,18 @@ class HolosOnnx @JvmOverloads constructor(
             listOf(manifest.getString("decoder"))
         }
         val sessionOptions = options ?: OrtSession.SessionOptions().apply {
-            // The stages run one after another. Spinning threads of a finished
-            // stage would compete with the next one for the CPU.
             addConfigEntry("session.intra_op.allow_spinning", "0")
         }
         val sessions = ArrayList<OrtSession>()
         try {
             for (name in files) {
-                sessions += environment.createSession(File(bundle, name).absolutePath, sessionOptions)
+                val safeFile = resolveSafeChild(bundleCanonical, name)
+                sessions += environment.createSession(safeFile.absolutePath, sessionOptions)
             }
-        } catch (error: Exception) {
-            sessions.forEach { it.close() }
+        } catch (error: Throwable) {
+            sessions.forEach {
+                try { it.close() } catch (_: Throwable) {}
+            }
             throw error
         } finally {
             if (options == null) sessionOptions.close()
@@ -138,7 +141,8 @@ class HolosOnnx @JvmOverloads constructor(
 
     /** Phonemes -> features, F0, energy and durations, with a voice vector. */
     @JvmOverloads
-    fun encode(phonemes: String, voice: FloatArray, speed: Float = 1f): Encoded {
+    fun encode(phonemes: String, voice: FloatArray, speed: Float = 1f): Encoded = rwLock.read {
+        check(!closed) { "HolosOnnx engine has been closed" }
         require(speed > 0 && speed.isFinite()) { "speed must be a positive finite number" }
         require(voice.size == VOICE_DIM) { "A voice has $VOICE_DIM values" }
         val tokens = ArrayList<Long>()
@@ -147,15 +151,21 @@ class HolosOnnx @JvmOverloads constructor(
         tokens += 0
         val length = tokens.size
 
-        val encoderInputs = mapOf(
-            "tokens" to tensor(tokens.toLongArray(), 1, length.toLong()),
-            "voice" to tensor(voice, 1, VOICE_DIM.toLong()),
-            "speed" to tensor(floatArrayOf(speed), 1),
-        )
-        val (acoustic, prosodic, predicted) = runStage(encoder, encoderInputs) { result ->
-            Triple(result.floats("acoustic_tokens"), result.floats("prosodic_tokens"), result.longs("durations"))
+        val (acoustic, prosodic, predicted) = withOwnedTensors(
+            { "tokens" to tensor(tokens.toLongArray(), 1, length.toLong()) },
+            { "voice" to tensor(voice, 1, VOICE_DIM.toLong()) },
+            { "speed" to tensor(floatArrayOf(speed), 1) },
+        ) { encoderInputs ->
+            runStage(encoder, encoderInputs, emptyList()) { result ->
+                Triple(result.floats("acoustic_tokens"), result.floats("prosodic_tokens"), result.longs("durations"))
+            }
         }
+
         require(predicted.all { it >= 0 }) { "Predicted negative durations" }
+        // Guard against vocoder clipping final unstressed syllables (e.g. "Варти" -> "Вар") at higher speeds
+        if (predicted.size >= 2 && predicted[predicted.lastIndex] < 6L) {
+            predicted[predicted.lastIndex] = 6L
+        }
         val frames = predicted.sum()
         require(frames in 1..maxFrames.toLong()) {
             "Predicted $frames frames, outside 1..$maxFrames; split the text into sentences"
@@ -166,14 +176,17 @@ class HolosOnnx @JvmOverloads constructor(
             repeat(predicted[token].toInt()) { frameToToken[frame++] = token.toLong() }
         }
 
-        val prosodyInputs = mapOf(
-            "prosodic_tokens" to tensor(prosodic, 1, length.toLong(), CHANNELS),
-            "frame_to_token" to tensor(frameToToken, frames),
-            "voice" to tensor(voice, 1, VOICE_DIM.toLong()),
-        )
-        val (f0, energy) = runStage(prosody, prosodyInputs) { result -> result.floats("f0") to result.floats("energy") }
+        val (f0, energy) = withOwnedTensors(
+            { "prosodic_tokens" to tensor(prosodic, 1, length.toLong(), CHANNELS) },
+            { "frame_to_token" to tensor(frameToToken, frames) },
+            { "voice" to tensor(voice, 1, VOICE_DIM.toLong()) },
+        ) { prosodyInputs ->
+            runStage(prosody, prosodyInputs, emptyList()) { result ->
+                result.floats("f0") to result.floats("energy")
+            }
+        }
         val durations = IntArray(length) { predicted[it].toInt() }
-        return Encoded(acoustic, length, frameToToken, f0, energy, voice.clone(), durations)
+        Encoded(acoustic, length, frameToToken, f0, energy, voice.clone(), durations)
     }
 
     /** The whole utterance with a preset voice (null for the first). */
@@ -182,17 +195,18 @@ class HolosOnnx @JvmOverloads constructor(
         generate(encode(phonemes, voice, speed))
 
     /** The whole utterance of an encoded text. */
-    fun generate(encoded: Encoded): FloatArray {
+    fun generate(encoded: Encoded): FloatArray = rwLock.read {
+        check(!closed) { "HolosOnnx engine has been closed" }
         if (streamInfo == null) {
             return decodeWhole(encoded)
         }
         val audio = FloatArray(encoded.frames * samplesPerFrame)
         var position = 0
-        decodeWindows(encoded, maxChunkFrames) { chunk ->
+        decodeWindows(encoded, maxChunkFrames, isCancelled = null) { chunk ->
             chunk.copyInto(audio, position)
             position += chunk.size
         }
-        return audio
+        audio
     }
 
     /** Streams the utterance with a preset voice (null for the first). */
@@ -202,24 +216,30 @@ class HolosOnnx @JvmOverloads constructor(
 
     /**
      * Streams an encoded utterance in chunks of [chunkFrames] frames, at most
-     * [maxChunkFrames] (40, 1 s). Every chunk is decoded with 20 frames of
-     * context on both sides, so the chunks join into the generate() audio.
-     * [trimSilence] drops the leading silence of the boundary token except
-     * 30 ms and fades in over ~6.6 ms.
+     * [maxChunkFrames] (40, 1 s), checking [isCancelled] before every window.
      */
     @JvmOverloads
-    fun stream(encoded: Encoded, chunkFrames: Int = maxChunkFrames, trimSilence: Boolean = true, listener: ChunkListener) {
+    fun stream(
+        encoded: Encoded,
+        chunkFrames: Int = maxChunkFrames,
+        trimSilence: Boolean = true,
+        isCancelled: (() -> Boolean)? = null,
+        listener: ChunkListener,
+    ) = rwLock.read {
+        check(!closed) { "HolosOnnx engine has been closed" }
         check(streamInfo != null) { "stream() needs a HolosOnnx loaded with streaming = true" }
         require(chunkFrames in 1..maxChunkFrames) { "chunkFrames must be between 1 and $maxChunkFrames" }
+        if (isCancelled?.invoke() == true) return@read
         if (!trimSilence) {
-            decodeWindows(encoded, chunkFrames, listener)
-            return
+            decodeWindows(encoded, chunkFrames, isCancelled, listener)
+            return@read
         }
         val silence = encoded.durations[0] * samplesPerFrame
         var skip = max(0, silence - Math.round(SILENCE_MARGIN_SECONDS * sampleRate).toInt())
         val fade = if (skip > 0) FADE_IN_SAMPLES else 0
         var faded = 0
-        decodeWindows(encoded, chunkFrames) { chunk ->
+        decodeWindows(encoded, chunkFrames, isCancelled) { chunk ->
+            if (isCancelled?.invoke() == true) return@decodeWindows
             val from = min(skip, chunk.size)
             skip -= from
             val trimmed = chunk.copyOfRange(from, chunk.size)
@@ -238,55 +258,74 @@ class HolosOnnx @JvmOverloads constructor(
     /** The whole utterance in one call of the whole-utterance decoder. */
     private fun decodeWhole(encoded: Encoded): FloatArray {
         val frames = encoded.frames.toLong()
-        val inputs = mapOf(
-            "acoustic_tokens" to tensor(encoded.acoustic, 1, CHANNELS, encoded.tokens.toLong()),
-            "frame_to_token" to tensor(encoded.frameToToken, frames),
-            "f0" to tensor(encoded.f0, 1, 2 * frames),
-            "energy" to tensor(encoded.energy, 1, 2 * frames),
-            "voice" to tensor(encoded.voice, 1, VOICE_DIM.toLong()),
-        )
-        return runStage(decoder, inputs) { result ->
-            val length = result.longs("audio_lengths")[0].toInt()
-            val expected = encoded.frames * samplesPerFrame
-            check(length == expected) { "The decoder returned $length samples; expected $expected" }
-            result.floats("audio").copyOf(length).also(::checkFinite)
+        return withOwnedTensors(
+            { "acoustic_tokens" to tensor(encoded.acoustic, 1, CHANNELS, encoded.tokens.toLong()) },
+            { "frame_to_token" to tensor(encoded.frameToToken, frames) },
+            { "f0" to tensor(encoded.f0, 1, 2 * frames) },
+            { "energy" to tensor(encoded.energy, 1, 2 * frames) },
+            { "voice" to tensor(encoded.voice, 1, VOICE_DIM.toLong()) },
+        ) { inputs ->
+            runStage(decoder, inputs, emptyList()) { result ->
+                val length = result.longs("audio_lengths")[0].toInt()
+                val expected = encoded.frames * samplesPerFrame
+                check(length == expected) { "The decoder returned $length samples; expected $expected" }
+                result.floats("audio").copyOf(length).also(::checkFinite)
+            }
         }
     }
 
     /**
-     * Decodes the chunks of chunkFrames frames one by one. Every window has
-     * contextFrames of context on both sides of its chunk, or stops at the
-     * edge of the utterance, so the first chunk decodes fewer frames and the
-     * chunks join into the whole-utterance audio.
+     * Decodes the chunks of chunkFrames frames one by one, exiting promptly when [isCancelled] returns true.
      */
-    private fun decodeWindows(encoded: Encoded, chunkFrames: Int, listener: ChunkListener) {
+    private fun decodeWindows(
+        encoded: Encoded,
+        chunkFrames: Int,
+        isCancelled: (() -> Boolean)?,
+        listener: ChunkListener,
+    ) {
+        if (isCancelled?.invoke() == true) return
         val frames = encoded.frames
         val step = samplesPerFrame
-        val excitation = runStage(source!!, mapOf("f0" to tensor(encoded.f0, 1, 2L * frames))) { it.floats("source") }
+        val excitation = withOwnedTensors(
+            { "f0" to tensor(encoded.f0, 1, 2L * frames) }
+        ) { srcInputs ->
+            runStage(source!!, srcInputs, emptyList()) { it.floats("source") }
+        }
+        if (isCancelled?.invoke() == true) return
+
         val acoustic = tensor(encoded.acoustic, 1, CHANNELS, encoded.tokens.toLong())
-        val voice = tensor(encoded.voice, 1, VOICE_DIM.toLong())
+        var voice: OnnxTensor? = null
         try {
+            voice = tensor(encoded.voice, 1, VOICE_DIM.toLong())
             for (start in 0 until frames step chunkFrames) {
+                if (isCancelled?.invoke() == true || closed) return
                 val end = min(start + chunkFrames, frames)
                 val windowStart = max(0, start - contextFrames)
                 val windowEnd = min(frames, end + contextFrames)
                 val width = (windowEnd - windowStart).toLong()
-                val inputs = mapOf(
-                    "frame_to_token" to tensor(encoded.frameToToken.copyOfRange(windowStart, windowEnd), width),
-                    "f0" to tensor(encoded.f0.copyOfRange(2 * windowStart, 2 * windowEnd), 1, 2 * width),
-                    "energy" to tensor(encoded.energy.copyOfRange(2 * windowStart, 2 * windowEnd), 1, 2 * width),
-                    "source" to tensor(excitation.copyOfRange(step * windowStart, step * windowEnd), 1, step * width),
-                )
                 val offset = (start - windowStart) * step
-                val chunk = runStage(decoder, inputs + mapOf("acoustic_tokens" to acoustic, "voice" to voice), inputs.values) { result ->
-                    result.floats("audio").copyOfRange(offset, offset + (end - start) * step)
+
+                val chunk = withOwnedTensors(
+                    { "frame_to_token" to tensor(encoded.frameToToken.copyOfRange(windowStart, windowEnd), width) },
+                    { "f0" to tensor(encoded.f0.copyOfRange(2 * windowStart, 2 * windowEnd), 1, 2 * width) },
+                    { "energy" to tensor(encoded.energy.copyOfRange(2 * windowStart, 2 * windowEnd), 1, 2 * width) },
+                    { "source" to tensor(excitation.copyOfRange(step * windowStart, step * windowEnd), 1, step * width) },
+                ) { inputs ->
+                    val allInputs = HashMap<String, OnnxTensor>(inputs.size + 2).apply {
+                        putAll(inputs)
+                        put("acoustic_tokens", acoustic)
+                        put("voice", voice)
+                    }
+                    runStage(decoder, allInputs, emptyList()) { result ->
+                        result.floats("audio").copyOfRange(offset, offset + (end - start) * step)
+                    }
                 }
                 checkFinite(chunk)
                 listener.onChunk(chunk)
             }
         } finally {
-            acoustic.close()
-            voice.close()
+            try { voice?.close() } catch (_: Throwable) {}
+            try { acoustic.close() } catch (_: Throwable) {}
         }
     }
 
@@ -297,10 +336,14 @@ class HolosOnnx @JvmOverloads constructor(
         OnnxTensor.createTensor(environment, LongBuffer.wrap(values), shape)
 
     override fun close() {
-        encoder.close()
-        prosody.close()
-        source?.close()
-        decoder.close()
+        rwLock.write {
+            if (closed) return
+            closed = true
+            try { encoder.close() } catch (_: Throwable) {}
+            try { prosody.close() } catch (_: Throwable) {}
+            try { source?.close() } catch (_: Throwable) {}
+            try { decoder.close() } catch (_: Throwable) {}
+        }
     }
 
     private companion object {
@@ -309,6 +352,35 @@ class HolosOnnx @JvmOverloads constructor(
         const val VOICE_DIM = 256
         const val SILENCE_MARGIN_SECONDS = 0.030
         const val FADE_IN_SAMPLES = 160
+        const val MAX_VOICES_ENTRY_BYTES = 64 * 1024 * 1024 // 64 MiB
+
+        fun resolveSafeChild(baseDir: File, relativeName: String): File {
+            val candidate = File(baseDir, relativeName).canonicalFile
+            val basePrefix = baseDir.path.let { if (it.endsWith(File.separator)) it else it + File.separator }
+            require(candidate.path.startsWith(basePrefix)) {
+                "Unsafe manifest path outside bundle: $relativeName"
+            }
+            return candidate
+        }
+
+        /** Safely constructs all input tensors and guarantees every created tensor is closed even on partial failure. */
+        inline fun <T> withOwnedTensors(
+            vararg builders: () -> Pair<String, OnnxTensor>,
+            block: (Map<String, OnnxTensor>) -> T,
+        ): T {
+            val map = LinkedHashMap<String, OnnxTensor>(builders.size)
+            return try {
+                for (b in builders) {
+                    val (k, v) = b()
+                    map[k] = v
+                }
+                block(map)
+            } finally {
+                map.values.forEach {
+                    try { it.close() } catch (_: Throwable) {}
+                }
+            }
+        }
 
         /** Runs a session and closes the given inputs, by default all of them, and the result. */
         inline fun <T> runStage(
@@ -319,7 +391,9 @@ class HolosOnnx @JvmOverloads constructor(
         ): T = try {
             session.run(inputs).use(read)
         } finally {
-            owned.forEach { it.close() }
+            owned.forEach {
+                try { it.close() } catch (_: Throwable) {}
+            }
         }
 
         fun OrtSession.Result.floats(name: String): FloatArray {
@@ -356,18 +430,26 @@ class HolosOnnx @JvmOverloads constructor(
             val (names, values) = ZipFile(file).use { zip ->
                 listOf("names.npy", "values.npy").map { name ->
                     val entry = requireNotNull(zip.getEntry(name)) { "$file has no $name" }
-                    Npy(zip.getInputStream(entry).use { it.readBytes() })
+                    require(entry.size <= MAX_VOICES_ENTRY_BYTES) { "$name in $file exceeds size limit" }
+                    Npy(readBounded(zip.getInputStream(entry), MAX_VOICES_ENTRY_BYTES))
                 }
             }
-            require(names.descr.startsWith("<U") && names.shape.size == 1) { "Unexpected voice names in $file" }
+            require(names.descr.startsWith("<U") && names.shape.size == 1 && names.shape[0] >= 0) {
+                "Unexpected voice names in $file"
+            }
             require(values.descr == "<f4" && values.shape.contentEquals(intArrayOf(names.shape[0], VOICE_DIM))) {
                 "Expected voices of shape [${names.shape[0]}, $VOICE_DIM] in $file"
             }
             val width = names.descr.substring(2).toInt()
+            require(width in 1..4096) { "Invalid voice name width $width" }
+            val expectedNameBytes = names.shape[0].toLong() * width.toLong() * 4L
+            val expectedValBytes = names.shape[0].toLong() * VOICE_DIM.toLong() * 4L
+            require(names.data.remaining().toLong() >= expectedNameBytes) { "Truncated names.npy in $file" }
+            require(values.data.remaining().toLong() >= expectedValBytes) { "Truncated values.npy in $file" }
+
             val voices = LinkedHashMap<String, FloatArray>()
             val floats = values.data.asFloatBuffer()
             for (i in 0 until names.shape[0]) {
-                // Fixed-width UTF-32, padded with zeros.
                 val name = StringBuilder()
                 for (j in 0 until width) {
                     val point = names.data.getInt(4 * (i * width + j))
@@ -380,27 +462,48 @@ class HolosOnnx @JvmOverloads constructor(
             }
             return voices
         }
+
+        private fun readBounded(stream: java.io.InputStream, limit: Int): ByteArray {
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(16384)
+            var total = 0
+            stream.use { input ->
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    total += n
+                    require(total <= limit) { "Entry exceeds $limit bytes" }
+                    out.write(buf, 0, n)
+                }
+            }
+            return out.toByteArray()
+        }
     }
 
-    /** A NumPy .npy array in C order. */
+    /** A NumPy .npy array in C order with strict bounds validation. */
     private class Npy(bytes: ByteArray) {
         val descr: String
         val shape: IntArray
         val data: ByteBuffer
 
         init {
-            require(bytes.size > 10 && bytes[0] == 0x93.toByte() && String(bytes, 1, 5, Charsets.US_ASCII) == "NUMPY") {
+            require(bytes.size >= 12 && bytes[0] == 0x93.toByte() && String(bytes, 1, 5, Charsets.US_ASCII) == "NUMPY") {
                 "Not a .npy array"
             }
             val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            val major = bytes[6].toInt()
+            val major = bytes[6].toInt() and 0xFF
+            require(major == 1 || major == 2) { "Unsupported .npy major version $major" }
             val start = if (major == 1) 10 else 12
             val length = if (major == 1) buffer.getShort(8).toInt() and 0xffff else buffer.getInt(8)
+            require(length in 1..65536 && start + length <= bytes.size) {
+                "Invalid .npy header length $length"
+            }
             val header = String(bytes, start, length, Charsets.UTF_8)
             require("'fortran_order': False" in header) { "Only C-order .npy arrays are supported" }
             descr = requireNotNull(Regex("'descr':\\s*'([^']+)'").find(header)).groupValues[1]
             shape = requireNotNull(Regex("'shape':\\s*\\(([^)]*)\\)").find(header)).groupValues[1]
                 .split(',').map { it.trim() }.filter { it.isNotEmpty() }.map { it.toInt() }.toIntArray()
+            require(shape.all { it >= 0 }) { "Negative dimension in .npy shape" }
             data = ByteBuffer.wrap(bytes, start + length, bytes.size - start - length).slice().order(ByteOrder.LITTLE_ENDIAN)
         }
     }
