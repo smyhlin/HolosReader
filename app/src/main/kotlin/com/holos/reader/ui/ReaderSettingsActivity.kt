@@ -10,8 +10,10 @@ import android.text.SpannableStringBuilder
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.widget.BaseAdapter
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -286,6 +288,8 @@ class ReaderSettingsActivity : Activity() {
                 label = tr("Основний шрифт", "Preferred Font"),
                 currentLabel = { familyLabels[prefs.fontFamily] ?: tr("Carlito (м’який без засічок)", "Carlito (Soft Sans)") },
                 options = fontOptions,
+                itemTypeface = { key -> resolveFontAsset(this, key) },
+                currentTypeface = { resolveFontAsset(this, prefs.fontFamily) },
                 onPicked = { prefs.fontFamily = it; refreshPreview() },
             ),
             toggleRow(
@@ -793,6 +797,8 @@ class ReaderSettingsActivity : Activity() {
         subtitle: String? = null,
         currentLabel: () -> String,
         options: List<Pair<String, String>>,
+        itemTypeface: ((String) -> Typeface)? = null,
+        currentTypeface: (() -> Typeface)? = null,
         onPicked: (String) -> Unit,
     ): LinearLayout {
         val chipTv = TextView(this).apply {
@@ -801,6 +807,7 @@ class ReaderSettingsActivity : Activity() {
             setTextColor(p.primaryText)
             background = UiTheme.rounded(p.inlineHighlightBg, d(10).toFloat())
             setPadding(d(12), d(7), d(12), d(7))
+            currentTypeface?.invoke()?.let { typeface = it }
         }
         val textCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -825,16 +832,38 @@ class ReaderSettingsActivity : Activity() {
             addView(textCol, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply { rightMargin = d(8) })
             addView(chipTv)
             setOnClickListener {
-                val labels = options.map { it.second }.toTypedArray()
-                UiTheme.showThemedDialog(
-                    UiTheme.dialogBuilder(this@ReaderSettingsActivity, prefs.theme)
-                        .setTitle(label)
-                        .setItems(labels) { _, which ->
-                            onPicked(options[which].first)
-                            chipTv.text = "${currentLabel()} ⌄"
-                        },
-                    prefs.theme,
-                )
+                val builder = UiTheme.dialogBuilder(this@ReaderSettingsActivity, prefs.theme)
+                    .setTitle(label)
+                if (itemTypeface != null) {
+                    val adapter = object : BaseAdapter() {
+                        override fun getCount(): Int = options.size
+                        override fun getItem(position: Int): Pair<String, String> = options[position]
+                        override fun getItemId(position: Int): Long = position.toLong()
+                        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                            val tv = (convertView as? TextView) ?: TextView(this@ReaderSettingsActivity).apply {
+                                textSize = 16f
+                                setTextColor(p.primaryText)
+                                setPadding(d(24), d(14), d(24), d(14))
+                            }
+                            val (key, textLabel) = options[position]
+                            tv.text = textLabel
+                            tv.typeface = itemTypeface(key)
+                            return tv
+                        }
+                    }
+                    builder.setAdapter(adapter) { _, which ->
+                        onPicked(options[which].first)
+                        chipTv.text = "${currentLabel()} ⌄"
+                        currentTypeface?.invoke()?.let { chipTv.typeface = it }
+                    }
+                } else {
+                    val labels = options.map { it.second }.toTypedArray()
+                    builder.setItems(labels) { _, which ->
+                        onPicked(options[which].first)
+                        chipTv.text = "${currentLabel()} ⌄"
+                    }
+                }
+                UiTheme.showThemedDialog(builder, prefs.theme)
             }
         }
     }
@@ -931,16 +960,12 @@ class ReaderSettingsActivity : Activity() {
 
         private val fontCache = ConcurrentHashMap<String, Typeface>()
 
-        fun resolveTypeface(
+        fun resolveFontAsset(
             context: Context,
-            prefs: ReaderPreferences,
-            bookTypeface: Typeface? = null,
+            familyKey: String,
+            bold: Boolean = false,
         ): Typeface {
-            if (!prefs.overrideBookFont && bookTypeface != null) {
-                return bookTypeface
-            }
-            val bold = prefs.fontWeight >= 600
-            val assetName = when (prefs.fontFamily) {
+            val assetName = when (familyKey) {
                 "NOTO_SERIF", "SERIF" -> if (bold) "fonts/NotoSerif-Bold.ttf" else "fonts/NotoSerif-Regular.ttf"
                 "NOTO_SERIF_DISPLAY" -> if (bold) "fonts/NotoSerifDisplay-Bold.ttf" else "fonts/NotoSerifDisplay-Regular.ttf"
                 "DEJAVU_SERIF" -> if (bold) "fonts/DejaVuSerif-Bold.ttf" else "fonts/DejaVuSerif.ttf"
@@ -955,13 +980,24 @@ class ReaderSettingsActivity : Activity() {
                     Typeface.createFromAsset(context.applicationContext.assets, assetName)
                 } catch (_: Throwable) {
                     val fb = when {
-                        prefs.fontFamily.contains("SERIF") -> Typeface.SERIF
-                        prefs.fontFamily.contains("MONO") -> Typeface.MONOSPACE
+                        familyKey.contains("SERIF") -> Typeface.SERIF
+                        familyKey.contains("MONO") -> Typeface.MONOSPACE
                         else -> Typeface.SANS_SERIF
                     }
                     if (bold) Typeface.create(fb, Typeface.BOLD) else fb
                 }
             }
+        }
+
+        fun resolveTypeface(
+            context: Context,
+            prefs: ReaderPreferences,
+            bookTypeface: Typeface? = null,
+        ): Typeface {
+            if (!prefs.overrideBookFont && bookTypeface != null) {
+                return bookTypeface
+            }
+            return resolveFontAsset(context, prefs.fontFamily, prefs.fontWeight >= 600)
         }
     }
 }
