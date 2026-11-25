@@ -35,6 +35,7 @@ import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
+import com.holos.reader.R
 import com.holos.reader.epub.BlockType
 import com.holos.reader.epub.BookDatabase
 import com.holos.reader.epub.BookRecord
@@ -155,8 +156,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         autoScrolling = false
         autoScrollHandler.removeCallbacksAndMessages(null)
         saveProgress()
-        controller.stop()
-        audioSheet.destroy()
+        if (::controller.isInitialized) controller.stop()
+        if (::audioSheet.isInitialized) audioSheet.destroy()
         ReaderAudioService.stop(this)
         epubSession?.close()
         bgExecutor.shutdownNow()
@@ -168,16 +169,16 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
         readerCanvas = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        // Minimalist Top Toolbar (Bookmark | Stress | Theme | TOC | Close)
+        // Minimalist Top Toolbar (Bookmark | Stress | Theme | Menu | Close)
         topOverlayBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(d(12), d(8), d(12), d(8))
-            addView(toolbarIcon("🔖") { addCurrentBookmark() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(toolbarIcon("А́") { startActivity(Intent(this@ReaderActivity, StressEditorActivity::class.java)) }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(toolbarIcon("☀") { toggleColorSwatchBar() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(toolbarIcon("☰") { showReaderMenu() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(toolbarIcon("✕") { finish() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            setPadding(d(12), d(6), d(12), d(6))
+            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_bookmark, padDp = 8) { addCurrentBookmark() }, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(toolbarIcon("А́") { startActivity(Intent(this@ReaderActivity, StressEditorActivity::class.java)) }, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_palette, padDp = 8) { toggleColorSwatchBar() }, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_menu, padDp = 8) { showReaderMenu() }, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_close, padDp = 8) { finish() }, LinearLayout.LayoutParams(0, d(40), 1f))
         }
 
         subtleHeaderTv = TextView(this).apply {
@@ -217,12 +218,12 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         bottomIconBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(d(12), d(8), d(12), d(10))
-            addView(toolbarIcon("☰") { openTocSheet(0) }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(toolbarIcon("☀") { toggleColorSwatchBar() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(toolbarIcon("🔖") { openTocSheet(1) }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(toolbarIcon("A") { showTypographyDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(toolbarIcon("🎧") { openAudioSheet() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            setPadding(d(12), d(6), d(12), d(8))
+            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_menu, padDp = 8) { openTocSheet(0) }, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_palette, padDp = 8) { toggleColorSwatchBar() }, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_bookmark, padDp = 8) { openTocSheet(1) }, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(toolbarIcon("A") { showTypographyDialog() }, LinearLayout.LayoutParams(0, d(40), 1f))
+            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_headphones, padDp = 8) { openAudioSheet() }, LinearLayout.LayoutParams(0, d(40), 1f))
         }
 
         colorSwatchBar = buildColorSwatchBar().apply { visibility = View.GONE }
@@ -280,6 +281,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         miniCoverImg = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             setBackgroundColor(0x22888888)
+            UiTheme.clipRounded(this, d(8).toFloat())
             if (coverBitmap != null) setImageBitmap(coverBitmap)
         }
         miniTitleTv = TextView(this).apply {
@@ -342,6 +344,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     private fun applyTheme() {
+        UiTheme.applySystemBars(this, prefs.theme)
         val p = UiTheme.palette(prefs.theme)
         frameRoot.setBackgroundColor(p.canvasBg)
         readerCanvas.setBackgroundColor(p.canvasBg)
@@ -359,7 +362,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         fun tintIcons(vg: ViewGroup) {
             for (i in 0 until vg.childCount) {
                 val c = vg.getChildAt(i)
-                if (c.tag == "tb_icon" && c is TextView) c.setTextColor(p.primaryText)
+                if (c.tag == "tb_icon") {
+                    if (c is TextView) c.setTextColor(p.primaryText)
+                    if (c is ImageView) c.setColorFilter(p.primaryText)
+                }
                 if (c is ViewGroup) tintIcons(c)
             }
         }
@@ -426,7 +432,6 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         activeBlockIndex = idx
         miniPlayerPill.visibility = View.VISIBLE
         saveProgress(idx)
-        ReaderAudioService.start(this, book?.title ?: "HolosReader", chapterTitle)
         controller.startFrom(currentBlocks, idx)
     }
 
@@ -474,7 +479,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             if (audioSheet.isVisible()) {
                 audioSheet.updateState(activeBlockIndex, isPlaying, isPaused)
             }
-            if (!isPlaying) ReaderAudioService.stop(this)
+            if (isPlaying && !isPaused) {
+                ReaderAudioService.start(this, book?.title ?: "HolosReader", chapterTitle)
+            } else if (!isPlaying) {
+                ReaderAudioService.stop(this)
+            }
         }
     }
 
@@ -515,7 +524,9 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         }
     }
 
-    // --- Dialogs (Searchable 6,000+ TOC, Bookmarks, Typography, Speed, Sleep, Image Zoom) ---
+    // --- Dialogs (Typography, Speed, Sleep, Image Zoom) ---
+
+    private fun AlertDialog.Builder.showThemed(): AlertDialog = UiTheme.showThemedDialog(this, prefs.theme)
 
     private fun showTocDialog() {
         val b = book ?: return
@@ -561,16 +572,15 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             addView(listView, LinearLayout.LayoutParams(MATCH_PARENT, d(420)))
         }
 
-        val dialog = AlertDialog.Builder(this)
+        val dialog = UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Зміст (${b.chapterCount} розд.)")
             .setView(container)
-            .create()
+            .showThemed()
 
         listView.setOnItemClickListener { _, _, position, _ ->
             dialog.dismiss()
             loadChapter(entries[position].spineIndex, scrollToBlock = 0, autoPlay = controller.isPlaying)
         }
-        dialog.show()
     }
 
     private fun addCurrentBookmark() {
@@ -585,17 +595,17 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val b = book ?: return
         val list = db.listBookmarks(b.id)
         if (list.isEmpty()) {
-            Toast.makeText(this, "Закладок ще немає. Натисніть 🔖 зверху.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Закладок ще немає. Натисніть закладку зверху.", Toast.LENGTH_SHORT).show()
             return
         }
         val labels = list.map { "Розд. ${it.chapterIndex + 1}: ${it.excerpt}" }.toTypedArray()
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Закладки")
             .setItems(labels) { _, which ->
                 val bm = list[which]
                 loadChapter(bm.chapterIndex, scrollToBlock = bm.blockIndex, autoPlay = false)
             }
-            .show()
+            .showThemed()
     }
 
     private fun cycleTheme() {
@@ -618,7 +628,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             "Шрифт менший (A-)",
             "Шрифт: ${if (prefs.useSerif) "Засічки → Без засічок" else "Без засічок → Засічки"}",
         )
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Вигляд тексту")
             .setItems(opts) { _, which ->
                 when (which) {
@@ -631,25 +641,25 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 }
                 applyTheme()
             }
-            .show()
+            .showThemed()
     }
 
     private fun showSpeedDialog() {
         val speeds = floatArrayOf(0.8f, 0.9f, 1.0f, 1.1f, 1.2f, 1.3f, 1.5f, 1.75f, 2.0f)
         val labels = speeds.map { String.format(Locale.US, "%.2f×", it) }.toTypedArray()
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Швидкість озвучення")
             .setItems(labels) { _, which ->
                 prefs.speechSpeed = speeds[which]
                 audioSheet.updateState(activeBlockIndex, controller.isPlaying, controller.isPaused)
                 if (controller.isPlaying) startPlaybackAt(activeBlockIndex.coerceAtLeast(0))
             }
-            .show()
+            .showThemed()
     }
 
     private fun showSleepDialog() {
         val labels = arrayOf("Вимкнути", "15 хвилин", "30 хвилин", "45 хвилин", "60 хвилин", "Кінець розділу")
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Таймер сну")
             .setItems(labels) { _, which ->
                 when (which) {
@@ -662,7 +672,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 }
                 Toast.makeText(this, "Таймер: ${labels[which]}", Toast.LENGTH_SHORT).show()
             }
-            .show()
+            .showThemed()
     }
 
     private fun showImageZoomDialog(entryPath: String) {
@@ -677,10 +687,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     setImageBitmap(bmp)
                     setBackgroundColor(0xFF000000.toInt())
                 }
-                AlertDialog.Builder(this)
+                UiTheme.dialogBuilder(this, prefs.theme)
                     .setView(iv)
                     .setPositiveButton("Закрити", null)
-                    .show()
+                    .showThemed()
             }
         }
     }
@@ -905,7 +915,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             "Словник наголосів (stress_user.txt)",
             "Статистика книги",
         )
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Меню читання")
             .setItems(opts) { _, which ->
                 when (which) {
@@ -919,15 +929,15 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     4 -> {
                         val b = book ?: return@setItems
                         val mins = (b.readingTimeSec / 60L)
-                        AlertDialog.Builder(this)
+                        UiTheme.dialogBuilder(this, prefs.theme)
                             .setTitle(b.title)
                             .setMessage("Розділ: ${chapterIndex + 1} / ${b.chapterCount} (${b.progressPercent}%)\nЧас читання: $mins хв")
                             .setPositiveButton("OK", null)
-                            .show()
+                            .showThemed()
                     }
                 }
             }
-            .show()
+            .showThemed()
     }
 
     private fun toggleAutoScroll() {
