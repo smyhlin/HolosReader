@@ -3,6 +3,8 @@ package com.holos.reader.ui
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.res.ColorStateList
+import com.holos.reader.R
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
@@ -111,7 +113,7 @@ class LibraryActivity : Activity() {
             setPadding(d(14), d(12), d(14), 0)
         }
 
-        // Top Bar: [ 🔍 Search in N books... | + ]  (⋯)  (☰)
+        // Top Bar: [ Search in N books... | + ]  (⋯)  (☰)
         searchInput = EditText(this).apply {
             background = null
             textSize = 14f
@@ -126,46 +128,26 @@ class LibraryActivity : Activity() {
                 override fun afterTextChanged(s: Editable?) {}
             })
         }
-        val plusInPill = TextView(this).apply {
-            text = "+"
-            textSize = 22f
-            gravity = Gravity.CENTER
-            tag = "secondary_icon"
-            setPadding(d(12), d(2), d(12), d(2))
-            setOnClickListener { showImportMenu() }
-        }
+        val searchIcon = UiTheme.iconView(this, R.drawable.ic_search, padDp = 6, tagName = "secondary_icon")
+        val plusInPill = UiTheme.iconView(this, R.drawable.ic_add, padDp = 8, tagName = "secondary_icon") { showImportMenu() }
         val searchPill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             tag = "pill_bg"
-            setPadding(d(12), d(2), d(4), d(2))
-            addView(TextView(context).apply { text = "🔍"; textSize = 14f })
+            setPadding(d(8), d(2), d(4), d(2))
+            addView(searchIcon, LinearLayout.LayoutParams(d(32), d(32)))
             addView(searchInput, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(TextView(context).apply { text = "|"; textSize = 16f; tag = "muted_icon" })
-            addView(plusInPill)
+            addView(View(context).apply { tag = "divider_line" }, LinearLayout.LayoutParams(1, d(18)))
+            addView(plusInPill, LinearLayout.LayoutParams(d(38), d(38)))
         }
 
-        val viewMenuBtn = TextView(this).apply {
-            text = "⋯"
-            textSize = 20f
-            gravity = Gravity.CENTER
-            tag = "primary_icon"
-            setPadding(d(10), d(6), d(10), d(6))
-            setOnClickListener { showViewOptionsMenu() }
-        }
-        val appMenuBtn = TextView(this).apply {
-            text = "☰"
-            textSize = 20f
-            gravity = Gravity.CENTER
-            tag = "primary_icon"
-            setPadding(d(10), d(6), d(6), d(6))
-            setOnClickListener { showAppMenu() }
-        }
+        val viewMenuBtn = UiTheme.iconView(this, R.drawable.ic_more_horiz, padDp = 8, tagName = "primary_icon") { showViewOptionsMenu() }
+        val appMenuBtn = UiTheme.iconView(this, R.drawable.ic_menu, padDp = 8, tagName = "primary_icon") { showAppMenu() }
         topRightNormal = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            addView(viewMenuBtn)
-            addView(appMenuBtn)
+            addView(viewMenuBtn, LinearLayout.LayoutParams(d(40), d(40)).apply { leftMargin = d(4) })
+            addView(appMenuBtn, LinearLayout.LayoutParams(d(40), d(40)))
         }
         selectAllBtn = TextView(this).apply {
             text = "Усі"
@@ -229,7 +211,7 @@ class LibraryActivity : Activity() {
         // Persistent Floating Mini-Player Pill (bottom)
         miniPlayerPill = buildMiniPlayerPill()
 
-        // Multi-Select Bottom Action Panel (Screenshot 5 — local-only: Open, Tag, Status, Details, Delete, Cancel)
+        // Multi-Select Bottom Action Panel (local-only: Open, Tag, Status, Details, Delete, Cancel)
         multiSelectBar = buildMultiSelectPanel().apply { visibility = View.GONE }
 
         frameRoot.addView(mainCol, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -246,6 +228,7 @@ class LibraryActivity : Activity() {
         miniCover = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             setBackgroundColor(0x33888888)
+            UiTheme.clipRounded(this, d(8).toFloat())
         }
         miniTitle = TextView(this).apply {
             textSize = 14f
@@ -334,19 +317,32 @@ class LibraryActivity : Activity() {
     }
 
     private fun applyTheme() {
+        UiTheme.applySystemBars(this, prefs.theme)
         val p = UiTheme.palette(prefs.theme)
         frameRoot.setBackgroundColor(p.canvasBg)
         mainCol.setBackgroundColor(p.canvasBg)
         searchInput.setTextColor(p.primaryText)
         searchInput.setHintTextColor(p.mutedText)
         downloadModelBtn.background = UiTheme.rounded(p.accentBlue, d(12).toFloat())
+        modelProgress.progressTintList = ColorStateList.valueOf(p.accentBlue)
+        modelProgress.progressBackgroundTintList = ColorStateList.valueOf(p.divider)
 
         fun walk(v: View) {
             when (v.tag) {
                 "pill_bg" -> v.background = UiTheme.rounded(p.cardBg, d(22).toFloat())
-                "primary_text", "primary_icon" -> (v as? TextView)?.setTextColor(p.primaryText)
-                "secondary_icon" -> (v as? TextView)?.setTextColor(p.secondaryText)
-                "muted_icon" -> (v as? TextView)?.setTextColor(p.mutedText)
+                "divider_line" -> v.setBackgroundColor(p.divider)
+                "primary_text", "primary_icon" -> {
+                    (v as? TextView)?.setTextColor(p.primaryText)
+                    (v as? ImageView)?.setColorFilter(p.primaryText)
+                }
+                "secondary_icon" -> {
+                    (v as? TextView)?.setTextColor(p.secondaryText)
+                    (v as? ImageView)?.setColorFilter(p.secondaryText)
+                }
+                "muted_icon" -> {
+                    (v as? TextView)?.setTextColor(p.mutedText)
+                    (v as? ImageView)?.setColorFilter(p.mutedText)
+                }
                 "play_circle" -> {
                     v.background = UiTheme.circle(p.playBtnBg)
                     (v as? TextView)?.setTextColor(p.playBtnFg)
@@ -425,6 +421,7 @@ class LibraryActivity : Activity() {
         val coverImg = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = UiTheme.rounded(p.cardBg, d(10).toFloat())
+            UiTheme.clipRounded(this, d(10).toFloat())
             db.getCoverFile(book)?.let { BitmapFactory.decodeFile(it.absolutePath)?.let { b -> setImageBitmap(b) } }
         }
         coverFrame.addView(coverImg, FrameLayout.LayoutParams(MATCH_PARENT, coverHeight))
@@ -505,6 +502,7 @@ class LibraryActivity : Activity() {
             val cover = ImageView(this).apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 background = UiTheme.rounded(p.cardBg, d(8).toFloat())
+                UiTheme.clipRounded(this, d(8).toFloat())
                 db.getCoverFile(book)?.let { BitmapFactory.decodeFile(it.absolutePath)?.let { b -> setImageBitmap(b) } }
             }
             val info = LinearLayout(this).apply {
@@ -558,7 +556,7 @@ class LibraryActivity : Activity() {
             booksContainer.addView(View(this).apply { setBackgroundColor(p.divider) }, LinearLayout.LayoutParams(MATCH_PARENT, 1))
         }
 
-        // Bottom "+ Import Books" pill (matching Screenshot 6!)
+        // Bottom "+ Import Books" pill
         val importPill = TextView(this).apply {
             text = "+  Імпортувати книги"
             textSize = 14f
@@ -604,13 +602,15 @@ class LibraryActivity : Activity() {
 
     // --- Menus & Dialogs ---
 
+    private fun AlertDialog.Builder.showThemed(): AlertDialog = UiTheme.showThemedDialog(this, prefs.theme)
+
     private fun showImportMenu() {
         val opts = arrayOf(
             "З локального файлу (.epub)",
             "Імпортувати папку з EPUB",
             "Зі вставленого тексту",
         )
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Додати книгу")
             .setItems(opts) { _, which ->
                 when (which) {
@@ -623,13 +623,16 @@ class LibraryActivity : Activity() {
                     2 -> showPasteTextDialog()
                 }
             }
-            .show()
+            .showThemed()
     }
 
     private fun showPasteTextDialog() {
-        val titleEt = EditText(this).apply { hint = "Назва (напр., Розділ 1)" }
+        val p = UiTheme.palette(prefs.theme)
+        val titleEt = EditText(this).apply { hint = "Назва (напр., Розділ 1)"; setTextColor(p.primaryText); setHintTextColor(p.mutedText) }
         val bodyEt = EditText(this).apply {
             hint = "Вставте український текст…"
+            setTextColor(p.primaryText)
+            setHintTextColor(p.mutedText)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
             minLines = 6
         }
@@ -639,7 +642,7 @@ class LibraryActivity : Activity() {
             addView(titleEt)
             addView(bodyEt)
         }
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Створити книгу з тексту")
             .setView(box)
             .setPositiveButton("Створити") { _, _ ->
@@ -655,7 +658,7 @@ class LibraryActivity : Activity() {
                 }
             }
             .setNegativeButton("Скасувати", null)
-            .show()
+            .showThemed()
     }
 
     private fun showViewOptionsMenu() {
@@ -669,7 +672,7 @@ class LibraryActivity : Activity() {
             "Сортування: За прогресом",
             "Фільтр статусу: Усі / Читаю / Непрочитані / Прочитані",
         )
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Вигляд полиці")
             .setItems(opts) { _, which ->
                 when (which) {
@@ -684,19 +687,19 @@ class LibraryActivity : Activity() {
                 }
                 refreshBooks()
             }
-            .show()
+            .showThemed()
     }
 
     private fun showStatusFilterDialog() {
         val labels = arrayOf("Усі книги", "Читаю", "Непрочитані", "Прочитані")
         val codes = arrayOf("ALL", "READING", "UNREAD", "FINISHED")
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Фільтр за статусом")
             .setItems(labels) { _, which ->
                 prefs.statusFilter = codes[which]
                 refreshBooks()
             }
-            .show()
+            .showThemed()
     }
 
     private fun showAppMenu() {
@@ -708,7 +711,7 @@ class LibraryActivity : Activity() {
             "Словник наголосів (stress_user.txt)",
             "Перевірити / завантажити модель HolosTTS",
         )
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("HolosReader")
             .setItems(opts) { _, which ->
                 when (which) {
@@ -726,7 +729,7 @@ class LibraryActivity : Activity() {
                     }
                 }
             }
-            .show()
+            .showThemed()
     }
 
     private fun showStatsDialog() {
@@ -739,16 +742,17 @@ class LibraryActivity : Activity() {
             "Завершено: ${s.finishedBooks}\n" +
             "Пройдено розділів: ${s.totalChaptersRead}\n" +
             "Час читання/прослуховування: ${hrs} год ${remMin} хв"
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Статистика читання")
             .setMessage(msg)
             .setPositiveButton("OK", null)
-            .show()
+            .showThemed()
     }
 
     private fun showTagSelectedDialog() {
-        val et = EditText(this).apply { hint = "Напр.: LitRPG, Ранобе, Улюблене" }
-        AlertDialog.Builder(this)
+        val p = UiTheme.palette(prefs.theme)
+        val et = EditText(this).apply { hint = "Напр.: LitRPG, Ранобе, Улюблене"; setTextColor(p.primaryText); setHintTextColor(p.mutedText) }
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Додати тег (${selectedIds.size})")
             .setView(et)
             .setPositiveButton("Зберегти") { _, _ ->
@@ -757,19 +761,19 @@ class LibraryActivity : Activity() {
                 refreshBooks()
             }
             .setNegativeButton("Скасувати", null)
-            .show()
+            .showThemed()
     }
 
     private fun showStatusSelectedDialog() {
         val statuses = ReadingStatus.entries.toTypedArray()
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Змінити статус (${selectedIds.size})")
             .setItems(statuses.map { it.label }.toTypedArray()) { _, which ->
                 db.updateStatus(selectedIds, statuses[which])
                 exitSelectionMode()
                 refreshBooks()
             }
-            .show()
+            .showThemed()
     }
 
     private fun showSelectedDetailsDialog() {
@@ -782,16 +786,16 @@ class LibraryActivity : Activity() {
             "Статус: ${b.status.label}\n" +
             "Теги: ${b.tags.ifBlank { "—" }}\n" +
             String.format("Розмір файлу: %.2f МБ", sizeMb)
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Деталі книги")
             .setMessage(msg)
             .setPositiveButton("OK", null)
-            .show()
+            .showThemed()
     }
 
     private fun deleteSelectedBooks() {
         val count = selectedIds.size
-        AlertDialog.Builder(this)
+        UiTheme.dialogBuilder(this, prefs.theme)
             .setTitle("Видалити $count книг(и)?")
             .setPositiveButton("Видалити") { _, _ ->
                 db.deleteBooks(selectedIds)
@@ -799,7 +803,7 @@ class LibraryActivity : Activity() {
                 refreshBooks()
             }
             .setNegativeButton("Скасувати", null)
-            .show()
+            .showThemed()
     }
 
     // --- Model & Import Workers ---
@@ -825,6 +829,9 @@ class LibraryActivity : Activity() {
 
     private fun downloadModel() {
         downloadModelBtn.isEnabled = false
+        downloadModelBtn.text = "Завантаження…"
+        downloadModelBtn.alpha = 0.55f
+        modelProgress.progress = 0
         modelProgress.visibility = View.VISIBLE
         worker.execute {
             try {
@@ -838,12 +845,17 @@ class LibraryActivity : Activity() {
                 runOnUiThread {
                     modelProgress.visibility = View.GONE
                     modelBanner.visibility = View.GONE
+                    downloadModelBtn.isEnabled = true
+                    downloadModelBtn.alpha = 1f
+                    downloadModelBtn.text = "Завантажити голос HolosTTS (~320 МБ)"
                     Toast.makeText(this, "HolosTTS готовий!", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     modelProgress.visibility = View.GONE
                     downloadModelBtn.isEnabled = true
+                    downloadModelBtn.alpha = 1f
+                    downloadModelBtn.text = "Повторити завантаження HolosTTS"
                     modelStatusTv.text = "Помилка: ${e.message}"
                 }
             }
