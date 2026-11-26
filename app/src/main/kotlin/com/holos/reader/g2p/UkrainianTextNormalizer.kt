@@ -193,9 +193,12 @@ object UkrainianTextNormalizer {
     )
 
 
-    private val RE_STUTTER_WORD = Regex("""\b([А-ЯІЇЄҐа-яіїєґ])-\1([а-яіїєґ]{2,})\b""")
-    private val RE_HYPHEN_STRETCH = Regex("""\b([А-ЯІЇЄҐа-яіїєґ]{1,6}(?:-[А-ЯІЇЄҐа-яіїєґ]{1,6}){1,})\b""")
-    private val RE_LAUGH_REPEAT = Regex("""\b((?:[Хх][аеіо]|[Гг]і|[Мм]у|[Бб]у)(?:-(?:[Хх][аеіо]|[Гг]і|[Мм]у|[Бб]у)){3,})\b""")
+    private val RE_STUTTER_WORD = Regex(
+        """(?<![\p{L}-])([А-ЯІЇЄҐа-яіїєґ])-\1([а-яіїєґ]{2,})(?![\p{L}-])""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val RE_HYPHEN_STRETCH = Regex("""(?<![\p{L}-])([А-ЯІЇЄҐа-яіїєґ]{1,6}(?:-[А-ЯІЇЄҐа-яіїєґ]{1,6}){1,})(?![\p{L}-])""")
+    private val RE_LAUGH_REPEAT = Regex("""(?<![\p{L}-])((?:[Хх][аеіо]|[Гг]і|[Мм]у|[Бб]у)(?:-(?:[Хх][аеіо]|[Гг]і|[Мм]у|[Бб]у)){3,})(?![\p{L}-])""")
     private val RE_LONG_LETTER_RUN = Regex("""([А-ЯІЇЄҐа-яіїєґ])\1{3,}""")
     private const val UKR_VOWELS_ALL = "аеєиіїоуюяАЕЄИІЇОУЮЯ"
 
@@ -213,14 +216,7 @@ object UkrainianTextNormalizer {
             m.value.split('-').take(3).joinToString("-")
         }
 
-        // 2. Single-letter stutters before a word (`Щ-що` -> `Що`, `п-про` -> `про`)
-        text = RE_STUTTER_WORD.replace(text) { m ->
-            val first = m.groupValues[1]
-            val rest = m.groupValues[2]
-            first + rest
-        }
-
-        // 3. Hyphen-stretched screams/groans (`А-А-А-АРГХ`, `М-м-м-гх-х-х-а-а-а`, `Кх-х`, `Гм-м`, `Ха-а-а`)
+        // 2. Hyphen-stretched screams/groans (`А-А-А-АРГХ`, `М-м-м-гх-х-х-а-а-а`, `Н-н-нгххх`, `Кх-х`, `Гм-м`)
         text = RE_HYPHEN_STRETCH.replace(text) { m ->
             val parts = m.value.split('-')
             val isLongStretch = parts.size >= 3 && parts.count { it.length <= 2 } >= 2
@@ -243,6 +239,11 @@ object UkrainianTextNormalizer {
             }
         }
 
+        // 3. Single-letter stutters before a word (`Щ-що` -> `Що`, `п-про` -> `про`)
+        text = RE_STUTTER_WORD.replace(text) { m ->
+            m.groupValues[1] + m.groupValues[2]
+        }
+
         // 4. Non-hyphenated 4+ letter runs (`Аггггх` -> `Аггх`, `Ааааа` -> `Ааа`)
         text = RE_LONG_LETTER_RUN.replace(text) { m ->
             val ch = m.groupValues[1]
@@ -255,7 +256,7 @@ object UkrainianTextNormalizer {
     private fun capRepeatedLetters(s: String): String {
         if (s.length <= 2) return s
         val out = StringBuilder(s.length)
-        var runChar = ' '
+        var runChar = '\u0000'
         var runCount = 0
         for (ch in s) {
             val lower = ch.lowercaseChar()
