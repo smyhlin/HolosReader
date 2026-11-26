@@ -1467,6 +1467,7 @@ class AudioSheetController(
             val tmp = File(outFile.path + ".part")
             var totalPcmBytes = 0L
             try {
+                val blockIndices = ArrayList<TtsPlaybackController.OfflineBlockIndex>(blocks.size)
                 RandomAccessFile(tmp, "rw").use { raf ->
                     raf.setLength(0)
                     raf.write(ByteArray(44))
@@ -1477,7 +1478,6 @@ class AudioSheetController(
                         raf.write(buf)
                         totalPcmBytes += buf.size
                     }
-                    val blockIndices = ArrayList<TtsPlaybackController.OfflineBlockIndex>(blocks.size)
                     val paraPause = FloatArray((outputRate * 260) / 1000)
                     for ((i, b) in blocks.withIndex()) {
                         if (offlineRenderCancel.get()) break

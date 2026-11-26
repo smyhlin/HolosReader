@@ -8,8 +8,8 @@ package com.holos.reader.g2p
 object SentenceSplitter {
 
     private const val DEFAULT_MAX_CHARS = 200
-    private val CLAUSE_SPLIT = Regex("(?<=[;:,])\s+")
-    private const val CLOSING_PUNCT = "»”"'’)]}"
+    private val CLAUSE_SPLIT = Regex("(?<=[;:,])\\s+")
+    private const val CLOSING_PUNCT = "»”\"'’)]}"
     private val ABBREV_ENDINGS = setOf(
         "р.", "рр.", "ст.", "м.", "с.", "смт.", "обл.", "вул.", "просп.", "пл.",
         "проф.", "доц.", "акад.", "ім.", "тис.", "млн.", "млрд.", "див.", "пор.",
@@ -124,7 +124,7 @@ object SentenceSplitter {
     }
 
     private fun splitByWords(text: String, maxChars: Int, out: MutableList<String>) {
-        val words = text.split(Regex("\s+"))
+        val words = text.split(Regex("\\s+"))
         val current = StringBuilder()
         for (word in words) {
             if (word.isEmpty()) continue
