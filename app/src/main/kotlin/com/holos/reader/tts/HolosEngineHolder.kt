@@ -50,6 +50,8 @@ object HolosEngineHolder {
     @Volatile
     private var loadedModelId: TtsModelId? = null
     @Volatile
+    private var loadedRequestedModel: TtsModelId? = null
+    @Volatile
     private var loadedThreads: Int = -1
     @Volatile
     private var loadedAccelPref: String? = null
@@ -111,12 +113,19 @@ object HolosEngineHolder {
 
     fun resetAddons() {
         synchronized(addonLock) {
-            try { flashSr?.close() } catch (_: Throwable) {}
-            try { emotionClassifier?.close() } catch (_: Throwable) {}
-            try { contextualStress?.close() } catch (_: Throwable) {}
+            val oldFsr = flashSr
+            val oldEmo = emotionClassifier
+            val oldCtx = contextualStress
             flashSr = null
             emotionClassifier = null
             contextualStress = null
+            if (oldFsr != null || oldEmo != null || oldCtx != null) {
+                Thread({
+                    try { oldFsr?.close() } catch (_: Throwable) {}
+                    try { oldEmo?.close() } catch (_: Throwable) {}
+                    try { oldCtx?.close() } catch (_: Throwable) {}
+                }, "HolosAddonRetire").start()
+            }
             stressifier?.contextualResolver = null
         }
     }
@@ -196,12 +205,15 @@ object HolosEngineHolder {
             loadedThreads = -1
             loadedAccelPref = null
             loadedModelId = null
+            loadedRequestedModel = null
             if (old != null) {
-                try {
-                    old.close()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error closing previous HolosOnnx engine", e)
-                }
+                Thread({
+                    try {
+                        old.close()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error closing retired TTS engine", e)
+                    }
+                }, "HolosEngineRetire").start()
             }
         }
     }
@@ -282,14 +294,14 @@ object HolosEngineHolder {
         val wantModel = prefs.selectedTtsModelId
 
         engine?.let { existing ->
-            if (loadedThreads == wantThreads && loadedAccelPref == wantAccel && loadedModelId == wantModel) {
+            if (loadedThreads == wantThreads && loadedAccelPref == wantAccel && (loadedModelId == wantModel || loadedRequestedModel == wantModel)) {
                 return existing
             }
         }
 
         synchronized(engineLock) {
             engine?.let { existing ->
-                if (loadedThreads == wantThreads && loadedAccelPref == wantAccel && loadedModelId == wantModel) {
+                if (loadedThreads == wantThreads && loadedAccelPref == wantAccel && (loadedModelId == wantModel || loadedRequestedModel == wantModel)) {
                     return existing
                 }
                 try {
@@ -317,6 +329,7 @@ object HolosEngineHolder {
                     loadedThreads = wantThreads
                     loadedAccelPref = wantAccel
                     loadedModelId = effectiveModel
+                    loadedRequestedModel = wantModel
                     activeAccelerator = when {
                         ep == EP_NNAPI -> "NNAPI (GPU/NPU)"
                         ep == EP_XNNPACK && wantAccel == EP_NNAPI -> "XNNPACK (NNAPI fallback)"
@@ -347,17 +360,13 @@ object HolosEngineHolder {
                 }
             }
             when (modelId) {
-                TtsModelId.HOLOS_INT8, TtsModelId.HOLOS_FP32 -> HolosTtsEngine.Holos(modelId, HolosOnnx(bundleDir, streaming = true, options = options))
-                TtsModelId.SUPERTONIC_3 -> HolosTtsEngine.Supertonic(SupertonicOnnx(bundleDir, options = options))
+                TtsModelId.HOLOS_INT8, TtsModelId.HOLOS_FP32 -> HolosTtsEngine.Holos(modelId, HolosOnnx(bundleDir, streaming = true, options = options, closeOptionsOnClose = true))
+                TtsModelId.SUPERTONIC_3 -> HolosTtsEngine.Supertonic(SupertonicOnnx(bundleDir, options = options, closeOptionsOnClose = true))
             }
         } catch (t: Throwable) {
-            Log.w(TAG, "ONNX EP=$ep failed to initialize; trying fallback", t)
+            try { options.close() } catch (_: Throwable) {}
+            Log.w(TAG, "ONNX $modelId EP=$ep failed to initialize; trying fallback", t)
             null
-        } finally {
-            try {
-                options.close()
-            } catch (_: Throwable) {
-            }
         }
     }
 

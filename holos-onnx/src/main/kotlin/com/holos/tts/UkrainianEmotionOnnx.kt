@@ -35,6 +35,7 @@ enum class UkrainianEmotion(
 class UkrainianEmotionOnnx @JvmOverloads constructor(
     bundleDir: File,
     options: OrtSession.SessionOptions? = null,
+    private val closeOptionsOnClose: Boolean = false,
 ) : AutoCloseable {
 
     private val rwLock = ReentrantReadWriteLock()
@@ -42,6 +43,7 @@ class UkrainianEmotionOnnx @JvmOverloads constructor(
     private var closed = false
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private var ownedOptions: OrtSession.SessionOptions? = null
     private val tokenizer: UnigramTokenizer
     private val session: OrtSession
 
@@ -52,14 +54,17 @@ class UkrainianEmotionOnnx @JvmOverloads constructor(
         require(modelFile.exists()) { "Missing model_quantized.onnx in ${bundleDir.path}" }
         tokenizer = UnigramTokenizer.fromFile(tokFile)
 
-        val ownOpts = options == null
+        val ownOpts = options == null || closeOptionsOnClose
         val sessOpts = options ?: OrtSession.SessionOptions()
+        if (ownOpts) ownedOptions = sessOpts
         try {
             session = env.createSession(modelFile.path, sessOpts)
-        } finally {
+        } catch (t: Throwable) {
             if (ownOpts) {
                 try { sessOpts.close() } catch (_: Throwable) {}
+                ownedOptions = null
             }
+            throw t
         }
     }
 
@@ -82,6 +87,8 @@ class UkrainianEmotionOnnx @JvmOverloads constructor(
             if (closed) return
             closed = true
             try { session.close() } catch (_: Throwable) {}
+            try { ownedOptions?.close() } catch (_: Throwable) {}
+            ownedOptions = null
         }
     }
 

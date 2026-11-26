@@ -23,6 +23,7 @@ import kotlin.math.floor
 class FlashSrOnnx @JvmOverloads constructor(
     modelFile: File,
     options: OrtSession.SessionOptions? = null,
+    private val closeOptionsOnClose: Boolean = false,
 ) : AutoCloseable {
 
     private val rwLock = ReentrantReadWriteLock()
@@ -30,20 +31,24 @@ class FlashSrOnnx @JvmOverloads constructor(
     private var closed = false
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private var ownedOptions: OrtSession.SessionOptions? = null
     private val session: OrtSession
 
     init {
         require(modelFile.exists() && modelFile.length() > 0L) {
             "Missing FlashSR ONNX model: ${modelFile.path}"
         }
-        val ownOpts = options == null
+        val ownOpts = options == null || closeOptionsOnClose
         val sessOpts = options ?: OrtSession.SessionOptions()
+        if (ownOpts) ownedOptions = sessOpts
         try {
             session = env.createSession(modelFile.path, sessOpts)
-        } finally {
+        } catch (t: Throwable) {
             if (ownOpts) {
                 try { sessOpts.close() } catch (_: Throwable) {}
+                ownedOptions = null
             }
+            throw t
         }
     }
 
@@ -85,6 +90,8 @@ class FlashSrOnnx @JvmOverloads constructor(
             if (closed) return
             closed = true
             try { session.close() } catch (_: Throwable) {}
+            try { ownedOptions?.close() } catch (_: Throwable) {}
+            ownedOptions = null
         }
     }
 

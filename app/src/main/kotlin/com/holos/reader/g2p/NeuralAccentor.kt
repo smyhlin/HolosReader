@@ -35,6 +35,7 @@ class NeuralAccentor(modelFile: File) : WordAccentor, Closeable {
     private var closed = false
 
     private val env = OrtEnvironment.getEnvironment()
+    private val sessionOptions: OrtSession.SessionOptions
     private val session: OrtSession
 
     private val cacheLock = Any()
@@ -44,7 +45,7 @@ class NeuralAccentor(modelFile: File) : WordAccentor, Closeable {
     }
 
     init {
-        val opts = OrtSession.SessionOptions().apply {
+        sessionOptions = OrtSession.SessionOptions().apply {
             setIntraOpNumThreads(1)
             setInterOpNumThreads(1)
         }

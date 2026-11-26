@@ -24,6 +24,7 @@ import kotlin.math.sqrt
 class SupertonicOnnx @JvmOverloads constructor(
     bundleDir: File,
     options: OrtSession.SessionOptions? = null,
+    private val closeOptionsOnClose: Boolean = false,
 ) : AutoCloseable {
 
     private data class VoiceStyle(
@@ -38,6 +39,7 @@ class SupertonicOnnx @JvmOverloads constructor(
     private var closed = false
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private var ownedOptions: OrtSession.SessionOptions? = null
     private val onnxDir = File(bundleDir.canonicalFile, "onnx")
     private val stylesDir = File(bundleDir.canonicalFile, "voice_styles")
 
@@ -78,8 +80,9 @@ class SupertonicOnnx @JvmOverloads constructor(
             .orEmpty()
         voices = discovered.ifEmpty { DEFAULT_VOICES }
 
-        val ownOpts = options == null
+        val ownOpts = options == null || closeOptionsOnClose
         val sessOpts = options ?: OrtSession.SessionOptions()
+        if (ownOpts) ownedOptions = sessOpts
         try {
             dpSession = env.createSession(File(onnxDir, "duration_predictor.onnx").path, sessOpts)
             textEncSession = env.createSession(File(onnxDir, "text_encoder.onnx").path, sessOpts)
@@ -87,11 +90,11 @@ class SupertonicOnnx @JvmOverloads constructor(
             vocoderSession = env.createSession(File(onnxDir, "vocoder.onnx").path, sessOpts)
         } catch (t: Throwable) {
             closeQuietly()
-            throw t
-        } finally {
             if (ownOpts) {
                 try { sessOpts.close() } catch (_: Throwable) {}
+                ownedOptions = null
             }
+            throw t
         }
     }
 
@@ -240,6 +243,8 @@ class SupertonicOnnx @JvmOverloads constructor(
         try { textEncSession.close() } catch (_: Throwable) {}
         try { vectorEstSession.close() } catch (_: Throwable) {}
         try { vocoderSession.close() } catch (_: Throwable) {}
+        try { ownedOptions?.close() } catch (_: Throwable) {}
+        ownedOptions = null
     }
 
     companion object {

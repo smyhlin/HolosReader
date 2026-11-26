@@ -20,6 +20,7 @@ import kotlin.math.sqrt
 class VoiceEncoderOnnx @JvmOverloads constructor(
     modelFile: File,
     options: OrtSession.SessionOptions? = null,
+    private val closeOptionsOnClose: Boolean = false,
 ) : AutoCloseable {
 
     private val rwLock = ReentrantReadWriteLock()
@@ -27,6 +28,7 @@ class VoiceEncoderOnnx @JvmOverloads constructor(
     private var closed = false
 
     private val env: OrtEnvironment = OrtEnvironment.getEnvironment()
+    private var ownedOptions: OrtSession.SessionOptions? = null
     private val session: OrtSession
     private val inputName: String
 
@@ -34,15 +36,18 @@ class VoiceEncoderOnnx @JvmOverloads constructor(
         require(modelFile.exists() && modelFile.length() > 0L) {
             "Missing voice_encoder.onnx: ${modelFile.path}"
         }
-        val ownOpts = options == null
+        val ownOpts = options == null || closeOptionsOnClose
         val sessOpts = options ?: OrtSession.SessionOptions()
+        if (ownOpts) ownedOptions = sessOpts
         try {
             session = env.createSession(modelFile.path, sessOpts)
             inputName = session.inputNames.firstOrNull() ?: "audio"
-        } finally {
+        } catch (t: Throwable) {
             if (ownOpts) {
                 try { sessOpts.close() } catch (_: Throwable) {}
+                ownedOptions = null
             }
+            throw t
         }
     }
 
@@ -73,6 +78,8 @@ class VoiceEncoderOnnx @JvmOverloads constructor(
             if (closed) return
             closed = true
             try { session.close() } catch (_: Throwable) {}
+            try { ownedOptions?.close() } catch (_: Throwable) {}
+            ownedOptions = null
         }
     }
 

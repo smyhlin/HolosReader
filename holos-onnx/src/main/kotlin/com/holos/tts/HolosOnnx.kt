@@ -29,6 +29,7 @@ class HolosOnnx @JvmOverloads constructor(
     /** Whether the window decoder for stream() is loaded. */
     val streaming: Boolean = true,
     options: OrtSession.SessionOptions? = null,
+    private val closeOptionsOnClose: Boolean = false,
 ) : AutoCloseable {
 
     /** Receives the audio chunk by chunk, as float samples at [sampleRate]. */
@@ -54,6 +55,7 @@ class HolosOnnx @JvmOverloads constructor(
     }
 
     private val rwLock = ReentrantReadWriteLock()
+    private val ownedOptions: OrtSession.SessionOptions? = if (closeOptionsOnClose) options else null
     @Volatile
     private var closed = false
 

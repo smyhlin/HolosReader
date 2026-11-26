@@ -1201,7 +1201,7 @@ class AudioSheetController(
         voiceListContainer.addView(importBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
 
         val customVoices = if (TtsModelCatalog.byId(prefs.selectedTtsModelId).supportsCustomVoices) CustomVoiceLoader.listCustomVoices(HolosEngineHolder.getCustomVoicesDir(activity)) else emptyList()
-        val presetVoices = try { HolosEngineHolder.getEngine(activity)?.voices } catch (_: Exception) { null } ?: emptyList()
+        val presetVoices = HolosEngineHolder.peekVoicesOrEmpty().ifEmpty { HolosVoiceCatalog.defaultVoicesFor(prefs.selectedTtsModelId) }
         val voices = customVoices + presetVoices
         if (voices.isEmpty()) {
             voiceListContainer.addView(TextView(activity).apply {

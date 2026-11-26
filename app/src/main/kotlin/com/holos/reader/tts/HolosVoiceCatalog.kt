@@ -92,6 +92,13 @@ object HolosVoiceCatalog {
         )
     }
 
+    fun defaultVoicesFor(modelId: TtsModelId): List<String> = when (modelId) {
+        TtsModelId.SUPERTONIC_3 -> HolosModelManager.SUPERTONIC_VOICES
+        TtsModelId.HOLOS_INT8, TtsModelId.HOLOS_FP32 -> entries.keys.filter { it !in HolosModelManager.SUPERTONIC_VOICES }
+    }
+
+    fun allKnownVoiceIds(): Set<String> = entries.keys
+
     fun displayName(rawId: String?): String {
         if (rawId.isNullOrBlank()) return "Голос"
         return info(rawId).displayName
