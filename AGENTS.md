@@ -73,3 +73,17 @@ When syncing changes from an isolated sandbox VM to GitHub via `@cloudkey`:
 - **`dev` (active development branch):** Default branch for all feature work, experiments, and bug fixes. Every push to `dev` runs `.github/workflows/build-apk.yml` and uploads a test APK artifact (`HolosReader-EPUB3-HolosTTS-apk`) without publishing a public GitHub Release.
 - **`main` (release branch):** Reserved for tested, ready-to-ship builds. Merging `dev` → `main` triggers `.github/workflows/release.yml`, which auto-stamps `versionName`, generates `SHA256SUMS`, and publishes the APK to GitHub Releases for zero-login in-app updates.
 - **Docs-only commits on `main`:** `.github/workflows/release.yml` ignores `**.md`, `LICENSE`, `.gitignore`, `.editorconfig`, `.gitattributes`, `.github/ISSUE_TEMPLATE/**`, and `.github/workflows/build-apk.yml` so documentation updates never cut spurious releases.
+
+---
+
+## 6. Multi-Model TTS & Optional ONNX Add-ons Architecture
+
+- **Unified TTS Engine (`HolosTtsEngine`):**
+  - `HolosTtsEngine.Holos` wraps `HolosOnnx` (24 kHz streaming, INT8 or FP32) using the 4-stage Ukrainian G2P pipeline.
+  - `HolosTtsEngine.Supertonic` wraps `SupertonicOnnx` (44.1 kHz flow-matching, `F1..F5`/`M1..M5`) + `SupertonicLanguageSplitter` (experimental `<en>` span router).
+  - `DeviceCapabilityScanner` classifies `HIGH` (`HOLOS_FP32`), `MEDIUM` (`SUPERTONIC_3`), or `ENTRY` (`HOLOS_INT8`), with SELinux-safe fallback when `/sys/devices/system/cpu/*/cpufreq/cpuinfo_max_freq` is unreadable.
+- **Optional ONNX Add-ons (`OnnxAddonSpec.kt`, `OnnxAddonManager.kt`):**
+  - `FlashSrOnnx` (`YatharthS/FlashSR/onnx/model.onnx`, `audio_values` [1, N] @ 16 kHz → `reconstruction` [1, 3*N] @ 48 kHz) — applied only to `HolosTtsEngine.Holos`; `TtsPlaybackController` automatically switches `AudioTrack` to `48,000 Hz`.
+  - `UkrainianEmotionOnnx` (`speed-brain-ai/speedbrain-emotion-uk-onnx`) + `UnigramTokenizer` (pure-Kotlin Viterbi SentencePiece tokenizer; use `UnigramTokenizer.fromVocab` in JVM unit tests since Android `org.json` is stubbed on JVM).
+  - `ContextualStressOnnx` (`aloudreader/uk-stress-token-classifier`, exported via `tools/export_stress_onnx.py`) hooks into `UkrainianStressifier.contextualResolver` as Tier 1.5 (user overrides still take priority; exceptions fall back cleanly).
+  - `VoiceEncoderOnnx` (`patriotyk/HolosTTS/voice_encoder.pt`, exported via `tools/export_voice_encoder_onnx.py`) decodes 16-bit PCM WAV (mono/stereo) into L2-normalized 256-float `.bin` speaker vectors.

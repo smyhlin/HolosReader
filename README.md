@@ -41,6 +41,29 @@
 - **Rich Lock-Screen & Shade Media Player (`ReaderAudioService.kt`):** Displays book cover art, live spoken snippet, chapter subtitle, seekable progress bar, and transport controls.
 - **System TTS Integration:** Also registers as a standard Android TTS engine (`HolosTtsService.kt`).
 
+### 3 Optional Offline ONNX TTS Models & Hardware Auto-Recommendation
+On first launch (and anytime in **Settings → TTS** or **Menu → TTS Model**), `DeviceCapabilityScanner` scans CPU cores, max clock, RAM, 64-bit ABI, and Vulkan / OpenGL ES support, highlighting the best-fitting model with a **`★ Recommended`** badge:
+
+| Model | Rating | Size | Sample Rate | Highlights |
+| --- | --- | --- | --- | --- |
+| [**HolosTTS FP32 (Studio)**](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx) | `★★★★★ 4.8/5` | ~760 MB | 24 kHz | Full-precision Ukrainian neural TTS · 27 voices · custom cloned voices · best for flagship 6+ GB RAM devices |
+| [**Supertonic 3 (44.1 kHz)**](https://huggingface.co/Supertone/supertonic-3) | `★★★★★ 4.7/5` | ~398 MB | 44.1 kHz | Multilingual flow-matching TTS · 10 voices (`F1`–`F5`, `M1`–`M5`) · configurable quality steps (`2–12`) · **Experimental: English words pronunciation** (`<en>` span routing for embedded English terms) |
+| [**HolosTTS INT8 (Fast)**](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx-int8) | `★★★★☆ 4.2/5` | ~320 MB | 24 kHz | Lightweight quantized Ukrainian TTS · 27 voices · custom cloned voices · best for battery life & entry-level CPUs |
+
+### Optional ONNX Add-ons (Settings → TTS)
+- **FlashSR 48 kHz Upsampler (~487 KB, one-tap download):** Neural super-resolution ([YatharthS/FlashSR](https://huggingface.co/YatharthS/FlashSR)) that lifts HolosTTS 24 kHz audio to crisp **48 kHz** on CPU.
+- **Ukrainian Emotion Pacing (~580 MB, one-tap download):** 7-emotion Ukrainian classifier ([speed-brain-ai/speedbrain-emotion-uk-onnx](https://huggingface.co/speed-brain-ai/speedbrain-emotion-uk-onnx)) that dynamically adjusts narration speed and inter-sentence pauses for anger, fear, joy, sadness, disgust, and surprise.
+- **Contextual Stress / Homographs (~110 MB, local `.onnx` import):** Sentence-level homograph resolver (*за́мок/замо́к*, *му́ка/мука́*) hooked into `UkrainianStressifier` (Tier 1.5). Export from [aloudreader/uk-stress-token-classifier](https://huggingface.co/aloudreader/uk-stress-token-classifier) using `python3 tools/export_stress_onnx.py` and import in **Settings → TTS** (`tokenizer.json` downloads automatically).
+- **On-Device Voice Cloner (~20 MB, local `.onnx` import):** Export `voice_encoder.pt` from [patriotyk/HolosTTS](https://huggingface.co/patriotyk/HolosTTS) using `python3 tools/export_voice_encoder_onnx.py`, import `voice_encoder.onnx` in **Settings → TTS**, and tap **Clone Voice from WAV Clip** to turn any 5–15 s WAV clip into a custom HolosTTS speaker vector.
+
+### Caveats & Limitations
+- **FlashSR 48 kHz** applies only to **HolosTTS INT8 / FP32** (24 kHz); **Supertonic 3** already outputs native 44.1 kHz audio.
+- **Supertonic 3** uses its own 10 voice styles (`F1`–`F5`, `M1`–`M5`) and does not support HolosTTS 256-dim cloned `.bin` voices. Its **English Words Pronunciation** toggle is experimental and keeps Roman numerals (`II`, `IV`, `X`) in Ukrainian.
+- **Ukrainian Emotion Pacing** loads an ~580 MB INT8 XLM-RoBERTa graph and is recommended for devices with **6+ GB RAM**.
+- **Contextual Stress & Voice Encoder** require a one-time PC export (`tools/export_stress_onnx.py` / `tools/export_voice_encoder_onnx.py`) because upstream Hugging Face repos publish PyTorch weights rather than pre-exported `.onnx` binaries.
+- **On-Device WAV Voice Cloner** requires **uncompressed 16-bit PCM `.wav`** (mono or stereo, 1–15 s; MP3/OGG/M4A are rejected).
+- **Hardware Scanner on restricted Android kernels:** If SELinux blocks `/sys/devices/system/cpu/*/cpufreq/cpuinfo_max_freq`, `DeviceCapabilityScanner` gracefully falls back to CPU core count, total RAM, 64-bit ABI, and Vulkan GPU presence.
+
 ### Zero-Login In-App Updates
 - Checks [GitHub Releases](https://github.com/smyhlin/HolosReader/releases/latest) automatically on launch and on demand via **About → Check for updates** (`GitHubUpdater.kt`, `ApkFileProvider.kt`) — no GitHub account required.
 
@@ -80,7 +103,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 | Module / Package | Responsibility |
 | --- | --- |
-| `holos-onnx` | ONNX Runtime bridge (`HolosOnnx.kt`) for neural TTS & accentor inference |
+| `holos-onnx` | ONNX Runtime engines (`HolosOnnx`, `SupertonicOnnx`, `FlashSrOnnx`, `UkrainianEmotionOnnx`, `ContextualStressOnnx`, `VoiceEncoderOnnx`, `UnigramTokenizer`) |
 | `com.holos.reader.epub` | Streaming EPUB parser, SQLite chapter/spine index, LRU image cache |
 | `com.holos.reader.g2p` | Offline Ukrainian text normalizer, stress dictionary, ONNX accentor, IPA converter |
 | `com.holos.reader.tts` | Prefetching synthesis controller, foreground `MediaSession` service, preferences, voice catalog |
@@ -97,6 +120,10 @@ For architectural rules, CI pitfalls, and multi-environment sync workflows, see 
 - [patriotyk/ukrainian-word-stress](https://github.com/patriotyk/ukrainian-word-stress) — Ukrainian stress dictionary
 - [egorsmkv/ukrainian-accentor](https://github.com/egorsmkv/ukrainian-accentor) — Neural Ukrainian accentor
 - [patriotyk/ipa-uk](https://github.com/patriotyk/ipa-uk) — Ukrainian IPA phonemizer
+- [Supertone/supertonic-3](https://huggingface.co/Supertone/supertonic-3) — 44.1 kHz multilingual flow-matching ONNX TTS
+- [YatharthS/FlashSR](https://huggingface.co/YatharthS/FlashSR) — 487 KB neural 48 kHz audio upsampler
+- [speed-brain-ai/speedbrain-emotion-uk-onnx](https://huggingface.co/speed-brain-ai/speedbrain-emotion-uk-onnx) — Ukrainian 7-emotion ONNX classifier
+- [aloudreader/uk-stress-token-classifier](https://huggingface.co/aloudreader/uk-stress-token-classifier) — Contextual Ukrainian homograph stress model
 
 ---
 
