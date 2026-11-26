@@ -1,6 +1,7 @@
 package com.holos.reader.tts
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SupertonicLanguageSplitterTest {
@@ -37,5 +38,22 @@ class SupertonicLanguageSplitterTest {
         assertEquals("Level Up!", spans[1].text)
         assertEquals("en", spans[1].lang)
         assertEquals("uk", spans[2].lang)
+    }
+
+    @Test
+    fun blankAndNumbersOnlyDefaultCleanly() {
+        assertTrue(SupertonicLanguageSplitter.split("   ", true).isEmpty())
+        val nums = SupertonicLanguageSplitter.split("2026 — 100%", true)
+        assertEquals(1, nums.size)
+        assertEquals("uk", nums[0].lang)
+    }
+
+    @Test
+    fun handlesHyphenatedEnglishAndContractions() {
+        val spans = SupertonicLanguageSplitter.split("Це high-speed режим, don't stop!", true)
+        assertEquals(3, spans.size)
+        assertEquals("uk", spans[0].lang)
+        assertEquals("high-speed", spans[1].text)
+        assertEquals("en", spans[1].lang)
     }
 }

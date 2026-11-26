@@ -32,4 +32,15 @@ class DeviceCapabilityScannerTest {
         assertEquals(HardwareTier.ENTRY, tier)
         assertEquals(TtsModelId.HOLOS_INT8, model)
     }
+
+    @Test
+    fun restrictedSysfsCpuFreqFallsBackUsingRamAndVulkan() {
+        val (highTier, highModel) = DeviceCapabilityScanner.classifyHardware(8, 0, 8.0, true, true)
+        assertEquals(HardwareTier.HIGH, highTier)
+        assertEquals(TtsModelId.HOLOS_FP32, highModel)
+
+        val (midTier, midModel) = DeviceCapabilityScanner.classifyHardware(6, 0, 4.0, true, false)
+        assertEquals(HardwareTier.MEDIUM, midTier)
+        assertEquals(TtsModelId.SUPERTONIC_3, midModel)
+    }
 }

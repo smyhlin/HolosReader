@@ -89,7 +89,7 @@ class VoiceEncoderOnnx @JvmOverloads constructor(
             targetFile.writeBytes(buf.array())
         }
 
-        internal fun decodePcm16Wav(stream: InputStream): Pair<FloatArray, Int> {
+        fun decodePcm16Wav(stream: InputStream): Pair<FloatArray, Int> {
             val bytes = stream.readBytes()
             require(bytes.size > 44 && String(bytes, 0, 4) == "RIFF" && String(bytes, 8, 4) == "WAVE") {
                 "Unsupported file: please select a 16-bit PCM .wav voice recording"
