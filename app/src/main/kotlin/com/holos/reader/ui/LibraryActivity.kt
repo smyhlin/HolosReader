@@ -11,7 +11,9 @@ import android.util.LruCache
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.text.Editable
 import android.text.InputType
@@ -104,11 +106,8 @@ class LibraryActivity : Activity() {
         buildUi()
         applyTheme()
 
-        // Open EPUB directly if launched via "Open with HolosReader" (clear data immediately to prevent duplicate import)
-        intent?.data?.let { uri ->
-            intent?.data = null
-            importSingleUri(uri)
-        }
+        // Open EPUB directly if launched via "Open with" or "Share / Send a copy" (e.g. from Google Drive)
+        handleIncomingIntent(intent)
         checkModelStatus()
         GitHubUpdater.checkInBackground(this, prefs)
     }
@@ -116,8 +115,26 @@ class LibraryActivity : Activity() {
     override fun onNewIntent(newIntent: Intent?) {
         super.onNewIntent(newIntent)
         setIntent(newIntent)
-        newIntent?.data?.let { uri ->
-            newIntent.data = null
+        handleIncomingIntent(newIntent)
+    }
+
+    private fun handleIncomingIntent(incoming: Intent?) {
+        if (incoming == null) return
+        val uri: Uri? = when (incoming.action) {
+            Intent.ACTION_SEND -> {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    incoming.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    incoming.getParcelableExtra(Intent.EXTRA_STREAM)
+                } ?: incoming.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+            }
+            else -> incoming.data ?: incoming.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+        }
+        if (uri != null) {
+            incoming.data = null
+            incoming.removeExtra(Intent.EXTRA_STREAM)
+            incoming.clipData = null
             importSingleUri(uri)
         }
     }
@@ -640,12 +657,24 @@ class LibraryActivity : Activity() {
             prefs.theme,
             "Додати книгу",
             listOf(
-                IconMenuItem(R.drawable.ic_book, "З локального файлу (.epub)", "Обрати один EPUB на пристрої") {
+                IconMenuItem(
+                    R.drawable.ic_book,
+                    AppStrings.t(this, "З локального файлу (.epub)", "From local file (.epub)"),
+                    AppStrings.t(this, "Обрати один або кілька EPUB на пристрої", "Pick one or more EPUBs on device"),
+                ) {
                     startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                         addCategory(Intent.CATEGORY_OPENABLE)
                         type = "*/*"
-                        putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/epub+zip", "application/octet-stream"))
+                        putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/epub+zip", "application/x-epub+zip", "application/octet-stream"))
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
                     }, REQ_PICK_FILE)
+                },
+                IconMenuItem(
+                    R.drawable.ic_download,
+                    AppStrings.t(this, "З Google Диску", "From Google Drive"),
+                    AppStrings.t(this, "Відкрити у встановленому додатку Google Drive", "Open in installed Google Drive app"),
+                ) {
+                    openFromGoogleDrive()
                 },
                 IconMenuItem(R.drawable.ic_layout, "Імпортувати папку з EPUB", "Пакетне додавання всієї бібліотеки") {
                     startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_PICK_DIR)
@@ -916,13 +945,114 @@ class LibraryActivity : Activity() {
         }
     }
 
+    private fun openFromGoogleDrive() {
+        val gdrivePkg = "com.google.android.apps.docs"
+        val epubMimes = arrayOf("application/epub+zip", "application/x-epub+zip", "application/octet-stream")
+
+        // Tier 1: Direct picker inside the installed Google Drive app
+        val directPicker = Intent(Intent.ACTION_GET_CONTENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, epubMimes)
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            setPackage(gdrivePkg)
+        }
+        if (directPicker.resolveActivity(packageManager) != null) {
+            try {
+                startActivityForResult(directPicker, REQ_PICK_FILE)
+                return
+            } catch (_: Exception) {
+                // Fall through to SAF / Drive app launch
+            }
+        }
+
+        // Tier 2: System SAF file picker pre-pointed at Google Drive storage root
+        val safDriveIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, epubMimes)
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                putExtra(
+                    DocumentsContract.EXTRA_INITIAL_URI,
+                    Uri.parse("content://com.google.android.apps.docs.storage/root"),
+                )
+            }
+        }
+        if (safDriveIntent.resolveActivity(packageManager) != null) {
+            try {
+                startActivityForResult(safDriveIntent, REQ_PICK_FILE)
+                return
+            } catch (_: Exception) {
+                // Fall through to launching Drive app directly
+            }
+        }
+
+        // Tier 3: Launch the installed Google Drive app so the user can tap "Open with / Send a copy -> HolosReader"
+        val launchDrive = packageManager.getLaunchIntentForPackage(gdrivePkg)
+        if (launchDrive != null) {
+            Toast.makeText(
+                this,
+                AppStrings.t(
+                    this,
+                    "Оберіть .epub у Google Drive → «Надіслати копію» або «Відкрити за допомогою» → HolosReader",
+                    "Pick an .epub in Google Drive → Share / Open with → HolosReader",
+                ),
+                Toast.LENGTH_LONG,
+            ).show()
+            startActivity(launchDrive)
+        } else {
+            Toast.makeText(
+                this,
+                AppStrings.t(this, "Додаток Google Drive не встановлено", "Google Drive app is not installed"),
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
+    }
+
     @Deprecated("Zero-AndroidX compatibility")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (resultCode != RESULT_OK || data?.data == null) return
+        if (resultCode != RESULT_OK || data == null) return
         when (requestCode) {
-            REQ_PICK_FILE -> importSingleUri(data.data!!)
-            REQ_PICK_DIR -> importDirectoryUri(data.data!!)
+            REQ_PICK_FILE -> {
+                val clip = data.clipData
+                if (clip != null && clip.itemCount > 1) {
+                    val uris = (0 until clip.itemCount).mapNotNull { clip.getItemAt(it)?.uri }
+                    importMultipleUris(uris)
+                } else {
+                    val single = data.data ?: clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+                    if (single != null) importSingleUri(single)
+                }
+            }
+            REQ_PICK_DIR -> data.data?.let { importDirectoryUri(it) }
+        }
+    }
+
+    private fun importMultipleUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        Toast.makeText(
+            this,
+            AppStrings.t(this, "Імпорт книг (${uris.size})…", "Importing ${uris.size} books…"),
+            Toast.LENGTH_SHORT,
+        ).show()
+        worker.execute {
+            var ok = 0
+            for (uri in uris) {
+                try {
+                    db.importFromUri(uri, queryDisplayName(uri))
+                    ok++
+                } catch (_: Exception) {
+                }
+            }
+            runOnUiThread {
+                refreshBooks()
+                Toast.makeText(
+                    this,
+                    AppStrings.t(this, "Імпортовано книг: $ok", "Imported $ok books"),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
         }
     }
 
