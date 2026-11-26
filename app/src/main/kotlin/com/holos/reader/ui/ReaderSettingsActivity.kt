@@ -22,6 +22,9 @@ import android.widget.TextView
 import android.widget.Toast
 import com.holos.reader.R
 import com.holos.reader.tts.HolosEngineHolder
+import com.holos.reader.tts.HolosModelManager
+import com.holos.reader.tts.TtsModelCatalog
+import com.holos.reader.tts.TtsModelId
 import com.holos.reader.tts.HolosVoiceCatalog
 import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.ReaderTheme
@@ -590,6 +593,61 @@ class ReaderSettingsActivity : Activity() {
 
     // ==================== TAB 4: TTS ====================
     private fun renderTtsTab(host: LinearLayout) {
+        val en = AppStrings.isEnglish(this)
+        val activeModelId = prefs.selectedTtsModelId
+        val activeSpec = TtsModelCatalog.byId(activeModelId)
+        val modelReady = HolosModelManager.isModelReady(this, activeModelId)
+
+        host.addView(sectionLabel(tr("Модель озвучення", "TTS Voice Model")))
+        val modelRows = ArrayList<View>()
+        modelRows.add(
+            actionRow(
+                label = tr("Активна модель TTS", "Active TTS Model"),
+                subtitle = "${activeSpec.displayName(en)} · ${activeSpec.qualityBadge}" +
+                    if (modelReady) "" else tr(" (не завантажено)", " (not downloaded)"),
+                trailing = tr("Змінити ›", "Change ›"),
+                onClick = {
+                    ModelSelectorDialog.show(this, prefs, isFirstLaunch = false) { chosenId ->
+                        prefs.selectedTtsModelId = chosenId
+                        HolosEngineHolder.resetEngine()
+                        if (HolosModelManager.isModelReady(this, chosenId)) {
+                            val chosenSpec = TtsModelCatalog.byId(chosenId)
+                            Toast.makeText(
+                                this,
+                                tr("Обрано ${chosenSpec.displayName(false)}", "Switched to ${chosenSpec.displayName(true)}"),
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                            rebuildFullUi()
+                        } else {
+                            downloadModelFromSettings(chosenId)
+                        }
+                    }
+                },
+            )
+        )
+        if (activeModelId == TtsModelId.SUPERTONIC_3) {
+            modelRows.add(
+                toggleRow(
+                    label = tr("Вимова англійських слів (Експериментально)", "English Words Pronunciation (Experimental)"),
+                    subtitle = tr(
+                        "Озвучувати вбудовані англійські слова й терміни нативною англійською у Supertonic 3",
+                        "Speak embedded English words & phrases natively via Supertonic 3 <en> mode",
+                    ),
+                    initial = prefs.supertonicEnglishPronunciation,
+                    onChanged = { prefs.supertonicEnglishPronunciation = it },
+                )
+            )
+            modelRows.add(
+                stepperRow(
+                    label = tr("Кроки якості Supertonic 3", "Supertonic 3 Quality Steps"),
+                    valueText = { prefs.supertonicSteps.toString() },
+                    onMinus = { prefs.supertonicSteps = prefs.supertonicSteps - 1 },
+                    onPlus = { prefs.supertonicSteps = prefs.supertonicSteps + 1 },
+                )
+            )
+        }
+        host.addView(groupedCard(modelRows))
+
         host.addView(sectionLabel(tr("Голос та рушій ONNX", "Voice & ONNX Engine")))
         val accelLabels = mapOf(
             HolosEngineHolder.EP_AUTO to tr("Авто (NNAPI→XNN→CPU)", "Auto (NNAPI→XNN→CPU)"),
@@ -717,6 +775,52 @@ class ReaderSettingsActivity : Activity() {
                 },
             )
         )))
+    }
+
+    private fun downloadModelFromSettings(modelId: TtsModelId) {
+        val en = AppStrings.isEnglish(this)
+        val spec = TtsModelCatalog.byId(modelId)
+        val msgTv = TextView(this).apply {
+            text = tr("Підготовка завантаження…", "Preparing download…")
+            textSize = 13.5f
+            setTextColor(p.primaryText)
+            setPadding(d(20), d(14), d(20), d(10))
+        }
+        val dlgBuilder = UiTheme.dialogBuilder(this, prefs.theme)
+            .setTitle(spec.displayName(en))
+            .setView(msgTv)
+            .setCancelable(false)
+        val dlg = UiTheme.showThemedDialog(dlgBuilder, prefs.theme)
+
+        Thread {
+            try {
+                HolosModelManager.downloadBundle(this, modelId) { msg, pct ->
+                    runOnUiThread { msgTv.text = "$msg ($pct%)" }
+                }
+                prefs.selectedTtsModelId = modelId
+                HolosEngineHolder.resetEngine()
+                HolosEngineHolder.getEngine(this)
+                runOnUiThread {
+                    dlg.dismiss()
+                    Toast.makeText(
+                        this,
+                        tr("${spec.displayName(false)} готова!", "${spec.displayName(true)} is ready!"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    rebuildFullUi()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    dlg.dismiss()
+                    Toast.makeText(
+                        this,
+                        tr("Помилка завантаження: ", "Download failed: ") + (e.message ?: e.javaClass.simpleName),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    rebuildFullUi()
+                }
+            }
+        }.start()
     }
 
     // ==================== REUSABLE CONTROLS ====================

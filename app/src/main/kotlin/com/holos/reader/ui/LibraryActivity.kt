@@ -36,6 +36,8 @@ import com.holos.reader.epub.BookRecord
 import com.holos.reader.epub.ReadingStatus
 import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.HolosModelManager
+import com.holos.reader.tts.TtsModelCatalog
+import com.holos.reader.tts.TtsModelId
 import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.ReaderTheme
 import com.holos.reader.update.GitHubUpdater
@@ -238,7 +240,7 @@ class LibraryActivity : Activity() {
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
             setPadding(d(12), d(9), d(12), d(9))
-            setOnClickListener { downloadModel() }
+            setOnClickListener { openModelSelector(isFirstLaunch = false) }
         }
         modelBanner = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -791,22 +793,12 @@ class LibraryActivity : Activity() {
                 IconMenuItem(R.drawable.ic_book, "Відкривати останню книгу", "Автостарт при запуску додатка", checked = prefs.openLastBookOnStart) {
                     prefs.openLastBookOnStart = !prefs.openLastBookOnStart
                 },
-                IconMenuItem(R.drawable.ic_download, "Модель HolosTTS", "Перевірити або завантажити голоси") {
-                    if (HolosModelManager.isModelReady(this)) {
-                        UiTheme.dialogBuilder(this, prefs.theme)
-                            .setTitle("Модель HolosTTS")
-                            .setMessage("Модель HolosTTS вже завантажена та готова до роботи офлайн.")
-                            .setPositiveButton("OK", null)
-                            .setNeutralButton("Перезавантажити") { _, _ ->
-                                modelBanner.visibility = View.VISIBLE
-                                downloadModelBtn.visibility = View.VISIBLE
-                                downloadModel()
-                            }
-                            .showThemed()
-                    } else {
-                        modelBanner.visibility = View.VISIBLE
-                        downloadModelBtn.visibility = View.VISIBLE
-                    }
+                IconMenuItem(
+                    R.drawable.ic_download,
+                    AppStrings.t(this, "Модель TTS", "TTS Model"),
+                    TtsModelCatalog.byId(prefs.selectedTtsModelId).let { "${it.displayName(AppStrings.isEnglish(this))} · ${it.qualityBadge}" },
+                ) {
+                    openModelSelector(isFirstLaunch = false)
                 },
                 IconMenuItem(R.drawable.ic_info, "Про програму (About)", "GitHub, HolosTTS, словники та джерела") {
                     UiTheme.showAboutDialog(this, prefs.theme)
@@ -891,17 +883,46 @@ class LibraryActivity : Activity() {
 
     // --- Model & Import Workers ---
 
+    private fun openModelSelector(isFirstLaunch: Boolean) {
+        ModelSelectorDialog.show(this, prefs, isFirstLaunch = isFirstLaunch) { chosenId ->
+            prefs.selectedTtsModelId = chosenId
+            HolosEngineHolder.resetEngine()
+            if (HolosModelManager.isModelReady(this, chosenId)) {
+                modelBanner.visibility = View.GONE
+                val spec = TtsModelCatalog.byId(chosenId)
+                Toast.makeText(
+                    this,
+                    AppStrings.t(this, "Активна модель: ${spec.displayName(false)}", "Active model: ${spec.displayName(true)}"),
+                    Toast.LENGTH_SHORT,
+                ).show()
+            } else {
+                modelBanner.visibility = View.VISIBLE
+                downloadModelBtn.visibility = View.VISIBLE
+                downloadModel(chosenId)
+            }
+        }
+    }
+
     private fun checkModelStatus() {
         worker.execute {
             try {
                 HolosEngineHolder.getStressifier(this)
-                val ready = HolosModelManager.isModelReady(this)
+                val ready = HolosModelManager.hasAnyModelReady(this)
                 runOnUiThread {
                     if (ready) {
                         modelBanner.visibility = View.GONE
                     } else {
-                        modelStatusTv.text = "Словник (2,88 млн) і ONNX-акцентор готові. Завантажте HolosTTS (~320 МБ):"
+                        modelStatusTv.text = AppStrings.t(
+                            this,
+                            "Словник (2,88 млн) і ONNX-акцентор готові. Оберіть модель озвучення:",
+                            "Dictionary (2.88M) & ONNX accentor ready. Choose a TTS voice model:",
+                        )
+                        downloadModelBtn.text = AppStrings.t(this, "Обрати та завантажити модель TTS", "Choose & Download TTS Model")
                         modelBanner.visibility = View.VISIBLE
+                        if (!prefs.firstLaunchModelPromptShown && !isFinishing) {
+                            prefs.firstLaunchModelPromptShown = true
+                            openModelSelector(isFirstLaunch = true)
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -910,36 +931,40 @@ class LibraryActivity : Activity() {
         }
     }
 
-    private fun downloadModel() {
+    private fun downloadModel(modelId: TtsModelId = prefs.selectedTtsModelId) {
+        val en = AppStrings.isEnglish(this)
+        val spec = TtsModelCatalog.byId(modelId)
         downloadModelBtn.isEnabled = false
-        downloadModelBtn.text = "Завантаження…"
+        downloadModelBtn.text = if (en) "Downloading ${spec.displayName(true)}…" else "Завантаження ${spec.displayName(false)}…"
         downloadModelBtn.alpha = 0.55f
         modelProgress.progress = 0
         modelProgress.visibility = View.VISIBLE
         worker.execute {
             try {
-                HolosModelManager.downloadBundle(this) { msg, pct ->
+                HolosModelManager.downloadBundle(this, modelId) { msg, pct ->
                     runOnUiThread {
                         modelStatusTv.text = msg
                         modelProgress.progress = pct
                     }
                 }
+                prefs.selectedTtsModelId = modelId
+                HolosEngineHolder.resetEngine()
                 HolosEngineHolder.getEngine(this)
                 runOnUiThread {
                     modelProgress.visibility = View.GONE
                     modelBanner.visibility = View.GONE
                     downloadModelBtn.isEnabled = true
                     downloadModelBtn.alpha = 1f
-                    downloadModelBtn.text = AppStrings.t(this@LibraryActivity, "Завантажити голос HolosTTS (~320 МБ)", "Download HolosTTS Voice (~320 MB)")
-                    Toast.makeText(this, "HolosTTS готовий!", Toast.LENGTH_SHORT).show()
+                    downloadModelBtn.text = AppStrings.t(this@LibraryActivity, "Обрати та завантажити модель TTS", "Choose & Download TTS Model")
+                    Toast.makeText(this, if (en) "${spec.displayName(true)} ready!" else "${spec.displayName(false)} готова!", Toast.LENGTH_SHORT).show()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
                     modelProgress.visibility = View.GONE
                     downloadModelBtn.isEnabled = true
                     downloadModelBtn.alpha = 1f
-                    downloadModelBtn.text = "Повторити завантаження HolosTTS"
-                    modelStatusTv.text = "Помилка: ${e.message}"
+                    downloadModelBtn.text = AppStrings.t(this@LibraryActivity, "Повторити завантаження ${spec.displayName(false)}", "Retry downloading ${spec.displayName(true)}")
+                    modelStatusTv.text = (if (en) "Error: " else "Помилка: ") + (e.message ?: e.javaClass.simpleName)
                 }
             }
         }

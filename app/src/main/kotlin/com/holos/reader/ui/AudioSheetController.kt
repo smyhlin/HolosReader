@@ -39,6 +39,7 @@ import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.HolosSafeSynthesizer
 import com.holos.reader.tts.HolosVoiceCatalog
 import com.holos.reader.tts.ReaderPreferences
+import com.holos.reader.tts.TtsModelCatalog
 import com.holos.reader.tts.TtsPlaybackController
 import com.holos.reader.tts.VoiceRole
 import java.io.File
@@ -1199,7 +1200,7 @@ class AudioSheetController(
         }
         voiceListContainer.addView(importBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
 
-        val customVoices = CustomVoiceLoader.listCustomVoices(HolosEngineHolder.getCustomVoicesDir(activity))
+        val customVoices = if (TtsModelCatalog.byId(prefs.selectedTtsModelId).supportsCustomVoices) CustomVoiceLoader.listCustomVoices(HolosEngineHolder.getCustomVoicesDir(activity)) else emptyList()
         val presetVoices = try { HolosEngineHolder.getEngine(activity)?.voices } catch (_: Exception) { null } ?: emptyList()
         val voices = customVoices + presetVoices
         if (voices.isEmpty()) {
@@ -1393,6 +1394,8 @@ class AudioSheetController(
                         speed = prefs.speechSpeed,
                         cancelled = previewCancel,
                         customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
+                        supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                        supertonicSteps = prefs.supertonicSteps,
                     ) { chunk ->
                         if (previewGen.get() == myGen && !previewCancel.get()) {
                             track.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
