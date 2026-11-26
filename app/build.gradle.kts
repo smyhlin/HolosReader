@@ -19,6 +19,9 @@ android {
 
     val keystorePath = System.getenv("KEYSTORE_FILE")
     val hasReleaseKeystore = !keystorePath.isNullOrBlank() && File(keystorePath).exists()
+    if (project.hasProperty("requireReleaseSigning") && !hasReleaseKeystore) {
+        throw GradleException("requireReleaseSigning is set but KEYSTORE_FILE is missing or unreadable")
+    }
 
     signingConfigs {
         if (hasReleaseKeystore) {

@@ -381,9 +381,9 @@ class ReaderSettingsActivity : Activity() {
             ),
             stepperRow(
                 label = tr("Міжрядковий інтервал", "Line Spacing"),
-                valueText = { String.format(Locale.US, "%.1f", prefs.lineSpacingMult) },
-                onMinus = { prefs.lineSpacingMult = ((prefs.lineSpacingMult * 10).toInt() - 1) / 10f },
-                onPlus = { prefs.lineSpacingMult = ((prefs.lineSpacingMult * 10).toInt() + 1) / 10f },
+                valueText = { String.format(Locale.US, "%.2f", prefs.lineSpacingMult) },
+                onMinus = { prefs.lineSpacingMult = kotlin.math.round((prefs.lineSpacingMult - 0.1f) * 100f) / 100f },
+                onPlus = { prefs.lineSpacingMult = kotlin.math.round((prefs.lineSpacingMult + 0.1f) * 100f) / 100f },
             ),
             stepperRow(
                 label = tr("Міжлітерний інтервал", "Letter Spacing"),

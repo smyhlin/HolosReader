@@ -87,3 +87,17 @@ When syncing changes from an isolated sandbox VM to GitHub via `@cloudkey`:
   - `UkrainianEmotionOnnx` (`speed-brain-ai/speedbrain-emotion-uk-onnx`) + `UnigramTokenizer` (pure-Kotlin Viterbi SentencePiece tokenizer; use `UnigramTokenizer.fromVocab` in JVM unit tests since Android `org.json` is stubbed on JVM).
   - `ContextualStressOnnx` (`aloudreader/uk-stress-token-classifier`, exported via `tools/export_stress_onnx.py`) hooks into `UkrainianStressifier.contextualResolver` as Tier 1.5 (user overrides still take priority; exceptions fall back cleanly).
   - `VoiceEncoderOnnx` (`patriotyk/HolosTTS/voice_encoder.pt`, exported via `tools/export_voice_encoder_onnx.py`) decodes 16-bit PCM WAV (mono/stereo) into L2-normalized 256-float `.bin` speaker vectors.
+
+---
+
+## 7. Wave 1 Overhaul & Qualification Status (H01–H35)
+
+- **Storage & EPUB Core (H01–H09):**
+  - Stock Android 10 (API 29 / SQLite 3.22) compatible `INSERT OR IGNORE` + `UPDATE` activity writes, schema-checked `PRAGMA table_info` migrations, SHA-256 content-identity deduplication, `STORED` EPUB `mimetype`, private `custom_voices/` backup exclusion, `EpubSession.borrowZip` reference-counted ZIP lifetime, committed chapter snapshots, viewport vs TTS anchor separation, monotonic session timing, truthful completion, structural `<nav epub:type="toc">` / nested NCX / `#fragment` / BOM & charset decoding.
+- **Native ONNX, Audio & System TTS (H10–H17):**
+  - `OrtSession.SessionOptions` owned until after dependent sessions close, off-UI engine/add-on retirement, cached effective fallback, non-blocking voice catalog, monotonic sleep timer, safe A–B loop & zero-frame failure surfacing, rotation survival via `configChanges`, truthful `CheckVoiceDataActivity` PASS/FAIL and `HolosTtsService` voice validation, model/add-on-aware locale-neutral offline audio recipe.
+- **G2P, Stress, Emotion & Verified Bundles (H18–H28):**
+  - Supertonic 3 bilingual English span preservation before Ukrainian transliteration, reference Holos monosyllable phonetics, user stress override precedence, caller-coordinate UTF-16 `UnigramTokenizer` spans, multi-label sigmoid emotion head with neutral/abstain policy, APK-version bundled G2P refresh, bounded 16 MB WAV voice enrollment, and HTTP 206 `Content-Range` verification.
+- **UI, Verified APK Handoff & Release Packaging (H29–H35):**
+  - `PillSliderView` reverts on `ACTION_CANCEL`, exact ±0.10 line spacing steps, exact ABI token matching (fail-closed) in `GitHubUpdater`, and `-PrequireReleaseSigning=true` fail-closed Gradle gate.
+  - **Verification boundary:** All JVM unit tests, Android Lint, debug APK, and signed R8 + ABI-split release APKs are verified in GitHub Actions (`Build HolosReader APK`); stock API 29 & Android 15 16 KiB physical handset checks remain device-stage checks.

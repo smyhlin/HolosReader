@@ -35,6 +35,7 @@ class PillSliderView(context: Context) : View(context) {
 
     var onValueLive: ((Float) -> Unit)? = null
     var onValueCommitted: ((Float) -> Unit)? = null
+    private var valueAtDown: Float = 0f
 
     private val dp = context.resources.displayMetrics.density
     private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -161,7 +162,18 @@ class PillSliderView(context: Context) : View(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+            MotionEvent.ACTION_DOWN -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                valueAtDown = value
+                val v = valueForX(event.x)
+                if (v != value) {
+                    value = v
+                    invalidate()
+                    onValueLive?.invoke(value)
+                }
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
                 val v = valueForX(event.x)
                 if (v != value) {
@@ -171,12 +183,21 @@ class PillSliderView(context: Context) : View(context) {
                 }
                 return true
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+            MotionEvent.ACTION_UP -> {
                 parent?.requestDisallowInterceptTouchEvent(false)
                 val v = valueForX(event.x)
                 value = v
                 invalidate()
                 onValueCommitted?.invoke(value)
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                parent?.requestDisallowInterceptTouchEvent(false)
+                if (value != valueAtDown) {
+                    value = valueAtDown
+                    invalidate()
+                    onValueLive?.invoke(value)
+                }
                 return true
             }
         }

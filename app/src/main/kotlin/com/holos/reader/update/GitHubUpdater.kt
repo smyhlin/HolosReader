@@ -146,10 +146,7 @@ object GitHubUpdater {
             }
             if (apkAssets.isEmpty()) return null
             val supportedAbis = Build.SUPPORTED_ABIS ?: emptyArray()
-            val chosen = supportedAbis.firstNotNullOfOrNull { abi ->
-                apkAssets.firstOrNull { it.first.contains(abi, ignoreCase = true) }
-            } ?: apkAssets.firstOrNull { it.first.contains("universal", ignoreCase = true) }
-                ?: apkAssets.first()
+            val chosen = selectBestApkAsset(apkAssets, supportedAbis) ?: return null
             val apkUrl: String? = chosen.second
             val apkSize = chosen.third
             if (apkUrl == null) return null
@@ -157,6 +154,22 @@ object GitHubUpdater {
         } finally {
             conn.disconnect()
         }
+    }
+
+    /**
+     * Picks the best matching APK asset using exact ABI token boundaries (so `x86` never matches
+     * `x86_64`), falling back to `universal`, and failing closed (`null`) if no compatible asset exists (H33).
+     */
+    internal fun selectBestApkAsset(
+        apkAssets: List<Triple<String, String, Long>>,
+        supportedAbis: Array<String>,
+    ): Triple<String, String, Long>? {
+        for (abi in supportedAbis) {
+            val tokenRe = Regex("(?i)(?:^|[-_.])${Regex.escape(abi)}(?:[-_.]|\\.apk$)")
+            apkAssets.firstOrNull { tokenRe.containsMatchIn(it.first) }?.let { return it }
+        }
+        val univRe = Regex("(?i)(?:^|[-_.])universal(?:[-_.]|\\.apk$)")
+        return apkAssets.firstOrNull { univRe.containsMatchIn(it.first) }
     }
 
     private fun showUpdatePrompt(
