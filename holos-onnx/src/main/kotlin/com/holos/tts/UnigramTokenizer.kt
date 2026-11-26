@@ -160,20 +160,32 @@ class UnigramTokenizer private constructor(
 
             val model = root.getJSONObject("model")
             val vocabArr = model.getJSONArray("vocab")
-            val pieceToId = HashMap<String, Int>(vocabArr.length() * 4 / 3)
-            val pieceScores = HashMap<String, Double>(vocabArr.length() * 4 / 3)
-            var maxLen = 1
+            val vocab = ArrayList<Pair<String, Double>>(vocabArr.length())
             for (i in 0 until vocabArr.length()) {
                 val entry = vocabArr.getJSONArray(i)
-                val piece = entry.getString(0)
-                val score = entry.optDouble(1, -10.0)
+                vocab.add(entry.getString(0) to entry.optDouble(1, -10.0))
+            }
+            return fromVocab(vocab, bosId = bosId, padId = padId, eosId = eosId, unkId = unkId)
+        }
+
+        fun fromVocab(
+            vocab: List<Pair<String, Double>>,
+            bosId: Int = 0,
+            padId: Int = 1,
+            eosId: Int = 2,
+            unkId: Int = 3,
+        ): UnigramTokenizer {
+            val pieceToId = HashMap<String, Int>(vocab.size * 4 / 3 + 4)
+            val pieceScores = HashMap<String, Double>(vocab.size * 4 / 3 + 4)
+            var maxLen = 1
+            for (i in vocab.indices) {
+                val (piece, score) = vocab[i]
                 pieceToId[piece] = i
                 pieceScores[piece] = score
                 if (piece.length > maxLen && piece.length <= 32) {
                     maxLen = piece.length
                 }
             }
-
             return UnigramTokenizer(
                 pieceToId = pieceToId,
                 pieceScores = pieceScores,
