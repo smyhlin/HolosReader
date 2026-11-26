@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.SystemClock
 import android.util.Log
 import com.holos.reader.epub.ReaderBlock
 import com.holos.tts.FlashSrOnnx
@@ -114,7 +115,7 @@ class TtsPlaybackController(context: Context) {
     fun setSleepTimerMinutes(minutes: Int) {
         sleepAtChapterEnd.set(false)
         sleepDeadlineMs.set(
-            if (minutes <= 0) 0L else System.currentTimeMillis() + minutes * 60_000L
+            if (minutes <= 0) 0L else SystemClock.elapsedRealtime() + minutes * 60_000L
         )
     }
 
@@ -239,6 +240,8 @@ class TtsPlaybackController(context: Context) {
             val prod = Thread({
                 try {
                     var i = startIdx
+                    var totalProducedFrames = 0L
+                    var loopIterationsWithoutSpeech = 0
                     while (i < blocks.size && isCurrent(gen, sessionCancel)) {
                         val block = blocks[i]
                         if (block.isSpeakable) {
@@ -295,6 +298,8 @@ class TtsPlaybackController(context: Context) {
                             }
 
                             if (isCurrent(gen, sessionCancel) && speechFrames > 0L) {
+                                totalProducedFrames += speechFrames
+                                loopIterationsWithoutSpeech = 0
                                 blockSpeechFrames[i] = speechFrames
                                 val paraPause = FloatArray((outputSampleRate * 260) / 1000)
                                 offerBlocking(queue, Packet.Audio(i, paraPause), gen, sessionCancel)
@@ -306,13 +311,28 @@ class TtsPlaybackController(context: Context) {
                         val loopA = abLoopStart
                         val loopB = abLoopEnd
                         if (loopA >= 0 && loopB >= loopA && i >= loopB) {
-                            i = loopA.coerceIn(0, blocks.lastIndex)
+                            val hasSpeakableInLoop = (loopA.coerceIn(0, blocks.lastIndex)..loopB.coerceIn(0, blocks.lastIndex))
+                                .any { blocks[it].isSpeakable }
+                            if (hasSpeakableInLoop && loopIterationsWithoutSpeech < 2) {
+                                loopIterationsWithoutSpeech++
+                                i = loopA.coerceIn(0, blocks.lastIndex)
+                            } else {
+                                clearAbLoop()
+                                i++
+                            }
                         } else {
                             i++
                         }
                     }
                     if (isCurrent(gen, sessionCancel)) {
-                        offerBlocking(queue, Packet.ChapterEnd, gen, sessionCancel)
+                        if (totalProducedFrames > 0L) {
+                            offerBlocking(queue, Packet.ChapterEnd, gen, sessionCancel)
+                        } else {
+                            sessionCancel.set(true)
+                            listener?.onError(
+                                AppStrings.t(appContext, "Не вдалося синтезувати жодного абзацу розділу", "Failed to synthesize any paragraph in this chapter")
+                            )
+                        }
                     }
                 } catch (t: Throwable) {
                     if (isCurrent(gen, sessionCancel)) {
@@ -619,7 +639,7 @@ class TtsPlaybackController(context: Context) {
             try {
                 while (isCurrent(gen, sessionCancel)) {
                     val deadline = sleepDeadlineMs.get()
-                    if (deadline > 0L && System.currentTimeMillis() >= deadline) {
+                    if (deadline > 0L && SystemClock.elapsedRealtime() >= deadline) {
                         sleepDeadlineMs.set(0L)
                         sessionCancel.set(true)
                         listener?.onPlaybackStateChanged(

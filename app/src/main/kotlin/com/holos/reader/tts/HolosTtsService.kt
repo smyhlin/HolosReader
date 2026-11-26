@@ -41,12 +41,17 @@ class HolosTtsService : TextToSpeechService() {
 
     override fun onGetVoices(): List<Voice> {
         val locale = Locale("uk", "UA")
-        val names = HolosEngineHolder.peekVoicesOrEmpty().ifEmpty { listOf("default") }
+        val names = HolosEngineHolder.peekVoicesOrEmpty().ifEmpty { HolosVoiceCatalog.defaultVoicesFor(ReaderPreferences(this).selectedTtsModelId) }.ifEmpty { listOf("default") }
         return names.map { Voice(it, locale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_NORMAL, false, emptySet()) }
     }
 
-    override fun onIsValidVoiceName(voiceName: String?): Int =
-        if (!voiceName.isNullOrBlank()) TextToSpeech.SUCCESS else TextToSpeech.ERROR
+    override fun onIsValidVoiceName(voiceName: String?): Int {
+        if (voiceName.isNullOrBlank()) return TextToSpeech.ERROR
+        if (voiceName == "default" || voiceName in HolosVoiceCatalog.allKnownVoiceIds() || voiceName in HolosEngineHolder.peekVoicesOrEmpty()) {
+            return TextToSpeech.SUCCESS
+        }
+        return TextToSpeech.ERROR
+    }
 
     override fun onLoadVoice(voiceName: String?): Int {
         if (!voiceName.isNullOrBlank() && voiceName != "default") {

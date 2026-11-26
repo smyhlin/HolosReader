@@ -25,7 +25,7 @@ class CheckVoiceDataActivity : Activity() {
             unavail.add("uk-UA")
         }
         setResult(
-            TextToSpeech.Engine.CHECK_VOICE_DATA_PASS,
+            if (ready) TextToSpeech.Engine.CHECK_VOICE_DATA_PASS else TextToSpeech.Engine.CHECK_VOICE_DATA_FAIL,
             Intent().apply {
                 putStringArrayListExtra(TextToSpeech.Engine.EXTRA_AVAILABLE_VOICES, avail)
                 putStringArrayListExtra(TextToSpeech.Engine.EXTRA_UNAVAILABLE_VOICES, unavail)
