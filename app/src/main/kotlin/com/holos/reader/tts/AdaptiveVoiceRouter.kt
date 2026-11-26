@@ -12,8 +12,8 @@ enum class VoiceRole(val labelUk: String, val shortLabelUk: String, val previewT
         previewTextUk = "Система активована. Навичка першого рівня успішно розблокована.",
     ),
     DIALOGUE(
-        labelUk = "Діалоги (—)",
-        shortLabelUk = "— Діалоги",
+        labelUk = "Діалоги (— / «»)",
+        shortLabelUk = "— / «» Діалоги",
         previewTextUk = "Тримайся поруч, попереду на нас чекає справжнє випробування!",
     ),
 }
@@ -28,6 +28,8 @@ data class VoiceSegment(
  * - `[СИСТЕМА]`, `[...]`, `【...】`, `《...》`, `『...』` and LitRPG status/skill lines → [VoiceRole.SYSTEM]
  * - Direct speech starting with long dash (`—` / `–`), with smart splitting of Ukrainian author
  *   attribution clauses (`— Репліка! — сказав він. — Продовження.`) → [VoiceRole.DIALOGUE] / [VoiceRole.NARRATOR]
+ * - Quoted direct speech (`«...»`, `“...”`, `„...”`, `"..."`) used in translated web novels without
+ *   leading dashes, while keeping inline quoted titles/terms (`книжку «Шляхи крові»`) in [VoiceRole.NARRATOR]
  * - Standard prose → [VoiceRole.NARRATOR]
  */
 object AdaptiveVoiceRouter {
@@ -45,6 +47,13 @@ object AdaptiveVoiceRouter {
 
     // Split dialogue vs author attribution only after sentence/clause punctuation before ` — `
     private val RE_DIALOGUE_SPLIT = Regex("""(?<=[,.!?…»"])\s+[—–]\s+""")
+
+    // Match outer quoted spans; guillemets `«...»` come first so nested `„...“` inside `«...»` stay intact.
+    private val RE_QUOTED_SPAN = Regex(
+        """«([^»]+)»|“([^”]+)”|„([^“”"]+)["“”]|"([^"]+)""""
+    )
+
+    private val RE_LEADING_ATTRIBUTION_DASH = Regex("""^\s*[—–]\s*""")
 
     fun segmentParagraph(raw: String): List<VoiceSegment> {
         val text = raw.trim()
@@ -144,10 +153,13 @@ object AdaptiveVoiceRouter {
     }
 
     private fun segmentProseOrDialogue(text: String): List<VoiceSegment> {
-        if (!RE_LEADING_DASH.containsMatchIn(text)) {
-            return listOf(VoiceSegment(VoiceRole.NARRATOR, text))
+        if (RE_LEADING_DASH.containsMatchIn(text)) {
+            return segmentDashDialogue(text)
         }
+        return segmentQuotedDialogue(text)
+    }
 
+    private fun segmentDashDialogue(text: String): List<VoiceSegment> {
         val cleaned = text.replaceFirst(RE_LEADING_DASH, "").trim()
         if (cleaned.isEmpty()) return emptyList()
 
@@ -178,6 +190,99 @@ object AdaptiveVoiceRouter {
             }
         }
         return segments
+    }
+
+    /**
+     * Recognizes direct speech enclosed in quotation marks (`«...»`, `“...”`, `„...”`, `"..."`)
+     * without a leading em-dash, while preserving inline quoted titles/terms (`книжку «Шляхи крові»`,
+     * `слово «вкрали»`, `Корпорації «Небо»`) as [VoiceRole.NARRATOR].
+     */
+    private fun segmentQuotedDialogue(text: String): List<VoiceSegment> {
+        val matches = RE_QUOTED_SPAN.findAll(text).toList()
+        if (matches.isEmpty()) {
+            return listOf(VoiceSegment(VoiceRole.NARRATOR, text))
+        }
+
+        val dialogueMatches = matches.filter { m -> isDialogueQuote(text, m) }
+        if (dialogueMatches.isEmpty()) {
+            return listOf(VoiceSegment(VoiceRole.NARRATOR, text))
+        }
+
+        val out = ArrayList<VoiceSegment>(dialogueMatches.size * 2 + 1)
+        var cursor = 0
+        for (m in dialogueMatches) {
+            if (m.range.first > cursor) {
+                val before = text.substring(cursor, m.range.first)
+                    .let { if (cursor > 0) it.replaceFirst(RE_LEADING_ATTRIBUTION_DASH, "") else it }
+                    .trim()
+                if (hasSpeakableContent(before)) {
+                    out.add(VoiceSegment(VoiceRole.NARRATOR, before))
+                }
+            }
+
+            // Include optional trailing sentence punctuation placed outside the closing quote (`«...».`)
+            var endIdx = m.range.last + 1
+            var trailingPunct = ""
+            if (endIdx < text.length && text[endIdx] in charArrayOf('.', '!', '?', '…')) {
+                trailingPunct = text[endIdx].toString()
+                endIdx++
+            }
+
+            val inner = (m.groupValues.drop(1).firstOrNull { it.isNotEmpty() } ?: m.value).trim()
+            val spoken = if (trailingPunct.isNotEmpty() && inner.lastOrNull() !in charArrayOf('.', '!', '?', '…')) {
+                inner + trailingPunct
+            } else {
+                inner
+            }
+            if (hasSpeakableContent(spoken)) {
+                out.add(VoiceSegment(VoiceRole.DIALOGUE, spoken))
+            }
+            cursor = endIdx
+        }
+
+        if (cursor < text.length) {
+            val tail = text.substring(cursor)
+                .replaceFirst(RE_LEADING_ATTRIBUTION_DASH, "")
+                .trim()
+            if (hasSpeakableContent(tail)) {
+                out.add(VoiceSegment(VoiceRole.NARRATOR, tail))
+            }
+        }
+
+        return if (out.isEmpty()) listOf(VoiceSegment(VoiceRole.NARRATOR, text)) else out
+    }
+
+    private fun isDialogueQuote(fullText: String, m: MatchResult): Boolean {
+        val inner = (m.groupValues.drop(1).firstOrNull { it.isNotEmpty() } ?: "").trim()
+        if (!hasLetters(inner)) return false
+
+        val before = fullText.substring(0, m.range.first).trimEnd()
+        val after = fullText.substring(m.range.last + 1).trimStart()
+
+        // 1. Quote at the very start of the paragraph (`«Репліка».` or `«Репліка!» — сказав він.`)
+        if (before.isEmpty()) {
+            val onlyTrailingPunct = after.all { it in ".!?…," }
+            val followedByAttributionDash = after.startsWith("—") || after.startsWith("–") ||
+                (after.length >= 2 && after[0] in ",.!?" && after.substring(1).trimStart().let { it.startsWith("—") || it.startsWith("–") })
+            if (onlyTrailingPunct || followedByAttributionDash) return true
+        }
+
+        // 2. Quote introduced by colon (`закричав: «Обережно!»`, `продовжив: «Я знаю…»`)
+        if (before.endsWith(":")) return true
+
+        // 3. Quote immediately following a finished sentence (e.g. merged paragraphs `...крові.«Невже це кінець?»`)
+        if (before.isNotEmpty() && before.last() in charArrayOf('.', '!', '?', '…')) {
+            val firstLetter = inner.firstOrNull { it.isLetter() }
+            val hasSpeechEnding = inner.lastOrNull() in charArrayOf('!', '?', '…', '.') || after.startsWith(".")
+            if (hasSpeechEnding && (firstLetter == null || firstLetter.isUpperCase())) {
+                return true
+            }
+        }
+
+        // 4. Quote followed by Ukrainian author attribution dash (`«Репліка?» — запитав він.`)
+        if (after.startsWith("—") || after.startsWith("–")) return true
+
+        return false
     }
 
     private fun mergeAdjacent(items: List<VoiceSegment>): List<VoiceSegment> {
