@@ -72,4 +72,24 @@ class EpubParserNavigationTest {
     fun singlePassEntityDecodeDoesNotDoubleDecode() {
         assertEquals("&lt;script&gt;", EpubStreamingParser.decodeEntities("&amp;lt;script&amp;gt;"))
     }
+    @Test
+    fun mixedHeadingAndLeafDivProsePreservesOrderAndAnchors() {
+        val html = """
+            <html><body>
+              <h1 id="ch1">Розділ 1</h1>
+              <div id="p1">Перший абзац у div.</div>
+              <p>Другий абзац у p.</p>
+              <div id="p3">Третій абзац у div.</div>
+            </body></html>
+        """.trimIndent()
+        val blocks = EpubStreamingParser.parseHtmlToRichBlocks(html, "OEBPS")
+        assertEquals(4, blocks.size)
+        assertEquals("Розділ 1", blocks[0].text)
+        assertEquals("ch1", blocks[0].anchorId)
+        assertEquals("Перший абзац у div.", blocks[1].text)
+        assertEquals("p1", blocks[1].anchorId)
+        assertEquals("Другий абзац у p.", blocks[2].text)
+        assertEquals("Третій абзац у div.", blocks[3].text)
+        assertEquals("p3", blocks[3].anchorId)
+    }
 }

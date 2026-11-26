@@ -163,7 +163,7 @@ object EpubStreamingParser {
         var blockIdx = 0
 
         val blockRegex = Regex(
-            """<(h[1-6]|p|blockquote|li|tr|figcaption|aside|pre)\b([^>]*)>(.*?)</\1>|<hr\b[^>]*/?>|<img\b([^>]+)/?>|<image\b([^>]+)/?>""",
+            """<(h[1-6]|p|blockquote|li|tr|figcaption|aside|pre)\b([^>]*)>(.*?)</\1>|<div\b([^>]*)>((?:(?!</?div\b|<(?:h[1-6]|p|blockquote|li|tr|table|ul|ol|section|article)\b).)*?)</div>|<hr\b[^>]*/?>|<img\b([^>]+)/?>|<image\b([^>]+)/?>""",
             setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
         )
 
@@ -174,7 +174,7 @@ object EpubStreamingParser {
                 continue
             }
             if (full.startsWith("<img", ignoreCase = true) || full.startsWith("<image", ignoreCase = true)) {
-                val attrs = m.groupValues[4].ifEmpty { m.groupValues[5] }
+                val attrs = m.groupValues[6].ifEmpty { m.groupValues[7] }
                 extractImageBlock(attrs, chapterDir, blockIdx)?.let {
                     blocks.add(it)
                     blockIdx++
@@ -182,13 +182,14 @@ object EpubStreamingParser {
                 continue
             }
 
-            val tag = m.groupValues[1].lowercase()
-            val attrs = m.groupValues[2]
-            val inner = m.groupValues[3]
+            val isLeafDiv = full.startsWith("<div", ignoreCase = true)
+            val tag = if (isLeafDiv) "div" else m.groupValues[1].lowercase()
+            val attrs = if (isLeafDiv) m.groupValues[4] else m.groupValues[2]
+            val inner = if (isLeafDiv) m.groupValues[5] else m.groupValues[3]
+            val anchorId = fastAttr(attrs, "id")?.takeIf { it.isNotBlank() }
 
-            // Extract any inline <img> nested inside <p> / <figure> / <td>
-            val imgInInner = Regex("""<img\b([^>]+)/?>""", RegexOption.IGNORE_CASE).find(inner)
-            if (imgInInner != null) {
+            // Extract ALL inline <img> nested inside <p> / <div> / <figure> / <td> (H08)
+            for (imgInInner in Regex("""<img\b([^>]+)/?>""", RegexOption.IGNORE_CASE).findAll(inner)) {
                 extractImageBlock(imgInInner.groupValues[1], chapterDir, blockIdx)?.let {
                     blocks.add(it)
                     blockIdx++
@@ -202,7 +203,7 @@ object EpubStreamingParser {
                     .filter { it.isNotEmpty() }
                     .toList()
                 if (cells.isNotEmpty()) {
-                    blocks.add(ReaderBlock(blockIdx++, BlockType.TABLE_ROW, cells.joinToString("  |  ")))
+                    blocks.add(ReaderBlock(blockIdx++, BlockType.TABLE_ROW, cells.joinToString("  |  "), anchorId = anchorId))
                 }
                 continue
             }
@@ -224,7 +225,7 @@ object EpubStreamingParser {
             val finalSpans = if (type == BlockType.LIST_ITEM) {
                 spans.map { it.copy(start = it.start + 2, end = it.end + 2) }
             } else spans
-            blocks.add(ReaderBlock(blockIdx++, type, finalText, finalSpans))
+            blocks.add(ReaderBlock(blockIdx++, type, finalText, finalSpans, anchorId = anchorId))
         }
 
         if (blocks.isEmpty()) {
