@@ -50,9 +50,9 @@ class NeuralAccentor(modelFile: File) : WordAccentor, Closeable {
             setInterOpNumThreads(1)
         }
         session = try {
-            env.createSession(modelFile.absolutePath, opts)
+            env.createSession(modelFile.absolutePath, sessionOptions)
         } finally {
-            opts.close()
+            
         }
     }
 
