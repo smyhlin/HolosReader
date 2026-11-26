@@ -31,8 +31,8 @@ class UnigramTokenizer private constructor(
     )
 
     fun encode(text: String, maxLength: Int = 160): Encoded {
-        val clean = text.trim()
-        if (clean.isEmpty()) {
+        val firstNonWs = text.indexOfFirst { !it.isWhitespace() }
+        if (firstNonWs < 0) {
             return Encoded(
                 inputIds = longArrayOf(bosId.toLong(), eosId.toLong()),
                 attentionMask = longArrayOf(1L, 1L),
@@ -40,11 +40,12 @@ class UnigramTokenizer private constructor(
             )
         }
 
-        val normChars = StringBuilder(clean.length + 16)
-        val normToOrig = ArrayList<Int>(clean.length + 16)
+        val lastNonWs = text.indexOfLast { !it.isWhitespace() }
+        val normChars = StringBuilder((lastNonWs - firstNonWs + 1) + 16)
+        val normToOrig = ArrayList<Int>((lastNonWs - firstNonWs + 1) + 16)
         var prevSpace = true
-        for (i in clean.indices) {
-            val ch = clean[i]
+        for (i in firstNonWs..lastNonWs) {
+            val ch = text[i]
             if (ch.isWhitespace()) {
                 if (!prevSpace) {
                     normChars.append(METASPACE)

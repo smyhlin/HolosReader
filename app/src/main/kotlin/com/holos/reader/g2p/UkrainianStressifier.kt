@@ -107,11 +107,12 @@ class UkrainianStressifier(
         wordStart: Int = 0,
         wordEnd: Int = word.length,
     ): String {
-        if (word.indexOf(ACUTE) >= 0 || word.indexOf(GRAVE) >= 0) return word
-
-        // Tier 0: User-defined stress / pronunciation overrides
-        val userOverride = overrides?.lookup(normalized)
+        // Tier 0: User-defined stress / pronunciation overrides ALWAYS win over author marks (H20)
+        val baseNormalized = normalized.replace(ACUTE.toString(), "").replace(GRAVE.toString(), "")
+        val userOverride = overrides?.lookup(baseNormalized)
         if (userOverride != null) return userOverride
+
+        if (word.indexOf(ACUTE) >= 0 || word.indexOf(GRAVE) >= 0) return word
 
         val vowelIndices = mutableListOf<Int>()
         for (i in word.indices) {
@@ -119,12 +120,6 @@ class UkrainianStressifier(
         }
         if (vowelIndices.size <= 1) return word
         if (normalized in UNSTRESSED_WORDS) return word
-
-        PRONOUN_VOWEL_INDEX[normalized]?.let { vIdx ->
-            if (vIdx in vowelIndices.indices) {
-                return insertStressMarks(word, intArrayOf(vowelIndices[vIdx] + 1))
-            }
-        }
 
         // Tier 1: 2.88M-word binary dictionary lookup
         when (val res = dict?.lookup(normalized)) {
@@ -140,13 +135,14 @@ class UkrainianStressifier(
             null -> Unit
         }
 
-        // Tier 2: Bundled 1.17 MB ONNX neural accentor for OOV words
-        val neuralPos = neuralAccentor?.predictInsertPosition(normalized)
-        if (neuralPos != null && isAfterVowel(word, neuralPos)) {
-            return insertStressMarks(word, intArrayOf(neuralPos))
+        // Tier 1b: Dictionary-miss pronoun stress fallback (H20)
+        PRONOUN_VOWEL_INDEX[normalized]?.let { vIdx ->
+            if (vIdx in vowelIndices.indices) {
+                return insertStressMarks(word, intArrayOf(vowelIndices[vIdx] + 1))
+            }
         }
 
-        // Tier 3a: Prefix-stripping fallback for Ukrainian compounds
+        // Tier 2a: Safe prefix-stripping dictionary stem lookup before neural OOV guessing (H20)
         val prefixes = listOf(
             "не", "най", "пере", "проти", "над", "під", "роз", "без",
             "анти", "супер", "мега", "ультра", "архі"
@@ -163,6 +159,12 @@ class UkrainianStressifier(
                     return insertStressMarks(word, stemPos.map { it + pref.length }.toIntArray())
                 }
             }
+        }
+
+        // Tier 2b: Bundled 1.17 MB ONNX neural accentor for OOV words
+        val neuralPos = neuralAccentor?.predictInsertPosition(normalized)
+        if (neuralPos != null && isAfterVowel(word, neuralPos)) {
+            return insertStressMarks(word, intArrayOf(neuralPos))
         }
 
         // Tier 3b: Penultimate-syllable heuristic fallback

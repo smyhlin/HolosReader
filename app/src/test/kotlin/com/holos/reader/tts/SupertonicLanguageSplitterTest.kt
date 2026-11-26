@@ -59,4 +59,11 @@ class SupertonicLanguageSplitterTest {
         assertEquals("don't stop!", spans[3].text)
         assertEquals("en", spans[3].lang)
     }
+    @Test
+    fun prepareSupertonicSpansPreservesEnglishBeforeUkrainianNormalization() {
+        val spans = HolosSafeSynthesizer.prepareSupertonicSpans("Використав Shadow Step і відновив 50 HP", true)
+        assertTrue(spans.any { it.lang == "en" && it.text.contains("Shadow Step") })
+        assertTrue(spans.any { it.lang == "en" && it.text.contains("HP") })
+        assertTrue(spans.any { it.lang == "uk" })
+    }
 }

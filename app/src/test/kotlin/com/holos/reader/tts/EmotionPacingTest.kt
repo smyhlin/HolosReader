@@ -11,7 +11,7 @@ class EmotionPacingTest {
     @Test
     fun angerSpeedsUpAndShortensPause() {
         val emotion = UkrainianEmotionOnnx.pickEmotionFromLogits(
-            floatArrayOf(0.1f, 0.2f, 4.2f, -1.0f, 0.0f, 0.1f, 0.0f)
+            floatArrayOf(-1.0f, -1.0f, 2.2f, -1.0f, -1.0f, -1.0f, -1.0f)
         )
         assertEquals(UkrainianEmotion.ANGER, emotion)
         assertTrue(emotion.speedMultiplier > 1.0f)
@@ -21,7 +21,7 @@ class EmotionPacingTest {
     @Test
     fun sadnessSlowsDownAndExtendsPause() {
         val emotion = UkrainianEmotionOnnx.pickEmotionFromLogits(
-            floatArrayOf(-0.5f, 0.0f, 0.0f, 3.8f, 0.0f, 0.0f, 0.1f)
+            floatArrayOf(-1.0f, -1.0f, -1.0f, 2.5f, -1.0f, -1.0f, -1.0f)
         )
         assertEquals(UkrainianEmotion.SADNESS, emotion)
         assertTrue(emotion.speedMultiplier < 1.0f)
@@ -29,11 +29,19 @@ class EmotionPacingTest {
     }
 
     @Test
-    fun lowConfidenceFallsBackToNeutral() {
+    fun moderatePositiveWithZeroPeersWinsMultiLabelSigmoid() {
         val emotion = UkrainianEmotionOnnx.pickEmotionFromLogits(
-            floatArrayOf(0.5f, 0.4f, 0.45f, 0.3f, 0.3f, 0.3f, 0.4f)
+            floatArrayOf(0.0f, 0.0f, 1.2f, 0.0f, 0.0f, 0.0f, 0.0f)
         )
-        assertEquals(UkrainianEmotion.NEUTRAL, emotion)
-        assertEquals(1.0f, emotion.speedMultiplier, 0.001f)
+        assertEquals(UkrainianEmotion.ANGER, emotion)
+    }
+
+    @Test
+    fun allZeroAndNonFiniteLogitsStayNeutral() {
+        assertEquals(UkrainianEmotion.NEUTRAL, UkrainianEmotionOnnx.pickEmotionFromLogits(FloatArray(7) { 0f }))
+        assertEquals(
+            UkrainianEmotion.NEUTRAL,
+            UkrainianEmotionOnnx.pickEmotionFromLogits(floatArrayOf(Float.NaN, 0f, 3f, 0f, 0f, 0f, 0f))
+        )
     }
 }

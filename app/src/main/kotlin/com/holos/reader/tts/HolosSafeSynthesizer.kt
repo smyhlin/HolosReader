@@ -95,16 +95,22 @@ object HolosSafeSynthesizer {
         cancelled: AtomicBoolean,
         onChunk: (FloatArray) -> Unit,
     ) {
-        val normalized = UkrainianTextNormalizer.normalize(rawParagraph, ensureTerminalPunctuation = true)
-        if (normalized.isBlank()) return
+        val rawClean = rawParagraph.trim()
+        if (rawClean.isEmpty()) return
 
-        val sentences = SentenceSplitter.split(normalized, maxChars = 240)
+        val sentences = if (englishPronunciation) {
+            SentenceSplitter.split(rawClean, maxChars = 240)
+        } else {
+            val normalized = UkrainianTextNormalizer.normalize(rawClean, ensureTerminalPunctuation = true)
+            if (normalized.isBlank()) return
+            SentenceSplitter.split(normalized, maxChars = 240)
+        }
         val pauseSamples = FloatArray((engine.sampleRate * pauseMs) / 1000)
         val switchPause = FloatArray((engine.sampleRate * LANG_SWITCH_PAUSE_MS) / 1000)
 
         for ((idx, sentence) in sentences.withIndex()) {
             if (cancelled.get()) return
-            val spans = SupertonicLanguageSplitter.split(sentence, englishPronunciation)
+            val spans = prepareSupertonicSpans(sentence, englishPronunciation)
             for ((spanIdx, span) in spans.withIndex()) {
                 if (cancelled.get()) return
                 val wav = engine.synthesize(
@@ -176,7 +182,7 @@ object HolosSafeSynthesizer {
     ) {
         if (cancelled.get() || text.isBlank()) return
         val stressed = stressifier.stressify(text)
-        val phonemes = UkrainianIpa.transcribe(stressed, monosyllabicAllophones = true).trim()
+        val phonemes = UkrainianIpa.transcribe(stressed, monosyllabicAllophones = false).trim()
         if (phonemes.isEmpty()) return
 
         val encoded = try {
@@ -233,6 +239,33 @@ object HolosSafeSynthesizer {
                 audio[start + i] *= (fadeSamples - 1 - i).toFloat() / fadeSamples.toFloat()
             }
         }
+    }
+
+    /**
+     * Prepares ordered `(text, lang)` spans for Supertonic 3 without destructively transliterating
+     * English spans when [englishPronunciation] is enabled (H18).
+     */
+    internal fun prepareSupertonicSpans(
+        sentence: String,
+        englishPronunciation: Boolean,
+    ): List<SupertonicLanguageSplitter.LanguageSpan> {
+        if (!englishPronunciation) {
+            val uk = UkrainianTextNormalizer.normalize(sentence, ensureTerminalPunctuation = true)
+            return if (uk.isBlank()) emptyList() else listOf(SupertonicLanguageSplitter.LanguageSpan(uk, "uk"))
+        }
+        val rawSpans = SupertonicLanguageSplitter.split(sentence, true)
+        val out = ArrayList<SupertonicLanguageSplitter.LanguageSpan>(rawSpans.size)
+        for (span in rawSpans) {
+            val prepared = if (span.lang == "uk") {
+                UkrainianTextNormalizer.normalize(span.text, ensureTerminalPunctuation = false)
+            } else {
+                span.text.trim()
+            }
+            if (prepared.isNotBlank()) {
+                out.add(SupertonicLanguageSplitter.LanguageSpan(prepared, span.lang))
+            }
+        }
+        return out
     }
 
     internal fun bisectText(text: String): Pair<String, String> {

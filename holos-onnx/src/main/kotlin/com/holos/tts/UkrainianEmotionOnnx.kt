@@ -93,27 +93,37 @@ class UkrainianEmotionOnnx @JvmOverloads constructor(
     }
 
     companion object {
-        fun pickEmotionFromLogits(logits: FloatArray): UkrainianEmotion {
+        private fun sigmoid(x: Float): Double {
+            if (!x.isFinite()) return Double.NaN
+            return 1.0 / (1.0 + exp(-x.toDouble().coerceIn(-40.0, 40.0)))
+        }
+
+        /**
+         * Scores multi-label emotion logits (`Joy, Fear, Anger, Sadness, Disgust, Surprise, None`)
+         * using independent sigmoids with an explicit neutral/abstain policy (H22):
+         * - Non-finite logits -> NEUTRAL
+         * - All-zero or sub-threshold (<= 0.55) emotion sigmoids -> NEUTRAL
+         * - Explicit `None` (index 6) winning over all emotion labels -> NEUTRAL
+         */
+        fun pickEmotionFromLogits(logits: FloatArray, threshold: Double = 0.55): UkrainianEmotion {
             if (logits.size < 7) return UkrainianEmotion.NEUTRAL
-            var maxLogit = Float.NEGATIVE_INFINITY
-            for (i in 0 until 7) if (logits[i] > maxLogit) maxLogit = logits[i]
-            var sum = 0.0
             val probs = DoubleArray(7)
             for (i in 0 until 7) {
-                val e = exp((logits[i] - maxLogit).toDouble())
-                probs[i] = e
-                sum += e
+                val p = sigmoid(logits[i])
+                if (!p.isFinite()) return UkrainianEmotion.NEUTRAL
+                probs[i] = p
             }
-            var bestIdx = 6
-            var bestProb = 0.0
-            for (i in 0 until 7) {
-                val p = probs[i] / sum
-                if (p > bestProb) {
-                    bestProb = p
+            val noneProb = probs[6]
+            var bestIdx = -1
+            var bestProb = threshold
+            for (i in 0 until 6) {
+                if (probs[i] > bestProb) {
+                    bestProb = probs[i]
                     bestIdx = i
                 }
             }
-            return if (bestProb >= 0.45) UkrainianEmotion.fromId(bestIdx) else UkrainianEmotion.NEUTRAL
+            if (bestIdx < 0 || noneProb >= bestProb) return UkrainianEmotion.NEUTRAL
+            return UkrainianEmotion.fromId(bestIdx)
         }
 
         private fun flattenFloats(value: Any?): FloatArray {

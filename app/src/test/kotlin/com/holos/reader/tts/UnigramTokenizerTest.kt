@@ -50,4 +50,10 @@ class UnigramTokenizerTest {
         assertEquals(2L, enc.inputIds.last())
         assertTrue(enc.inputIds.contains(3L))
     }
+    @Test
+    fun leadingWhitespacePreservesOriginalUtf16Offsets() {
+        val enc = sampleTokenizer().encode("   замок стоїть")
+        assertEquals(3, enc.spans[1].charStart)
+        assertEquals(8, enc.spans[1].charEnd)
+    }
 }

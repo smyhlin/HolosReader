@@ -301,9 +301,13 @@ class SupertonicOnnx @JvmOverloads constructor(
                 .replace("♡", "")
                 .replace("©", "")
                 .replace("\\", "")
-                .replace("@", " at ")
-                .replace("e.g.,", "for example, ")
-                .replace("i.e.,", "that is, ")
+                .let { s ->
+                    if (safeLang == "en") {
+                        s.replace("@", " at ")
+                            .replace("e.g.,", "for example, ")
+                            .replace("i.e.,", "that is, ")
+                    } else s
+                }
 
             text = text
                 .replace(" ,", ",")
