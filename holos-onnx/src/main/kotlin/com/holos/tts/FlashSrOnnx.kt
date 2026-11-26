@@ -93,7 +93,7 @@ class FlashSrOnnx @JvmOverloads constructor(
         const val OUTPUT_RATE = 48_000
         private const val MIN_CHUNK_SAMPLES = 320
 
-        internal fun resampleLinear(input: FloatArray, fromRate: Int, toRate: Int): FloatArray {
+        fun resampleLinear(input: FloatArray, fromRate: Int, toRate: Int): FloatArray {
             if (input.isEmpty() || fromRate <= 0 || toRate <= 0) return FloatArray(0)
             if (fromRate == toRate) return input.copyOf()
             val ratio = fromRate.toDouble() / toRate.toDouble()
