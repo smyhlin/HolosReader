@@ -1,0 +1,37 @@
+# Gradle & build outputs
+.gradle/
+build/
+app/build/
+holos-onnx/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+local.properties
+.navigation/
+*.hprof
+
+# Built & staged APK / AAB artifacts
+*.apk
+*.ap_
+*.aab
+*.dex
+
+# Keystores & signing secrets
+*.jks
+*.keystore
+keystore.properties
+
+# Temporary sync archives & logs
+*.tar.gz
+*.b64
+*.log
+/tmp/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini

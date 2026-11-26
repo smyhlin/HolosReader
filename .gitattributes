@@ -1,0 +1,22 @@
+* text=auto eol=lf
+
+*.kt text diff=kotlin
+*.kts text diff=kotlin
+*.xml text
+*.md text
+*.yml text
+*.yaml text
+*.properties text
+
+*.apk binary
+*.aab binary
+*.onnx binary
+*.gz binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ttf binary
+*.otf binary
+*.so binary
+*.jar binary
