@@ -354,10 +354,9 @@ object EpubStreamingParser {
         navDir: String,
         spineIndexByHref: Map<String, Int>,
     ): List<TocEntry> {
-        val navStart = navHtml.indexOf("toc", ignoreCase = true).let { pos ->
-            if (pos >= 0) navHtml.lastIndexOf("<nav", pos, ignoreCase = true).coerceAtLeast(0) else 0
-        }
-        val navEnd = navHtml.indexOf("</nav>", navStart, ignoreCase = true)
+        val navMatch = RE_NAV_TOC_OPEN.find(navHtml) ?: return emptyList()
+        val navStart = navMatch.range.first
+        val navEnd = navHtml.indexOf("</nav>", navMatch.range.last + 1, ignoreCase = true)
             .let { if (it > navStart) it else navHtml.length }
         val section = navHtml.substring(navStart, navEnd)
 
@@ -373,12 +372,15 @@ object EpubStreamingParser {
                 v.startsWith("<ol", ignoreCase = true) -> depth++
                 v.startsWith("</ol", ignoreCase = true) -> depth = (depth - 1).coerceAtLeast(-1)
                 else -> {
-                    val rawHref = fastAttr(m.groupValues[1], "href")?.let { decodeHref(it).substringBefore('#') } ?: continue
+                    val decodedHref = fastAttr(m.groupValues[1], "href")?.let { decodeHref(it).trim() } ?: continue
+                    val rawPath = decodedHref.substringBefore('#')
+                    val fragment = decodedHref.substringAfter('#', "").takeIf { it.isNotBlank() }
                     val label = parseInlineRichText(m.groupValues[2]).first
-                    if (label.isEmpty() || rawHref.isEmpty()) continue
-                    val resolved = resolvePath(navDir, rawHref)
-                    val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHref[resolved.lowercase()] ?: 0
-                    result.add(TocEntry(label, resolved, spineIdx, depth.coerceAtLeast(0)))
+                    if (label.isEmpty() || rawPath.isEmpty()) continue
+                    val resolved = resolvePath(navDir, rawPath)
+                    val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHref[resolved.lowercase()] ?: -1
+                    val fullHref = if (fragment != null) "$resolved#$fragment" else resolved
+                    result.add(TocEntry(label, fullHref, spineIdx, depth.coerceAtLeast(0)))
                 }
             }
         }
@@ -391,25 +393,36 @@ object EpubStreamingParser {
         spineIndexByHref: Map<String, Int>,
     ): List<TocEntry> {
         val result = ArrayList<TocEntry>(256)
-        var pos = 0
-        val len = ncxXml.length
-        while (pos < len) {
-            val npStart = ncxXml.indexOf("<navPoint", pos, ignoreCase = true)
-            if (npStart < 0) break
-            val tStart = ncxXml.indexOf("<text>", npStart, ignoreCase = true)
-            val tEnd = if (tStart >= 0) ncxXml.indexOf("</text>", tStart + 6, ignoreCase = true) else -1
-            val cStart = if (tEnd >= 0) ncxXml.indexOf("<content", tEnd, ignoreCase = true) else -1
-            val cEnd = if (cStart >= 0) ncxXml.indexOf('>', cStart) else -1
-            if (tStart < 0 || tEnd < 0 || cStart < 0 || cEnd < 0) break
-
-            val label = decodeEntities(ncxXml.substring(tStart + 6, tEnd)).trim()
-            val src = fastAttr(ncxXml.substring(cStart, cEnd), "src")?.let { decodeHref(it).substringBefore('#') }
-            if (label.isNotEmpty() && !src.isNullOrEmpty()) {
-                val resolved = resolvePath(ncxDir, src)
-                val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHref[resolved.lowercase()] ?: 0
-                result.add(TocEntry(label, resolved, spineIdx, 0))
+        var depth = 0
+        var pendingLabel: String? = null
+        for (m in RE_NCX_TOKEN.findAll(ncxXml)) {
+            val v = m.value
+            when {
+                v.startsWith("</", ignoreCase = false) && v.contains("navPoint", ignoreCase = true) -> {
+                    depth = (depth - 1).coerceAtLeast(0)
+                    pendingLabel = null
+                }
+                v.contains("navPoint", ignoreCase = true) && !v.startsWith("</") -> {
+                    depth++
+                    pendingLabel = null
+                }
+                m.groupValues[1].isNotEmpty() -> {
+                    pendingLabel = decodeEntities(m.groupValues[1]).trim()
+                }
+                m.groupValues[2].isNotEmpty() -> {
+                    val label = pendingLabel
+                    val decodedSrc = fastAttr(m.groupValues[2], "src")?.let { decodeHref(it).trim() }
+                    if (!label.isNullOrEmpty() && !decodedSrc.isNullOrEmpty()) {
+                        val rawPath = decodedSrc.substringBefore('#')
+                        val fragment = decodedSrc.substringAfter('#', "").takeIf { it.isNotBlank() }
+                        val resolved = resolvePath(ncxDir, rawPath)
+                        val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHref[resolved.lowercase()] ?: -1
+                        val fullHref = if (fragment != null) "$resolved#$fragment" else resolved
+                        result.add(TocEntry(label, fullHref, spineIdx, (depth - 1).coerceAtLeast(0)))
+                    }
+                    pendingLabel = null
+                }
             }
-            pos = cEnd + 1
         }
         return result
     }
@@ -475,6 +488,12 @@ object EpubStreamingParser {
 
     private const val MAX_TEXT_ENTRY_BYTES = 16 * 1024 * 1024
     private const val MAX_BINARY_ENTRY_BYTES = 32 * 1024 * 1024
+    private val RE_NAV_TOC_OPEN = Regex("""<nav\b[^>]*\b(?:epub:)?type\s*=\s*["'][^"']*\btoc\b[^"']*["'][^>]*>""", RegexOption.IGNORE_CASE)
+    private val RE_NCX_TOKEN = Regex(
+        """</(?:[a-zA-Z0-9_-]+:)?navPoint\b[^>]*>|<(?:[a-zA-Z0-9_-]+:)?navPoint\b[^>]*>|<(?:[a-zA-Z0-9_-]+:)?text\b[^>]*>(.*?)</(?:[a-zA-Z0-9_-]+:)?text>|<(?:[a-zA-Z0-9_-]+:)?content\b([^>]*)/?>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+    )
+    private val RE_DECLARED_CHARSET = Regex("""(?:encoding|charset)\s*=\s*["']?([A-Za-z0-9._-]+)""", RegexOption.IGNORE_CASE)
     private val RE_ENTITY = Regex("&(#x?[0-9a-fA-F]+|[a-zA-Z]+);")
 
     private fun readStreamBounded(stream: java.io.InputStream, maxBytes: Int): ByteArray {
@@ -495,12 +514,34 @@ object EpubStreamingParser {
         return out.toByteArray()
     }
 
+    fun decodeTextBytes(bytes: ByteArray): String {
+        if (bytes.isEmpty()) return ""
+        if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
+            return String(bytes, 3, bytes.size - 3, Charsets.UTF_8)
+        }
+        if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
+            return String(bytes, 2, bytes.size - 2, Charsets.UTF_16LE)
+        }
+        if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
+            return String(bytes, 2, bytes.size - 2, Charsets.UTF_16BE)
+        }
+        val head = String(bytes, 0, minOf(bytes.size, 512), Charsets.ISO_8859_1)
+        val declared = RE_DECLARED_CHARSET.find(head)?.groupValues?.getOrNull(1)?.trim()
+        if (!declared.isNullOrEmpty() && !declared.equals("utf-8", ignoreCase = true)) {
+            try {
+                return String(bytes, java.nio.charset.Charset.forName(declared))
+            } catch (_: Throwable) {
+            }
+        }
+        return String(bytes, Charsets.UTF_8)
+    }
+
     fun readEntryText(zip: ZipFile, path: String): String? {
         val entry = zip.getEntry(path)
             ?: zip.entries().asSequence().firstOrNull { it.name.equals(path, ignoreCase = true) }
             ?: return null
         val bytes = readStreamBounded(zip.getInputStream(entry), MAX_TEXT_ENTRY_BYTES)
-        return String(bytes, Charsets.UTF_8)
+        return decodeTextBytes(bytes)
     }
 
     fun extractEntryBytes(zip: ZipFile, entryPath: String): ByteArray? {

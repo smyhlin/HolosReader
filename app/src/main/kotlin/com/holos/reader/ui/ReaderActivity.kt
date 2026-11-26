@@ -1060,7 +1060,13 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
         listView.setOnItemClickListener { _, _, position, _ ->
             dialog.dismiss()
-            loadChapter(entries[position].spineIndex, scrollToBlock = 0, autoPlay = controller.isPlaying)
+            val chosen = entries[position]
+            if (chosen.spineIndex < 0) {
+                Toast.makeText(this, AppStrings.t(this, "Посилання змісту не знайдено у книзі", "TOC target not found in book"), Toast.LENGTH_SHORT).show()
+            } else {
+                val frag = chosen.href.substringAfter('#', "").takeIf { it.isNotBlank() }
+                loadChapter(chosen.spineIndex, scrollToBlock = 0, autoPlay = controller.isPlaying, targetFragment = frag)
+            }
         }
         dialog.show()
     }
