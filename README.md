@@ -1,8 +1,8 @@
-# HolosReader v3.0 — EPUB 3 Читалка для 6000+ розділів із вбудованим HolosTTS
+# HolosReader — EPUB 3 Читалка для 6000+ розділів із вбудованим HolosTTS
 
-Повноцінна офлайн-читалка для Android 10+ із мінімалістичним інтерфейсом у стилі сучасних аудіочиталок, висувною лірик-панеллю озвучення, повною підтримкою EPUB 3 та вбудованим українським нейромережевим синтезом **[patriotyk/HolosTTS](https://github.com/patriotyk/HolosTTS)**.
+Повноцінна офлайн-читалка для Android 10+ (`minSdk 29`, без AndroidX) із мінімалістичним повноекранним інтерфейсом, висувною аудіопанеллю, повною підтримкою EPUB 3 та вбудованим українським нейромережевим синтезом **[patriotyk/HolosTTS](https://github.com/patriotyk/HolosTTS)**.
 
-## Головні можливості v3.0
+## Головні можливості
 
 1. **Оптимізація під гігантські романи (6000+ розділів без лагів):**
    - **Одноразове O(N) індексування у SQLite (`BookDatabase.kt`, `EpubStreamingParser.kt`):** відкриття книги на 6 500 розділів займає мілісекунди, без повторного розбору OPF.
@@ -11,14 +11,22 @@
    - **Миттєвий пошук по змісту (`SQLite LIKE`):** введіть `4250` або назву арки — і переходьте до потрібного розділу за секунду.
 2. **Повна підтримка EPUB 3 та EPUB 2:**
    - Форматування тексту (`<b>/<strong>`, `<i>/<em>`, `<u>`, `<s>/<del>`, `<code>`, `<sup>/<sub>`), заголовки `h1–h6`, цитати `<blockquote>`, списки `<ul>/<ol>/<li>`, таблиці `<table>` (ідеально для LitRPG-статусів), виноски `<aside epub:type="footnote">`, `<figure>/<figcaption>`, `<img>` та SVG `<image>`, обкладинки, закладки.
-3. **Інтерфейс та висувна аудіопанель (Light / Sepia / Dark):**
-   - Чистий екран читання з inline-підсвіткою активного абзацу та плаваючим міні-плеєром (таблеткою).
-   - **Висувна панель у стилі Spotify Lyrics (`AudioSheetController.kt`):** активний абзац у центрованій заокругленій картці, сусідні абзаци плавно приглушені, скрабер часу (`0:38 / -5:34`), кнопки `A− / A+`, `A-B` повтор, 3 картки (`Швидкість`, `Голос`, `Таймер сну`), безкоштовне локальне **Офлайн-аудіо розділу** (кеш у WAV для 0% навантаження CPU) та екран **Вибору голосу** з фільтром `Усі / Жіночі / Чоловічі` і кнопкою живого прослуховування `▶`.
+3. **Повноекранний інтерфейс, швидкі панелі та висувна аудіопанель:**
+   - **Повноекранний режим за замовчуванням:** прихований статус-бар (Android 10–15+), назва розділу зверху та лічильник сторінок по всій книзі знизу, який можна приховати/показати одним тапом.
+   - **Наскрізна навігація по сторінках книги:** нижній скрабер переміщує та рахує сторінки по всій книзі (`поточна / всього`).
+   - **Компактні швидкі налаштування та overlay-шторка:** швидке керування яскравістю й 9 темами, шрифтом (із живим прев'ю кожного шрифту), полями та міжрядковим інтервалом поверх тексту, а також 68%-шторка повних налаштувань (`ReaderSettingsActivity.kt`).
+   - **Висувна панель у стилі Spotify Lyrics (`AudioSheetController.kt`):** активний абзац у центрованій заокругленій картці, сусідні абзаци плавно приглушені, скрабер часу, кнопки `A− / A+`, `A-B` повтор, вбудований таймер сну (`Set Timeout` на 14 пресетів), **Офлайн-аудіо розділу** (кеш у WAV) та **Вибір голосу** з фільтром `Усі / Жіночі / Чоловічі` й прослуховуванням `▶`.
+   - **Повноцінний медіаплеєр у шторці та на екрані блокування (`ReaderAudioService.kt`):** обкладинка книги, жива озвучувана фраза, назва розділу, перемотування й кнопки керування.
 4. **4-рівневий український G2P офлайн (без Python):**
-   - Власний словник `stress_user.txt` (`StressEditorActivity.kt`) → **2 886 186 словоформ** із «Словників України» ([ukrainian-word-stress](https://github.com/patriotyk/ukrainian-word-stress)) + **контекстне розрізнення 36 414 омографів** (`біля вікна́` / `ці ві́кна`, `без голови́` / `три го́лови`) → вбудований **1,17 МБ ONNX нейромережевий акцентор** (`accentor-lite.onnx` із [egorsmkv/ukrainian-accentor](https://github.com/egorsmkv/ukrainian-accentor)) для OOV-імен → 1:1 Kotlin-порт [patriotyk/ipa-uk](https://github.com/patriotyk/ipa-uk) (300/300 тестів).
-   - Випереджальний двопотоковий синтез (`TtsPlaybackController.kt`) + захист від ліміту 1000 фреймів (25 с) + фоновий сервіс (`ReaderAudioService.kt`) + бонусний системний `HolosTtsService`.
+   - Власний словник `stress_user.txt` (`StressEditorActivity.kt`) → **2 886 186 словоформ** із «Словників України» ([ukrainian-word-stress](https://github.com/patriotyk/ukrainian-word-stress)) + **контекстне розрізнення 36 414 омографів** → вбудований **1,17 МБ ONNX нейромережевий акцентор** (`accentor-lite.onnx` із [egorsmkv/ukrainian-accentor](https://github.com/egorsmkv/ukrainian-accentor)) → 1:1 Kotlin-порт [patriotyk/ipa-uk](https://github.com/patriotyk/ipa-uk).
+5. **Оновлення з GitHub Releases без авторизації (`GitHubUpdater.kt`, `ApkFileProvider.kt`):**
+   - Автоматична перевірка нових релізів на старті та кнопка **Check for updates** у вікні «Про програму» — завантаження та встановлення APK без входу в GitHub.
 
-## Збірка APK
+## Збірка APK та нюанси синхронізації
 
-- **Через GitHub Actions (~2 хв, без Android Studio):** завантажте вміст папки `HolosReader` у будь-який GitHub-репозиторій → вкладка **Actions** → скачайте артефакт **`HolosReader-EPUB3-HolosTTS-apk`** (`app-debug.apk`).
-- **Локально:** відкрийте `HolosReader` в Android Studio або запустіть `gradle :app:assembleDebug` (JDK 17 + Android SDK 35).
+- **Через GitHub Actions (без Android Studio):**
+  - Workflow **`Build & Publish Release APK`** (`.github/workflows/release.yml`) автоматично виставляє `versionName = 5.1.<run_number>`, збирає `app-debug.apk` через `gradle/actions/setup-gradle@v4` (`8.11.1`) і публікує його в **GitHub Releases** як `latest`.
+  - Workflow **`Build HolosReader APK`** (`.github/workflows/build-apk.yml`) додатково зберігає артефакт `HolosReader-EPUB3-HolosTTS-apk`.
+  - **Важливо:** проєкт не використовує `gradlew` (запускається системний `gradle :app:assembleDebug`) і не потребує `android-actions/setup-android@v3` (на `ubuntu-latest` уже встановлено Android SDK 35; виклик `setup-android@v3` без явних параметрів падає через застарілий пакет `tools`).
+- **Локально:** відкрийте `HolosReader` в Android Studio або запустіть `gradle :app:assembleDebug` (JDK 17 + Android SDK 35, Gradle 8.11.1).
+- **Для AI-агентів та синхронізації:** див. [`AGENTS.md`](AGENTS.md) — там задокументовані обмеження (`useAndroidX=false`), робота з дзеркалом `/volume/Projects/HolosReader` через `gh` CLI та правила безпечного перенесення патчів малими чанками (≤ 8 КБ).
