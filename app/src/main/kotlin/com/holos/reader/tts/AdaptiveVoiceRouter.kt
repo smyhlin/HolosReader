@@ -229,7 +229,8 @@ object AdaptiveVoiceRouter {
             }
 
             val inner = (m.groupValues.drop(1).firstOrNull { it.isNotEmpty() } ?: m.value).trim()
-            val spoken = if (trailingPunct.isNotEmpty() && inner.lastOrNull() !in charArrayOf('.', '!', '?', '…')) {
+            val innerLast = inner.lastOrNull()
+            val spoken = if (trailingPunct.isNotEmpty() && (innerLast == null || innerLast !in charArrayOf('.', '!', '?', '…'))) {
                 inner + trailingPunct
             } else {
                 inner
@@ -273,7 +274,7 @@ object AdaptiveVoiceRouter {
         // 3. Quote immediately following a finished sentence (e.g. merged paragraphs `...крові.«Невже це кінець?»`)
         if (before.isNotEmpty() && before.last() in charArrayOf('.', '!', '?', '…')) {
             val firstLetter = inner.firstOrNull { it.isLetter() }
-            val hasSpeechEnding = inner.lastOrNull() in charArrayOf('!', '?', '…', '.') || after.startsWith(".")
+            val hasSpeechEnding = (inner.lastOrNull()?.let { it in charArrayOf('!', '?', '…', '.') } == true) || after.startsWith(".")
             if (hasSpeechEnding && (firstLetter == null || firstLetter.isUpperCase())) {
                 return true
             }
