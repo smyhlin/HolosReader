@@ -12,10 +12,11 @@ Instructions, architectural constraints, and operational caveats for AI agents a
 - **SDK & Toolchain:**
   - `compileSdk = 35`, `targetSdk = 35`, `minSdk = 29` (Android 10+).
   - Java / Kotlin JVM target: **17**.
-  - **No Gradle Wrapper (`./gradlew`):** The repository does not include `gradlew`. Use system `gradle :app:assembleDebug` (Gradle **8.11.1**).
+  - **Gradle Wrapper (`./gradlew`):** Bundled Gradle **8.11.1** wrapper (`./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`).
   - Keep `androidResources { noCompress += listOf("gz", "onnx") }` intact in `app/build.gradle.kts` so bundled G2P dictionaries and `accentor-lite.onnx` remain memory-mappable.
-- **APK Signing Consistency:**
-  - Both `.github/workflows/build-apk.yml` and `.github/workflows/release.yml` build `assembleDebug`. Do not switch `release.yml` to an unsigned/different-key release APK without handling signing keys, or in-app updates via `GitHubUpdater` will fail with a signature mismatch.
+- **Persistent Release Signing & R8 + ABI Splits:**
+  - `release.yml` signs `assembleRelease` (`isMinifyEnabled = true`, `isShrinkResources = true`, `-PenableAbiSplits=true`) using the persistent keystore stored in GitHub Secrets (`KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`, `KEY_ALIAS`, `KEY_PASSWORD`; local backup outside git at `/volume/Projects/.secrets/holosreader-release.jks`).
+  - Emits slim `arm64-v8a` + `universal` APKs plus `SHA256SUMS`; `GitHubUpdater.kt` automatically picks the device's matching ABI first.
 
 ---
 

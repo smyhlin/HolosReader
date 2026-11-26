@@ -59,11 +59,11 @@
 ### Вимоги
 - **JDK 17** (Temurin / OpenJDK)
 - **Android SDK 35** (`compileSdk = 35`, `targetSdk = 35`, `minSdk = 29`)
-- **Gradle 8.11.1** (у репозиторії навмисно відсутній `gradlew`)
+- **Gradle 8.11.1** (вбудовано через `./gradlew`)
 
 ### Локальна збірка
 ```bash
-gradle :app:assembleDebug
+./gradlew :app:testDebugUnitTest :app:assembleDebug
 ```
 Зібраний APK зберігається за шляхом:
 ```text

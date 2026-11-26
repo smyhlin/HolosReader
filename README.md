@@ -59,11 +59,11 @@
 ### Requirements
 - **JDK 17** (Temurin / OpenJDK)
 - **Android SDK 35** (`compileSdk = 35`, `targetSdk = 35`, `minSdk = 29`)
-- **Gradle 8.11.1** (note: this repository intentionally does not bundle `gradlew`)
+- **Gradle 8.11.1** (bundled via `./gradlew`)
 
 ### Local Build
 ```bash
-gradle :app:assembleDebug
+./gradlew :app:testDebugUnitTest :app:assembleDebug
 ```
 The compiled APK is written to:
 ```text
