@@ -29,6 +29,26 @@ class ReaderPreferences(context: Context) {
         set(v) = prefs.edit().putString("app_language", v).apply()
 
     // --- TTS & Voices ---
+    var selectedTtsModel: String
+        get() = prefs.getString("tts_model_id", TtsModelId.HOLOS_INT8.id) ?: TtsModelId.HOLOS_INT8.id
+        set(v) = prefs.edit().putString("tts_model_id", v).apply()
+
+    var selectedTtsModelId: TtsModelId
+        get() = TtsModelId.fromId(selectedTtsModel)
+        set(v) { selectedTtsModel = v.id }
+
+    var supertonicEnglishPronunciation: Boolean
+        get() = prefs.getBoolean("supertonic_en_pronunciation", false)
+        set(v) = prefs.edit().putBoolean("supertonic_en_pronunciation", v).apply()
+
+    var supertonicSteps: Int
+        get() = prefs.getInt("supertonic_steps", 5).coerceIn(2, 12)
+        set(v) = prefs.edit().putInt("supertonic_steps", v.coerceIn(2, 12)).apply()
+
+    var firstLaunchModelPromptShown: Boolean
+        get() = prefs.getBoolean("first_launch_model_prompt_shown", false)
+        set(v) = prefs.edit().putBoolean("first_launch_model_prompt_shown", v).apply()
+
     var selectedVoice: String?
         get() = prefs.getString("voice", null)
         set(v) = prefs.edit().putString("voice", v).apply()
