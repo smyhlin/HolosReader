@@ -49,7 +49,11 @@ sealed class StressLookupResult {
  * (including 36,414 homographs with morphological Case/Number/UPOS tags) compiled from
  * patriotyk/ukrainian-word-stress («Словники України»).
  */
-class UkrainianStressDict(file: File) : Closeable {
+fun interface StressDictionaryLookup {
+    fun lookup(wordLower: String): StressLookupResult?
+}
+
+class UkrainianStressDict(file: File) : StressDictionaryLookup, Closeable {
 
     private val raf = RandomAccessFile(file, "r")
     private val channel: FileChannel = raf.channel
@@ -71,7 +75,7 @@ class UkrainianStressDict(file: File) : Closeable {
         keyTableOffset = indexOffset + blockCount * 4
     }
 
-    fun lookup(wordLower: String): StressLookupResult? {
+    override fun lookup(wordLower: String): StressLookupResult? {
         if (wordLower.isEmpty() || blockCount == 0) return null
         val target = wordLower.toByteArray(Charsets.UTF_8)
 

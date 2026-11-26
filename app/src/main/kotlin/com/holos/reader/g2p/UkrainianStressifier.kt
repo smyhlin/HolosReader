@@ -20,7 +20,7 @@ fun interface ContextualHomographResolver {
 }
 
 class UkrainianStressifier(
-    private val dict: UkrainianStressDict?,
+    private val dict: StressDictionaryLookup?,
     private val overrides: UserStressOverrides? = null,
     private val neuralAccentor: WordAccentor? = null,
     @Volatile var contextualResolver: ContextualHomographResolver? = null,
@@ -41,10 +41,11 @@ class UkrainianStressifier(
         private val WORD_REGEX = Regex("[А-ЩЬЮЯҐЄІЇа-щьюяґєії'’ʼ\\u0301\\u0300]+")
         private val APOSTROPHE_REGEX = Regex("[’`ʼ]")
 
+        // True monosyllabic clitics only; multi-syllable words (але́, пе́ред, че́рез, бі́ля, се́ред) carry real stress (H20)
         private val UNSTRESSED_WORDS = setOf(
             "в", "у", "з", "із", "зі", "до", "на", "по", "за", "під", "над", "при", "про",
-            "без", "від", "для", "між", "через", "перед", "біля", "крім", "серед",
-            "і", "й", "та", "а", "але", "бо", "що", "щоб", "як", "чи", "ні", "не", "би", "б", "же", "ж"
+            "без", "від", "для", "між", "крім",
+            "і", "й", "та", "а", "бо", "що", "щоб", "як", "чи", "ні", "не", "би", "б", "же", "ж"
         )
 
         private val GEN_PREPOSITIONS = setOf(

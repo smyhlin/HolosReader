@@ -77,21 +77,43 @@ class ContextualStressOnnx @JvmOverloads constructor(
         val relStart = (wordStart - winStart).coerceAtLeast(0)
         val relEnd = (wordEnd - winStart).coerceAtMost(window.length)
 
-        val enc = tokenizer.encode(window, maxLength = 160)
-        val seqLen = enc.inputIds.size
-        val wordMask = FloatArray(seqLen)
-        var hitCount = 0
-        for (i in enc.spans.indices) {
-            val sp = enc.spans[i]
-            if (sp.charStart >= 0 && sp.charEnd > relStart && sp.charStart < relEnd) {
-                wordMask[i] = 1.0f
-                hitCount++
-            }
+        val fullEnc = tokenizer.encode(window, maxLength = 512)
+        val bodySpans = fullEnc.spans.subList(1, (fullEnc.spans.size - 1).coerceAtLeast(1))
+        val targetBodyIndices = bodySpans.indices.filter { idx ->
+            val sp = bodySpans[idx]
+            sp.charStart >= 0 && sp.charEnd > relStart && sp.charStart < relEnd
         }
-        if (hitCount == 0) return null
+        if (targetBodyIndices.isEmpty()) return null
 
-        OnnxTensor.createTensor(env, LongBuffer.wrap(enc.inputIds), longArrayOf(1L, seqLen.toLong())).use { ids ->
-            OnnxTensor.createTensor(env, LongBuffer.wrap(enc.attentionMask), longArrayOf(1L, seqLen.toLong())).use { mask ->
+        val maxBody = 158
+        val tFirst = targetBodyIndices.first()
+        val tLast = targetBodyIndices.last()
+        if (tLast - tFirst + 1 > maxBody) return null
+
+        val sliceStart = if (bodySpans.size <= maxBody) {
+            0
+        } else {
+            val center = (tFirst + tLast) / 2
+            (center - maxBody / 2).coerceIn(0, bodySpans.size - maxBody)
+        }
+        val sliceEnd = minOf(bodySpans.size, sliceStart + maxBody)
+        if (tFirst < sliceStart || tLast >= sliceEnd) return null
+
+        val sliceLen = sliceEnd - sliceStart
+        val seqLen = sliceLen + 2
+        val inputIds = LongArray(seqLen)
+        val attentionMask = LongArray(seqLen) { 1L }
+        val wordMask = FloatArray(seqLen)
+        inputIds[0] = tokenizer.bosId.toLong()
+        for (j in 0 until sliceLen) {
+            val bodyIdx = sliceStart + j
+            inputIds[j + 1] = bodySpans[bodyIdx].id.toLong()
+            if (bodyIdx in tFirst..tLast) wordMask[j + 1] = 1.0f
+        }
+        inputIds[seqLen - 1] = tokenizer.eosId.toLong()
+
+        OnnxTensor.createTensor(env, LongBuffer.wrap(inputIds), longArrayOf(1L, seqLen.toLong())).use { ids ->
+            OnnxTensor.createTensor(env, LongBuffer.wrap(attentionMask), longArrayOf(1L, seqLen.toLong())).use { mask ->
                 OnnxTensor.createTensor(env, FloatBuffer.wrap(wordMask), longArrayOf(1L, seqLen.toLong())).use { wMask ->
                     session.run(
                         mapOf(

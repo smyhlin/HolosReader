@@ -68,4 +68,11 @@ class G2pUnitTest {
         assertEquals("темно-сірий", UkrainianTextNormalizer.normalize("темно-сірий"))
         assertEquals("з-за спин", UkrainianTextNormalizer.normalize("з-за спин"))
     }
+    @Test
+    fun sentenceSplitterSplitsQuotedAndBracketedBoundaries() {
+        val text = "«Це перший рядок, досить довгий щоб не зливатися з наступним реченням.» (А це вже друге речення у дужках!) І третє речення наприкінці."
+        val parts = SentenceSplitter.split(text, maxChars = 90)
+        assertTrue(parts.size >= 2)
+        assertTrue(parts.all { it.length <= 90 })
+    }
 }
