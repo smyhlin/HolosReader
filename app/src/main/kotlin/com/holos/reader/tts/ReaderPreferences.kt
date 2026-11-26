@@ -45,6 +45,18 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getInt("supertonic_steps", 5).coerceIn(2, 12)
         set(v) = prefs.edit().putInt("supertonic_steps", v.coerceIn(2, 12)).apply()
 
+    var flashSrEnabled: Boolean
+        get() = prefs.getBoolean("addon_flash_sr_enabled", false)
+        set(v) = prefs.edit().putBoolean("addon_flash_sr_enabled", v).apply()
+
+    var emotionPacingEnabled: Boolean
+        get() = prefs.getBoolean("addon_emotion_pacing_enabled", false)
+        set(v) = prefs.edit().putBoolean("addon_emotion_pacing_enabled", v).apply()
+
+    var contextualStressEnabled: Boolean
+        get() = prefs.getBoolean("addon_contextual_stress_enabled", false)
+        set(v) = prefs.edit().putBoolean("addon_contextual_stress_enabled", v).apply()
+
     var firstLaunchModelPromptShown: Boolean
         get() = prefs.getBoolean("first_launch_model_prompt_shown", false)
         set(v) = prefs.edit().putBoolean("first_launch_model_prompt_shown", v).apply()
