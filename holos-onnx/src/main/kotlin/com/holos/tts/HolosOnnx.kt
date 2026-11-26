@@ -235,15 +235,15 @@ class HolosOnnx @JvmOverloads constructor(
         require(chunkFrames in 1..maxChunkFrames) { "chunkFrames must be between 1 and $maxChunkFrames" }
         if (isCancelled?.invoke() == true) return
         if (!trimSilence) {
-            decodeWindowsUnlockedCallbacks(encoded, chunkFrames, isCancelled, listener)
+            decodeWindows(encoded, chunkFrames, isCancelled, listener)
             return
         }
         val silence = encoded.durations[0] * samplesPerFrame
         var skip = max(0, silence - Math.round(SILENCE_MARGIN_SECONDS * sampleRate).toInt())
         val fade = if (skip > 0) FADE_IN_SAMPLES else 0
         var faded = 0
-        decodeWindowsUnlockedCallbacks(encoded, chunkFrames, isCancelled) { chunk ->
-            if (isCancelled?.invoke() == true) return@decodeWindowsUnlockedCallbacks
+        decodeWindows(encoded, chunkFrames, isCancelled) { chunk ->
+            if (isCancelled?.invoke() == true) return@decodeWindows
             val from = min(skip, chunk.size)
             skip -= from
             val trimmed = chunk.copyOfRange(from, chunk.size)
@@ -285,7 +285,7 @@ class HolosOnnx @JvmOverloads constructor(
      * Decodes each streaming window under [rwLock].read, then releases the lock BEFORE invoking
      * [listener.onChunk] so a blocked consumer queue can never deadlock [close] on [rwLock].write (H11).
      */
-    private fun decodeWindowsUnlockedCallbacks(
+    private fun decodeWindows(
         encoded: Encoded,
         chunkFrames: Int,
         isCancelled: (() -> Boolean)?,
