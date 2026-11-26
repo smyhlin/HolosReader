@@ -10,10 +10,20 @@ package com.holos.reader.g2p
  * - Tier 2: Bundled 1.17 MB ONNX neural accentor (`accentor-lite.onnx`) for OOV words & neutral homographs
  * - Tier 3: Prefix-stripping stem lookup + penultimate-syllable safety fallback
  */
+fun interface ContextualHomographResolver {
+    fun predictVowelOrdinal(
+        contextText: String,
+        wordStart: Int,
+        wordEnd: Int,
+        candidateVowelOrdinals: IntArray,
+    ): Int?
+}
+
 class UkrainianStressifier(
     private val dict: UkrainianStressDict?,
     private val overrides: UserStressOverrides? = null,
     private val neuralAccentor: WordAccentor? = null,
+    @Volatile var contextualResolver: ContextualHomographResolver? = null,
 ) {
 
     companion object {
@@ -78,7 +88,7 @@ class UkrainianStressifier(
                 if (gap.any { it == '.' || it == '!' || it == '?' || it == '…' || it == '\n' }) null
                 else APOSTROPHE_REGEX.replace(nm.value.lowercase(), "'")
             }
-            sb.append(stressWord(word, normalized, recentTokens.toList(), nextLower))
+            sb.append(stressWord(word, normalized, recentTokens.toList(), nextLower, text, m.range.first, m.range.last + 1))
 
             if (recentTokens.size >= 3) recentTokens.removeFirst()
             recentTokens.addLast(normalized)
@@ -93,6 +103,9 @@ class UkrainianStressifier(
         normalized: String,
         recentTokens: List<String>,
         nextLower: String?,
+        fullText: String = word,
+        wordStart: Int = 0,
+        wordEnd: Int = word.length,
     ): String {
         if (word.indexOf(ACUTE) >= 0 || word.indexOf(GRAVE) >= 0) return word
 
@@ -120,7 +133,7 @@ class UkrainianStressifier(
                 return insertStressMarks(word, single)
             }
             is StressLookupResult.Ambiguous -> {
-                val chosen = disambiguateHomograph(normalized, res.variants, recentTokens, nextLower)
+                val chosen = disambiguateHomograph(word, normalized, vowelIndices, res.variants, recentTokens, nextLower, fullText, wordStart, wordEnd)
                 val single = pickSingleStress(normalized, chosen)
                 return insertStressMarks(word, single)
             }
@@ -167,11 +180,37 @@ class UkrainianStressifier(
     }
 
     private fun disambiguateHomograph(
+        word: String,
         normalized: String,
+        vowelIndices: List<Int>,
         variants: List<StressVariant>,
         recentTokens: List<String>,
         nextLower: String?,
+        fullText: String,
+        wordStart: Int,
+        wordEnd: Int,
     ): IntArray {
+        // Tier 1.5: Optional sentence-level contextual ONNX homograph resolver (aloudreader)
+        val resolver = contextualResolver
+        if (resolver != null && variants.size > 1) {
+            val ordToVariant = LinkedHashMap<Int, StressVariant>()
+            for (v in variants) {
+                val p0 = v.positions.firstOrNull() ?: continue
+                val vOrd = vowelIndices.indexOf(p0 - 1)
+                if (vOrd >= 0 && vOrd !in ordToVariant) ordToVariant[vOrd] = v
+            }
+            if (ordToVariant.size > 1) {
+                val predictedOrd = try {
+                    resolver.predictVowelOrdinal(fullText, wordStart, wordEnd, ordToVariant.keys.toIntArray())
+                } catch (_: Throwable) {
+                    null
+                }
+                if (predictedOrd != null) {
+                    ordToVariant[predictedOrd]?.let { return it.positions }
+                }
+            }
+        }
+
         val prevLower = recentTokens.lastOrNull()
 
         // 0. Numeral disambiguation (e.g. "со́рок секунд", but NOT when followed by preposition/conjunction)

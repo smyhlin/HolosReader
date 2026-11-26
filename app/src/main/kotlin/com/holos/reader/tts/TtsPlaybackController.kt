@@ -6,6 +6,7 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
 import com.holos.reader.epub.ReaderBlock
+import com.holos.tts.FlashSrOnnx
 import com.holos.reader.ui.AppStrings
 import com.holos.reader.ui.BionicTextHelper
 import java.io.File
@@ -210,6 +211,9 @@ class TtsPlaybackController(context: Context) {
             if (!isCurrent(gen, sessionCancel)) return@Thread
 
             val customDir = HolosEngineHolder.getCustomVoicesDir(appContext)
+            val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(appContext) else null
+            val emotionClassifier = HolosEngineHolder.getEmotionClassifier(appContext)
+            val outputSampleRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
             val defaultVoice = prefs.selectedVoice?.takeIf {
                 it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
             } ?: engine.voices.firstOrNull()
@@ -255,12 +259,14 @@ class TtsPlaybackController(context: Context) {
                                             customVoicesDir = customDir,
                                             supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
                                             supertonicSteps = prefs.supertonicSteps,
+                                            flashSr = flashSr,
+                                            emotionClassifier = emotionClassifier,
                                         ) { chunk ->
                                             speechFrames += chunk.size.toLong()
                                             offerBlocking(queue, Packet.Audio(i, chunk), gen, sessionCancel)
                                         }
                                         if (segIdx < segments.lastIndex && isCurrent(gen, sessionCancel)) {
-                                            val rolePause = FloatArray((engine.sampleRate * 135) / 1000)
+                                            val rolePause = FloatArray((outputSampleRate * 135) / 1000)
                                             speechFrames += rolePause.size.toLong()
                                             offerBlocking(queue, Packet.Audio(i, rolePause), gen, sessionCancel)
                                         }
@@ -276,6 +282,8 @@ class TtsPlaybackController(context: Context) {
                                         customVoicesDir = customDir,
                                         supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
                                         supertonicSteps = prefs.supertonicSteps,
+                                        flashSr = flashSr,
+                                        emotionClassifier = emotionClassifier,
                                     ) { chunk ->
                                         speechFrames += chunk.size.toLong()
                                         offerBlocking(queue, Packet.Audio(i, chunk), gen, sessionCancel)
@@ -288,7 +296,7 @@ class TtsPlaybackController(context: Context) {
 
                             if (isCurrent(gen, sessionCancel) && speechFrames > 0L) {
                                 blockSpeechFrames[i] = speechFrames
-                                val paraPause = FloatArray((engine.sampleRate * 260) / 1000)
+                                val paraPause = FloatArray((outputSampleRate * 260) / 1000)
                                 offerBlocking(queue, Packet.Audio(i, paraPause), gen, sessionCancel)
                                 offerBlocking(queue, Packet.BlockEnd(i, speechFrames), gen, sessionCancel)
                             }
@@ -321,7 +329,7 @@ class TtsPlaybackController(context: Context) {
                 gen = gen,
                 sessionCancel = sessionCancel,
                 blocks = blocks,
-                sampleRate = engine.sampleRate,
+                sampleRate = outputSampleRate,
                 speed = speed,
                 queue = queue,
                 blockSpeechFrames = blockSpeechFrames,

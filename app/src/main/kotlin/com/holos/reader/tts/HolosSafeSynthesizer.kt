@@ -5,7 +5,9 @@ import com.holos.reader.g2p.UkrainianIpa
 import com.holos.reader.g2p.UkrainianStressifier
 import com.holos.reader.g2p.UkrainianTextNormalizer
 import com.holos.tts.HolosOnnx
+import com.holos.tts.FlashSrOnnx
 import com.holos.tts.SupertonicOnnx
+import com.holos.tts.UkrainianEmotionOnnx
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -30,24 +32,50 @@ object HolosSafeSynthesizer {
         customVoicesDir: File? = null,
         supertonicEnglishPronunciation: Boolean = false,
         supertonicSteps: Int = 5,
+        flashSr: FlashSrOnnx? = null,
+        emotionClassifier: UkrainianEmotionOnnx? = null,
         onChunk: (FloatArray) -> Unit,
     ) {
+        val emotion = try {
+            emotionClassifier?.classify(rawParagraph)
+        } catch (_: Throwable) {
+            null
+        }
+        val effectiveSpeed = if (emotion != null) (speed * emotion.speedMultiplier).coerceIn(0.5f, 2.5f) else speed
+        val pauseMs = emotion?.pauseMs ?: INTER_SENTENCE_PAUSE_MS
+        val emitChunk: (FloatArray) -> Unit = if (flashSr != null && engine is HolosTtsEngine.Holos) {
+            { raw ->
+                val enhanced = try {
+                    flashSr.enhanceTo48k(raw, engine.sampleRate)
+                } catch (_: Throwable) {
+                    FlashSrOnnx.resampleLinear(raw, engine.sampleRate, FlashSrOnnx.OUTPUT_RATE)
+                }
+                if (enhanced.isNotEmpty()) onChunk(enhanced)
+            }
+        } else {
+            onChunk
+        }
+        val outputRate = if (flashSr != null && engine is HolosTtsEngine.Holos) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
         when (engine) {
             is HolosTtsEngine.Holos -> synthesizeHolos(
                 engine = engine.onnx,
                 stressifier = stressifier,
                 rawParagraph = rawParagraph,
                 voice = voice,
-                speed = speed,
+                speed = effectiveSpeed,
+                pauseMs = pauseMs,
+                outputSampleRate = outputRate,
                 cancelled = cancelled,
                 customVoicesDir = customVoicesDir,
-                onChunk = onChunk,
+                onChunk = emitChunk,
+                onRawPause = onChunk,
             )
             is HolosTtsEngine.Supertonic -> synthesizeSupertonic(
                 engine = engine.onnx,
                 rawParagraph = rawParagraph,
                 voice = voice,
-                speed = speed,
+                speed = effectiveSpeed,
+                pauseMs = pauseMs,
                 steps = supertonicSteps,
                 englishPronunciation = supertonicEnglishPronunciation,
                 cancelled = cancelled,
@@ -61,6 +89,7 @@ object HolosSafeSynthesizer {
         rawParagraph: String,
         voice: String?,
         speed: Float,
+        pauseMs: Int,
         steps: Int,
         englishPronunciation: Boolean,
         cancelled: AtomicBoolean,
@@ -70,7 +99,7 @@ object HolosSafeSynthesizer {
         if (normalized.isBlank()) return
 
         val sentences = SentenceSplitter.split(normalized, maxChars = 240)
-        val pauseSamples = FloatArray((engine.sampleRate * INTER_SENTENCE_PAUSE_MS) / 1000)
+        val pauseSamples = FloatArray((engine.sampleRate * pauseMs) / 1000)
         val switchPause = FloatArray((engine.sampleRate * LANG_SWITCH_PAUSE_MS) / 1000)
 
         for ((idx, sentence) in sentences.withIndex()) {
@@ -105,9 +134,12 @@ object HolosSafeSynthesizer {
         rawParagraph: String,
         voice: String?,
         speed: Float,
+        pauseMs: Int,
+        outputSampleRate: Int,
         cancelled: AtomicBoolean,
         customVoicesDir: File?,
         onChunk: (FloatArray) -> Unit,
+        onRawPause: (FloatArray) -> Unit,
     ) {
         val normalized = UkrainianTextNormalizer.normalize(rawParagraph, ensureTerminalPunctuation = true)
         if (normalized.isBlank()) return
@@ -118,7 +150,7 @@ object HolosSafeSynthesizer {
 
         val safeMaxChars = (180f * speed.coerceIn(0.6f, 1.5f)).toInt().coerceIn(90, 220)
         val sentences = SentenceSplitter.split(normalized, maxChars = safeMaxChars)
-        val pauseSamples = FloatArray((engine.sampleRate * INTER_SENTENCE_PAUSE_MS) / 1000)
+        val pauseSamples = FloatArray((outputSampleRate * pauseMs) / 1000)
 
         for ((idx, sentence) in sentences.withIndex()) {
             if (cancelled.get()) return
@@ -126,7 +158,7 @@ object HolosSafeSynthesizer {
             val cleanSent = if (trimmedSent.isNotEmpty() && trimmedSent.last() !in ".?!:…") "$trimmedSent." else trimmedSent
             synthesizeSafeUtterance(engine, stressifier, cleanSent, voice, customVec, speed, cancelled, depth = 0, onChunk)
             if (!cancelled.get() && idx < sentences.lastIndex) {
-                onChunk(pauseSamples)
+                onRawPause(pauseSamples)
             }
         }
     }

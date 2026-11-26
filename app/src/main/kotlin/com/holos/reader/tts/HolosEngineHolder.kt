@@ -9,7 +9,11 @@ import com.holos.reader.g2p.UkrainianStressifier
 import com.holos.reader.g2p.UserStressOverrides
 import com.holos.reader.ui.AppStrings
 import com.holos.tts.HolosOnnx
+import com.holos.tts.ContextualStressOnnx
+import com.holos.tts.FlashSrOnnx
 import com.holos.tts.SupertonicOnnx
+import com.holos.tts.UkrainianEmotionOnnx
+import com.holos.reader.g2p.ContextualHomographResolver
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.InputStream
@@ -96,6 +100,95 @@ object HolosEngineHolder {
      * Closes the active [HolosOnnx] engine so updated CPU threads or hardware accelerator
      * settings take effect immediately on the next synthesis without restarting the app.
      */
+
+    private val addonLock = Any()
+    @Volatile
+    private var flashSr: FlashSrOnnx? = null
+    @Volatile
+    private var emotionClassifier: UkrainianEmotionOnnx? = null
+    @Volatile
+    private var contextualStress: ContextualStressOnnx? = null
+
+    fun resetAddons() {
+        synchronized(addonLock) {
+            try { flashSr?.close() } catch (_: Throwable) {}
+            try { emotionClassifier?.close() } catch (_: Throwable) {}
+            try { contextualStress?.close() } catch (_: Throwable) {}
+            flashSr = null
+            emotionClassifier = null
+            contextualStress = null
+            stressifier?.contextualResolver = null
+        }
+    }
+
+    fun getFlashSr(context: Context): FlashSrOnnx? {
+        val appCtx = context.applicationContext
+        val prefs = ReaderPreferences(appCtx)
+        if (!prefs.flashSrEnabled || !OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.FLASH_SR)) {
+            return null
+        }
+        flashSr?.let { return it }
+        synchronized(addonLock) {
+            flashSr?.let { return it }
+            val modelFile = File(OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.FLASH_SR), "model.onnx")
+            return try {
+                FlashSrOnnx(modelFile).also { flashSr = it }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to load FlashSR ONNX", t)
+                null
+            }
+        }
+    }
+
+    fun getEmotionClassifier(context: Context): UkrainianEmotionOnnx? {
+        val appCtx = context.applicationContext
+        val prefs = ReaderPreferences(appCtx)
+        if (!prefs.emotionPacingEnabled || !OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.UK_EMOTION)) {
+            return null
+        }
+        emotionClassifier?.let { return it }
+        synchronized(addonLock) {
+            emotionClassifier?.let { return it }
+            val dir = OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.UK_EMOTION)
+            return try {
+                UkrainianEmotionOnnx(dir).also { emotionClassifier = it }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to load UkrainianEmotionOnnx", t)
+                null
+            }
+        }
+    }
+
+    fun syncContextualStress(context: Context, target: UkrainianStressifier) {
+        val appCtx = context.applicationContext
+        val prefs = ReaderPreferences(appCtx)
+        if (!prefs.contextualStressEnabled || !OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.CONTEXTUAL_STRESS)) {
+            target.contextualResolver = null
+            return
+        }
+        val existing = contextualStress
+        if (existing != null) {
+            target.contextualResolver = ContextualHomographResolver { txt, s, e, cands ->
+                existing.predictVowelOrdinal(txt, s, e, cands)
+            }
+            return
+        }
+        synchronized(addonLock) {
+            val loaded = contextualStress ?: try {
+                val dir = OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.CONTEXTUAL_STRESS)
+                ContextualStressOnnx(dir).also { contextualStress = it }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to load ContextualStressOnnx", t)
+                null
+            }
+            target.contextualResolver = loaded?.let { onnx ->
+                ContextualHomographResolver { txt, s, e, cands ->
+                    onnx.predictVowelOrdinal(txt, s, e, cands)
+                }
+            }
+        }
+    }
+
     fun resetEngine() {
         synchronized(engineLock) {
             val old = engine
@@ -138,7 +231,7 @@ object HolosEngineHolder {
     }
 
     fun getStressifier(context: Context): UkrainianStressifier {
-        stressifier?.let { return it }
+        stressifier?.let { syncContextualStress(context, it); return it }
         synchronized(stressLock) {
             stressifier?.let { return it }
             val appCtx = context.applicationContext
@@ -177,7 +270,7 @@ object HolosEngineHolder {
             }
 
             val overrides = getUserOverrides(appCtx)
-            return UkrainianStressifier(dict, overrides, accentor).also { stressifier = it }
+            return UkrainianStressifier(dict, overrides, accentor).also { stressifier = it; syncContextualStress(appCtx, it) }
         }
     }
 
