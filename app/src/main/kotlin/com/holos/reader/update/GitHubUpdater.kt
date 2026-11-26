@@ -165,7 +165,7 @@ object GitHubUpdater {
         supportedAbis: Array<String>,
     ): Triple<String, String, Long>? {
         for (abi in supportedAbis) {
-            val tokenRe = Regex("(?i)(?:^|[-_.])${Regex.escape(abi)}(?:[-_.]|\\.apk$)")
+            val tokenRe = Regex("(?i)(?:^|[-.])${Regex.escape(abi)}(?:[-.]|\\.apk$)")
             apkAssets.firstOrNull { tokenRe.containsMatchIn(it.first) }?.let { return it }
         }
         val univRe = Regex("(?i)(?:^|[-_.])universal(?:[-_.]|\\.apk$)")
