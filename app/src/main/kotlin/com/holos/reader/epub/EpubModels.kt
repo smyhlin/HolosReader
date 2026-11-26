@@ -30,12 +30,14 @@ data class BookRecord(
     val readingTimeSec: Long = 0L,
     val addedAtMs: Long = System.currentTimeMillis(),
     val lastReadAtMs: Long = 0L,
+    val contentSha256: String? = null,
+    val parserVersion: Int = 1,
 ) {
     val progressPercent: Int
         get() {
             if (status == ReadingStatus.FINISHED) return 100
-            if (chapterCount <= 1) return if (lastReadAtMs > 0L) 100 else 0
-            return ((lastChapterIndex * 100) / (chapterCount - 1).coerceAtLeast(1)).coerceIn(0, 100)
+            if (chapterCount <= 1) return if (lastBlockIndex > 0) 50 else 0
+            return ((lastChapterIndex * 100) / (chapterCount - 1).coerceAtLeast(1)).coerceIn(0, 99)
         }
 }
 
@@ -106,6 +108,7 @@ data class ReaderBlock(
     val text: String,
     val spans: List<InlineSpan> = emptyList(),
     val imageEntryPath: String? = null,
+    val anchorId: String? = null,
 ) {
     val isSpeakable: Boolean
         get() = type != BlockType.HR && type != BlockType.IMAGE && text.isNotBlank()

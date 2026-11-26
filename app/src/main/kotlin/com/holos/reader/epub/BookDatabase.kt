@@ -14,6 +14,8 @@ import java.util.Locale
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
+import java.security.MessageDigest
+import java.util.zip.CRC32
 import java.util.zip.ZipOutputStream
 
 /**
@@ -55,7 +57,9 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 tags TEXT NOT NULL DEFAULT '',
                 reading_time_sec INTEGER NOT NULL DEFAULT 0,
                 added_at INTEGER NOT NULL,
-                last_read_at INTEGER NOT NULL DEFAULT 0
+                last_read_at INTEGER NOT NULL DEFAULT 0,
+                content_sha256 TEXT,
+                parser_version INTEGER NOT NULL DEFAULT 1
             )
         """)
         db.execSQL("""
@@ -100,12 +104,40 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         """)
     }
 
+    private fun existingColumns(db: SQLiteDatabase, table: String): Set<String> {
+        val cols = HashSet<String>()
+        db.rawQuery("PRAGMA table_info($table)", null).use { c ->
+            while (c.moveToNext()) cols.add(c.getString(1))
+        }
+        return cols
+    }
+
+    private fun ensureBookColumn(db: SQLiteDatabase, cols: MutableSet<String>, name: String, ddl: String) {
+        if (name !in cols) {
+            db.execSQL("ALTER TABLE books ADD COLUMN $name $ddl")
+            cols.add(name)
+        }
+    }
+
+    private fun upsertReadingActivity(db: SQLiteDatabase, dayKey: String, addSec: Long, addPages: Long) {
+        // Stock Android 10 (API 29) ships SQLite 3.22.0 which does NOT support UPSERT (ON CONFLICT DO UPDATE).
+        db.execSQL(
+            "INSERT OR IGNORE INTO reading_activity(day_key, seconds, pages) VALUES(?, 0, 0)",
+            arrayOf<Any>(dayKey),
+        )
+        db.execSQL(
+            "UPDATE reading_activity SET seconds = seconds + ?, pages = pages + ? WHERE day_key = ?",
+            arrayOf<Any>(addSec, addPages, dayKey),
+        )
+    }
+
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        val bookCols = existingColumns(db, "books").toMutableSet()
         if (oldVersion < 2) {
-            try { db.execSQL("ALTER TABLE books ADD COLUMN description TEXT NOT NULL DEFAULT ''") } catch (_: Exception) {}
-            try { db.execSQL("ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT 'UNREAD'") } catch (_: Exception) {}
-            try { db.execSQL("ALTER TABLE books ADD COLUMN tags TEXT NOT NULL DEFAULT ''") } catch (_: Exception) {}
-            try { db.execSQL("ALTER TABLE books ADD COLUMN reading_time_sec INTEGER NOT NULL DEFAULT 0") } catch (_: Exception) {}
+            ensureBookColumn(db, bookCols, "description", "TEXT NOT NULL DEFAULT ''")
+            ensureBookColumn(db, bookCols, "status", "TEXT NOT NULL DEFAULT 'UNREAD'")
+            ensureBookColumn(db, bookCols, "tags", "TEXT NOT NULL DEFAULT ''")
+            ensureBookColumn(db, bookCols, "reading_time_sec", "INTEGER NOT NULL DEFAULT 0")
         }
         if (oldVersion < 3) {
             db.execSQL("""
@@ -115,7 +147,6 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                     pages INTEGER NOT NULL DEFAULT 0
                 )
             """)
-            // Backfill existing book reading time so historical progress appears immediately
             val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
             db.rawQuery("SELECT reading_time_sec, last_read_at, last_chapter FROM books WHERE reading_time_sec > 0", null).use { c ->
                 while (c.moveToNext()) {
@@ -123,13 +154,14 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                     val ts = c.getLong(1).takeIf { it > 0L } ?: System.currentTimeMillis()
                     val pages = c.getInt(2).coerceAtLeast(1).toLong()
                     val dayKey = fmt.format(Date(ts))
-                    db.execSQL(
-                        "INSERT INTO reading_activity(day_key, seconds, pages) VALUES(?,?,?) " +
-                            "ON CONFLICT(day_key) DO UPDATE SET seconds = seconds + excluded.seconds, pages = pages + excluded.pages",
-                        arrayOf<Any>(dayKey, sec, pages)
-                    )
+                    upsertReadingActivity(db, dayKey, sec, pages)
                 }
             }
+        }
+        if (oldVersion < 4) {
+            ensureBookColumn(db, bookCols, "content_sha256", "TEXT")
+            ensureBookColumn(db, bookCols, "parser_version", "INTEGER NOT NULL DEFAULT 1")
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_sha256 ON books(content_sha256)")
         }
     }
 
@@ -138,16 +170,95 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     fun getCoverFile(record: BookRecord): File? =
         record.coverFileName?.let { File(coversDir, it) }?.takeIf { it.exists() }
 
+    fun isDetached(record: BookRecord): Boolean = !getBookFile(record).exists()
+
+    fun exportBookEpub(record: BookRecord, targetUri: Uri) {
+        val src = getBookFile(record)
+        require(src.exists() && src.length() > 0L) { "Файл книги відсутній на пристрої" }
+        appCtx.contentResolver.openOutputStream(targetUri)?.use { out ->
+            src.inputStream().use { input -> input.copyTo(out, 1 shl 16) }
+        } ?: throw IllegalStateException("Не вдалося відкрити файл для експорту")
+    }
+
+    fun relinkBookFile(bookId: String, uri: Uri, forceLegacy: Boolean = false): BookRecord {
+        val existing = getBook(bookId) ?: throw IllegalArgumentException("Книгу не знайдено")
+        val staged = File(booksDir, "relink_${bookId}_${System.nanoTime()}.part")
+        try {
+            val sha256 = copyUriBoundedWithSha256(uri, staged)
+            if (existing.contentSha256 != null) {
+                require(existing.contentSha256.equals(sha256, ignoreCase = true)) {
+                    "Обраний файл не збігається з оригінальною книгою (SHA-256 mismatch)"
+                }
+            } else {
+                require(forceLegacy) {
+                    "Неможливо автоматично підтвердити стару книгу без SHA-256; потрібне підтвердження"
+                }
+            }
+            val meta = EpubStreamingParser.parsePackage(staged)
+            require(meta.spine.isNotEmpty()) { "EPUB не містить жодного розділу" }
+            val dest = getBookFile(existing)
+            if (dest.exists()) dest.delete()
+            check(staged.renameTo(dest)) { "Не вдалося прив’язати файл книги" }
+            writableDatabase.update(
+                "books",
+                ContentValues().apply { put("content_sha256", sha256) },
+                "id=?",
+                arrayOf(bookId),
+            )
+            return getBook(bookId) ?: existing.copy(contentSha256 = sha256)
+        } catch (t: Throwable) {
+            staged.delete()
+            throw t
+        }
+    }
+
+    private fun copyUriBoundedWithSha256(uri: Uri, target: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        var totalBytes = 0L
+        val buf = ByteArray(1 shl 16)
+        appCtx.contentResolver.openInputStream(uri)?.use { input ->
+            FileOutputStream(target).use { output ->
+                while (true) {
+                    val n = input.read(buf)
+                    if (n <= 0) break
+                    totalBytes += n
+                    if (totalBytes > MAX_IMPORT_BYTES) {
+                        throw IllegalArgumentException("Файл EPUB перевищує ліміт 512 МБ")
+                    }
+                    md.update(buf, 0, n)
+                    output.write(buf, 0, n)
+                }
+                output.fd.sync()
+            }
+        } ?: throw IllegalArgumentException("Не вдалося відкрити файл EPUB")
+        require(totalBytes > 0L) { "Порожній файл EPUB" }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun computeFileSha256(file: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(1 shl 16)
+        file.inputStream().use { input ->
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
+    }
+
     fun importFromUri(uri: Uri, displayName: String?): BookRecord {
         val id = UUID.randomUUID().toString().substring(0, 12)
         val safeName = "$id.epub"
-        val destFile = File(booksDir, safeName)
-
-        appCtx.contentResolver.openInputStream(uri)?.use { input ->
-            destFile.outputStream().use { output -> input.copyTo(output, 1 shl 16) }
-        } ?: throw IllegalArgumentException("Не вдалося відкрити файл EPUB")
-
-        return indexLocalEpubFile(id, safeName, destFile, displayName)
+        val stagedFile = File(booksDir, "$safeName.part")
+        val sha256 = try {
+            copyUriBoundedWithSha256(uri, stagedFile)
+        } catch (t: Throwable) {
+            stagedFile.delete()
+            throw t
+        }
+        return indexLocalEpubFile(id, safeName, stagedFile, displayName, sha256)
     }
 
     /**
@@ -194,42 +305,74 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         val safeName = "$id.epub"
         val destFile = File(booksDir, safeName)
         val cleanTitle = title.trim().ifEmpty { "Вставлений текст" }
-        buildSingleChapterEpub(destFile, cleanTitle, bodyText)
-        return indexLocalEpubFile(id, safeName, destFile, cleanTitle)
+        val staged = File(booksDir, "$safeName.part")
+        buildSingleChapterEpub(staged, cleanTitle, bodyText)
+        val sha256 = computeFileSha256(staged)
+        return indexLocalEpubFile(id, safeName, staged, cleanTitle, sha256)
     }
 
-    private fun indexLocalEpubFile(id: String, safeName: String, destFile: File, displayName: String?): BookRecord {
+    private fun findHealthyBySha256(sha256: String): BookRecord? {
+        readableDatabase.rawQuery(
+            "SELECT id FROM books WHERE content_sha256=? LIMIT 1",
+            arrayOf(sha256),
+        ).use { c ->
+            if (c.moveToFirst()) {
+                val rec = getBook(c.getString(0))
+                if (rec != null && !isDetached(rec)) return rec
+            }
+        }
+        return null
+    }
+
+    private fun indexLocalEpubFile(
+        id: String,
+        safeName: String,
+        stagedFile: File,
+        displayName: String?,
+        sha256: String,
+    ): BookRecord {
+        // Deduplicate strictly by exact content SHA-256 (only when existing file is healthy on disk)
+        findHealthyBySha256(sha256)?.let { existing ->
+            stagedFile.delete()
+            return existing
+        }
+
         val meta = try {
-            EpubStreamingParser.parsePackage(destFile)
+            EpubStreamingParser.parsePackage(stagedFile).also {
+                require(it.spine.isNotEmpty()) { "EPUB не містить жодного розділу" }
+            }
         } catch (e: Exception) {
-            destFile.delete()
+            stagedFile.delete()
             throw e
         }
 
         var coverName: String? = null
         if (meta.coverEntryPath != null) {
-            val bytes = ZipFile(destFile).use { zip ->
-                EpubStreamingParser.extractEntryBytes(zip, meta.coverEntryPath)
+            try {
+                val bytes = ZipFile(stagedFile).use { zip ->
+                    EpubStreamingParser.extractEntryBytes(zip, meta.coverEntryPath)
+                }
+                if (bytes != null && bytes.isNotEmpty()) {
+                    val rawExt = meta.coverEntryPath.substringAfterLast('.', "jpg").lowercase()
+                    val ext = if (rawExt in setOf("jpg", "jpeg", "png", "webp", "gif")) rawExt else "jpg"
+                    coverName = "$id.$ext"
+                    File(coversDir, coverName).writeBytes(bytes)
+                }
+            } catch (_: Throwable) {
+                coverName = null
             }
-            if (bytes != null && bytes.isNotEmpty()) {
-                val rawExt = meta.coverEntryPath.substringAfterLast('.', "jpg").lowercase()
-                val ext = if (rawExt in setOf("jpg", "jpeg", "png", "webp", "gif")) rawExt else "jpg"
-                coverName = "$id.$ext"
-                File(coversDir, coverName).writeBytes(bytes)
-            }
+        }
+
+        val destFile = File(booksDir, safeName)
+        if (destFile.exists()) destFile.delete()
+        if (!stagedFile.renameTo(destFile)) {
+            stagedFile.delete()
+            coverName?.let { File(coversDir, it).delete() }
+            throw IllegalStateException("Не вдалося зберегти файл EPUB")
         }
 
         val fallbackTitle = displayName?.removeSuffix(".epub")?.takeIf { it.isNotBlank() }
         val resolvedTitle = meta.title.ifBlank { fallbackTitle ?: "Без назви" }
-
-        // Deduplicate: if a book with identical title, author, and chapter count already exists
-        // (e.g. opened again from Google Drive), clean up the temp copy and return the existing record.
-        val existing = findDuplicateBook(resolvedTitle, meta.author, meta.spine.size)
-        if (existing != null) {
-            destFile.delete()
-            coverName?.let { File(coversDir, it).delete() }
-            return existing
-        }
 
         val record = BookRecord(
             id = id,
@@ -242,6 +385,8 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             chapterCount = meta.spine.size,
             status = ReadingStatus.UNREAD,
             addedAtMs = System.currentTimeMillis(),
+            contentSha256 = sha256,
+            parserVersion = CURRENT_PARSER_VERSION,
         )
 
         val db = writableDatabase
@@ -263,6 +408,8 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 put("reading_time_sec", 0L)
                 put("added_at", record.addedAtMs)
                 put("last_read_at", 0L)
+                put("content_sha256", record.contentSha256)
+                put("parser_version", record.parserVersion)
             })
 
             val spineStmt = db.compileStatement("INSERT INTO spine(book_id, idx, item_id, href, media_type) VALUES(?,?,?,?,?)")
@@ -288,6 +435,10 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 tocStmt.executeInsert()
             }
             db.setTransactionSuccessful()
+        } catch (t: Throwable) {
+            destFile.delete()
+            coverName?.let { File(coversDir, it).delete() }
+            throw t
         } finally {
             db.endTransaction()
         }
@@ -317,7 +468,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         }
         readableDatabase.rawQuery(
             "SELECT id,file_name,title,author,description,language,cover_file,chapter_count," +
-                "last_chapter,last_block,status,tags,reading_time_sec,added_at,last_read_at " +
+                "last_chapter,last_block,status,tags,reading_time_sec,added_at,last_read_at,content_sha256,parser_version " +
                 "FROM books $whereSql $orderSql",
             args.toTypedArray()
         ).use { c ->
@@ -339,6 +490,8 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                         readingTimeSec = c.getLong(12),
                         addedAtMs = c.getLong(13),
                         lastReadAtMs = c.getLong(14),
+                        contentSha256 = if (c.isNull(15)) null else c.getString(15),
+                        parserVersion = c.getInt(16),
                     )
                 )
             }
@@ -349,7 +502,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     fun getBook(bookId: String): BookRecord? {
         readableDatabase.rawQuery(
             "SELECT id,file_name,title,author,description,language,cover_file,chapter_count," +
-                "last_chapter,last_block,status,tags,reading_time_sec,added_at,last_read_at " +
+                "last_chapter,last_block,status,tags,reading_time_sec,added_at,last_read_at,content_sha256,parser_version " +
                 "FROM books WHERE id=? LIMIT 1",
             arrayOf(bookId)
         ).use { c ->
@@ -370,6 +523,8 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 readingTimeSec = c.getLong(12),
                 addedAtMs = c.getLong(13),
                 lastReadAtMs = c.getLong(14),
+                contentSha256 = if (c.isNull(15)) null else c.getString(15),
+                parserVersion = c.getInt(16),
             )
         }
     }
@@ -424,33 +579,52 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         return out
     }
 
-    fun updateProgress(bookId: String, chapterIndex: Int, blockIndex: Int, addSeconds: Long = 0L) {
+    fun updateProgress(
+        bookId: String,
+        chapterIndex: Int,
+        blockIndex: Int,
+        addSeconds: Long = 0L,
+        reachedEnd: Boolean = false,
+    ) {
         val db = writableDatabase
         db.beginTransaction()
         try {
-            val existing = getBook(bookId) ?: return
+            var prevStatus = ReadingStatus.UNREAD
+            var prevChap = 0
+            var prevBlock = 0
+            var found = false
+            db.rawQuery(
+                "SELECT status, last_chapter, last_block FROM books WHERE id=? LIMIT 1",
+                arrayOf(bookId),
+            ).use { c ->
+                if (c.moveToFirst()) {
+                    found = true
+                    prevStatus = ReadingStatus.fromCode(c.getString(0))
+                    prevChap = c.getInt(1)
+                    prevBlock = c.getInt(2)
+                }
+            }
+            if (!found) return
+
             val newStatus = when {
-                existing.chapterCount > 0 && chapterIndex >= existing.chapterCount - 1 && blockIndex > 0 -> ReadingStatus.FINISHED
+                prevStatus == ReadingStatus.FINISHED -> ReadingStatus.FINISHED
+                reachedEnd -> ReadingStatus.FINISHED
                 else -> ReadingStatus.READING
             }
             val safeAddSec = addSeconds.coerceAtLeast(0L)
             val now = System.currentTimeMillis()
             db.execSQL(
                 "UPDATE books SET last_chapter=?, last_block=?, status=?, reading_time_sec = reading_time_sec + ?, last_read_at=? WHERE id=?",
-                arrayOf<Any>(chapterIndex, blockIndex, newStatus.code, safeAddSec, now, bookId)
+                arrayOf<Any>(chapterIndex, blockIndex, newStatus.code, safeAddSec, now, bookId),
             )
             val pagesDelta = when {
-                chapterIndex > existing.lastChapterIndex -> (chapterIndex - existing.lastChapterIndex).coerceAtMost(20).toLong()
-                chapterIndex == existing.lastChapterIndex && blockIndex > existing.lastBlockIndex && (blockIndex - existing.lastBlockIndex) >= 6 -> 1L
+                chapterIndex > prevChap -> (chapterIndex - prevChap).coerceAtMost(20).toLong()
+                chapterIndex == prevChap && blockIndex > prevBlock && (blockIndex - prevBlock) >= 6 -> 1L
                 else -> 0L
             }
             if (safeAddSec > 0L || pagesDelta > 0L) {
                 val dayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
-                db.execSQL(
-                    "INSERT INTO reading_activity(day_key, seconds, pages) VALUES(?,?,?) " +
-                        "ON CONFLICT(day_key) DO UPDATE SET seconds = seconds + excluded.seconds, pages = pages + excluded.pages",
-                    arrayOf<Any>(dayKey, safeAddSec, pagesDelta)
-                )
+                upsertReadingActivity(db, dayKey, safeAddSec, pagesDelta)
             }
             db.setTransactionSuccessful()
         } finally {
@@ -600,7 +774,9 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DB_NAME = "holos_reader.db"
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
+        private const val MAX_IMPORT_BYTES = 512L * 1024L * 1024L
+        const val CURRENT_PARSER_VERSION = 2
 
         fun buildSingleChapterEpub(outFile: File, title: String, bodyText: String) {
             fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -614,6 +790,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             val opf = """<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">urn:uuid:${UUID.randomUUID()}</dc:identifier>
     <dc:title>${esc(title)}</dc:title>
     <dc:creator>Локальний текст</dc:creator>
     <dc:language>uk</dc:language>
@@ -633,7 +810,16 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                     zos.write(content.toByteArray(Charsets.UTF_8))
                     zos.closeEntry()
                 }
-                put("mimetype", "application/epub+zip")
+                val mimeBytes = "application/epub+zip".toByteArray(Charsets.US_ASCII)
+                val mimeEntry = ZipEntry("mimetype").apply {
+                    method = ZipEntry.STORED
+                    size = mimeBytes.size.toLong()
+                    compressedSize = mimeBytes.size.toLong()
+                    crc = CRC32().apply { update(mimeBytes) }.value
+                }
+                zos.putNextEntry(mimeEntry)
+                zos.write(mimeBytes)
+                zos.closeEntry()
                 put("META-INF/container.xml", """<container version="1.0"><rootfiles><rootfile full-path="OEBPS/package.opf"/></rootfiles></container>""")
                 put("OEBPS/package.opf", opf)
                 put("OEBPS/nav.xhtml", nav)

@@ -2,6 +2,7 @@
 <full-backup-content>
     <exclude domain="file" path="books/" />
     <exclude domain="file" path="covers/" />
+    <exclude domain="file" path="custom_voices/" />
     <exclude domain="file" path="offline_chapters/" />
     <exclude domain="file" path="uk_stress_v2.bin" />
     <exclude domain="file" path="accentor-lite.onnx" />
