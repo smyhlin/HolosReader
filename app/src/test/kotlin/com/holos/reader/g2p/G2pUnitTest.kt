@@ -66,5 +66,6 @@ class G2pUnitTest {
         // Normal Ukrainian hyphenated words must stay untouched
         assertEquals("по-українськи", UkrainianTextNormalizer.normalize("по-українськи"))
         assertEquals("темно-сірий", UkrainianTextNormalizer.normalize("темно-сірий"))
+        assertEquals("з-за спин", UkrainianTextNormalizer.normalize("з-за спин"))
     }
 }

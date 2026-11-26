@@ -194,7 +194,7 @@ object UkrainianTextNormalizer {
 
 
     private val RE_STUTTER_WORD = Regex(
-        """(?<![\p{L}-])([А-ЯІЇЄҐа-яіїєґ])-\1([а-яіїєґ]{2,})(?![\p{L}-])""",
+        """(?<![\p{L}-])([А-ЯІЇЄҐа-яіїєґ])-\1([а-яіїєґ]{1,})(?![\p{L}-])""",
         RegexOption.IGNORE_CASE,
     )
     private val RE_HYPHEN_STRETCH = Regex("""(?<![\p{L}-])([А-ЯІЇЄҐа-яіїєґ]{1,6}(?:-[А-ЯІЇЄҐа-яіїєґ]{1,6}){1,})(?![\p{L}-])""")
@@ -241,7 +241,7 @@ object UkrainianTextNormalizer {
 
         // 3. Single-letter stutters before a word (`Щ-що` -> `Що`, `п-про` -> `про`)
         text = RE_STUTTER_WORD.replace(text) { m ->
-            m.groupValues[1] + m.groupValues[2]
+            if (m.value.equals("з-за", ignoreCase = true)) m.value else m.groupValues[1] + m.groupValues[2]
         }
 
         // 4. Non-hyphenated 4+ letter runs (`Аггггх` -> `Аггх`, `Ааааа` -> `Ааа`)
