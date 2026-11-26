@@ -36,7 +36,7 @@ class HolosTtsService : TextToSpeechService() {
     override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
         val avail = onIsLanguageAvailable(lang, country, variant)
         if (avail == TextToSpeech.LANG_NOT_SUPPORTED) return avail
-        return if (HolosModelManager.isModelReady(this)) avail else TextToSpeech.LANG_MISSING_DATA
+        return if (HolosModelManager.hasAnyModelReady(this)) avail else TextToSpeech.LANG_MISSING_DATA
     }
 
     override fun onGetVoices(): List<Voice> {
@@ -92,6 +92,8 @@ class HolosTtsService : TextToSpeechService() {
                     voice = voice,
                     speed = rate,
                     cancelled = stopFlag,
+                    supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                    supertonicSteps = prefs.supertonicSteps,
                 ) { floats ->
                     writePcm16(floats, callback)
                 }

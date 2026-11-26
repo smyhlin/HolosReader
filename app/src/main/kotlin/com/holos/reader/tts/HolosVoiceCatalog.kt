@@ -55,6 +55,18 @@ object HolosVoiceCatalog {
         VoiceInfo("Speaker_37", "Квітослава", "37", VoiceGender.FEMALE, "Світле сопрано", 225.4f),
         VoiceInfo("Speaker_59", "Орися", "59", VoiceGender.FEMALE, "Дзвінке сопрано", 225.4f),
         VoiceInfo("Гаська Шиян", "Гаська Шиян", null, VoiceGender.FEMALE, "Дзвінке сопрано", 228.6f),
+
+        // Supertonic 3 multilingual voices (5 male + 5 female, 44.1 kHz)
+        VoiceInfo("M1", "Supertonic M1", "M1", VoiceGender.MALE, "Глибокий диктор", 105.0f),
+        VoiceInfo("M2", "Supertonic M2", "M2", VoiceGender.MALE, "Спокійний баритон", 114.0f),
+        VoiceInfo("M3", "Supertonic M3", "M3", VoiceGender.MALE, "Виразний тенор", 126.0f),
+        VoiceInfo("M4", "Supertonic M4", "M4", VoiceGender.MALE, "Динамічний голос", 134.0f),
+        VoiceInfo("M5", "Supertonic M5", "M5", VoiceGender.MALE, "М’який оповідач", 142.0f),
+        VoiceInfo("F1", "Supertonic F1", "F1", VoiceGender.FEMALE, "Теплий альт", 192.0f),
+        VoiceInfo("F2", "Supertonic F2", "F2", VoiceGender.FEMALE, "Чисте мецо", 204.0f),
+        VoiceInfo("F3", "Supertonic F3", "F3", VoiceGender.FEMALE, "Виразне сопрано", 214.0f),
+        VoiceInfo("F4", "Supertonic F4", "F4", VoiceGender.FEMALE, "Ніжний диктор", 220.0f),
+        VoiceInfo("F5", "Supertonic F5", "F5", VoiceGender.FEMALE, "Дзвінке сопрано", 228.0f),
     ).associateBy { it.rawId }
 
     fun info(rawId: String): VoiceInfo {

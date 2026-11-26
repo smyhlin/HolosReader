@@ -14,7 +14,7 @@ class CheckVoiceDataActivity : Activity() {
             finish()
             return
         }
-        val ready = HolosModelManager.isModelReady(this)
+        val ready = HolosModelManager.hasAnyModelReady(this)
         val avail = ArrayList<String>()
         val unavail = ArrayList<String>()
         if (ready) {

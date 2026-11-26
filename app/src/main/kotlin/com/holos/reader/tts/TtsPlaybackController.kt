@@ -253,6 +253,8 @@ class TtsPlaybackController(context: Context) {
                                             speed = speed,
                                             cancelled = sessionCancel,
                                             customVoicesDir = customDir,
+                                            supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                                            supertonicSteps = prefs.supertonicSteps,
                                         ) { chunk ->
                                             speechFrames += chunk.size.toLong()
                                             offerBlocking(queue, Packet.Audio(i, chunk), gen, sessionCancel)
@@ -272,6 +274,8 @@ class TtsPlaybackController(context: Context) {
                                         speed = speed,
                                         cancelled = sessionCancel,
                                         customVoicesDir = customDir,
+                                        supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                                        supertonicSteps = prefs.supertonicSteps,
                                     ) { chunk ->
                                         speechFrames += chunk.size.toLong()
                                         offerBlocking(queue, Packet.Audio(i, chunk), gen, sessionCancel)

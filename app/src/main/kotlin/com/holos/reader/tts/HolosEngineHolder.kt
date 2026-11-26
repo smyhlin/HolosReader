@@ -9,6 +9,7 @@ import com.holos.reader.g2p.UkrainianStressifier
 import com.holos.reader.g2p.UserStressOverrides
 import com.holos.reader.ui.AppStrings
 import com.holos.tts.HolosOnnx
+import com.holos.tts.SupertonicOnnx
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.InputStream
@@ -41,7 +42,9 @@ object HolosEngineHolder {
     private val overridesLock = Any()
 
     @Volatile
-    private var engine: HolosOnnx? = null
+    private var engine: HolosTtsEngine? = null
+    @Volatile
+    private var loadedModelId: TtsModelId? = null
     @Volatile
     private var loadedThreads: Int = -1
     @Volatile
@@ -99,6 +102,7 @@ object HolosEngineHolder {
             engine = null
             loadedThreads = -1
             loadedAccelPref = null
+            loadedModelId = null
             if (old != null) {
                 try {
                     old.close()
@@ -177,21 +181,22 @@ object HolosEngineHolder {
         }
     }
 
-    fun getEngine(context: Context): HolosOnnx? {
+    fun getEngine(context: Context): HolosTtsEngine? {
         val appCtx = context.applicationContext
         val prefs = ReaderPreferences(appCtx)
         val wantThreads = prefs.cpuThreads
         val wantAccel = prefs.onnxAccelerator
+        val wantModel = prefs.selectedTtsModelId
 
         engine?.let { existing ->
-            if (loadedThreads == wantThreads && loadedAccelPref == wantAccel) {
+            if (loadedThreads == wantThreads && loadedAccelPref == wantAccel && loadedModelId == wantModel) {
                 return existing
             }
         }
 
         synchronized(engineLock) {
             engine?.let { existing ->
-                if (loadedThreads == wantThreads && loadedAccelPref == wantAccel) {
+                if (loadedThreads == wantThreads && loadedAccelPref == wantAccel && loadedModelId == wantModel) {
                     return existing
                 }
                 try {
@@ -202,8 +207,8 @@ object HolosEngineHolder {
                 engine = null
             }
 
-            if (!HolosModelManager.isModelReady(appCtx)) return null
-            val bundleDir = HolosModelManager.getBundleDir(appCtx)
+            val effectiveModel = if (HolosModelManager.isModelReady(appCtx, wantModel)) wantModel else HolosModelManager.downloadedModels(appCtx).firstOrNull() ?: return null
+            val bundleDir = HolosModelManager.getBundleDir(appCtx, effectiveModel)
 
             val candidates: List<String> = when (wantAccel) {
                 EP_NNAPI -> listOf(EP_NNAPI, EP_XNNPACK, EP_CPU)
@@ -213,11 +218,12 @@ object HolosEngineHolder {
             }
 
             for (ep in candidates) {
-                val created = tryCreateEngine(bundleDir, wantThreads, ep)
+                val created = tryCreateEngine(effectiveModel, bundleDir, wantThreads, ep)
                 if (created != null) {
                     engine = created
                     loadedThreads = wantThreads
                     loadedAccelPref = wantAccel
+                    loadedModelId = effectiveModel
                     activeAccelerator = when {
                         ep == EP_NNAPI -> "NNAPI (GPU/NPU)"
                         ep == EP_XNNPACK && wantAccel == EP_NNAPI -> "XNNPACK (NNAPI fallback)"
@@ -234,7 +240,7 @@ object HolosEngineHolder {
         }
     }
 
-    private fun tryCreateEngine(bundleDir: File, threads: Int, ep: String): HolosOnnx? {
+    private fun tryCreateEngine(modelId: TtsModelId, bundleDir: File, threads: Int, ep: String): HolosTtsEngine? {
         val options = OrtSession.SessionOptions()
         return try {
             options.setIntraOpNumThreads(threads)
@@ -247,7 +253,10 @@ object HolosEngineHolder {
                     options.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
                 }
             }
-            HolosOnnx(bundleDir, streaming = true, options = options)
+            when (modelId) {
+                TtsModelId.HOLOS_INT8, TtsModelId.HOLOS_FP32 -> HolosTtsEngine.Holos(modelId, HolosOnnx(bundleDir, streaming = true, options = options))
+                TtsModelId.SUPERTONIC_3 -> HolosTtsEngine.Supertonic(SupertonicOnnx(bundleDir, options = options))
+            }
         } catch (t: Throwable) {
             Log.w(TAG, "ONNX EP=$ep failed to initialize; trying fallback", t)
             null
