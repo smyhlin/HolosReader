@@ -221,7 +221,9 @@ object UkrainianTextNormalizer {
             val isLaughter = parts.all { it.length == 2 && it.equals(parts[0], ignoreCase = true) }
             val isLongStretch = !isLaughter && parts.size >= 3 && parts.count { it.length <= 2 } >= 2
             val isTrailingEcho = parts.size == 2 && parts[1].length <= 2 &&
-                parts[0].last().lowercaseChar() == parts[1].first().lowercaseChar()
+                parts[1].all { it.lowercaseChar() == parts[1].first().lowercaseChar() } &&
+                parts[0].last().lowercaseChar() == parts[1].first().lowercaseChar() &&
+                !m.value.equals("з-за", ignoreCase = true)
             when {
                 isStutterWord -> parts[0] + parts[1].substring(1)
                 isLongStretch || isTrailingEcho -> {
