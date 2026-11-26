@@ -1057,10 +1057,12 @@ class ReaderSettingsActivity : Activity() {
                 VoiceEncoderOnnx(encFile).use { encoder ->
                     val embedding = contentResolver.openInputStream(uri)?.use { encoder.extractFromWav(it) }
                         ?: throw IllegalStateException("Cannot open WAV file")
-                    val name = "Cloned_${System.currentTimeMillis() % 10000}"
+                    val name = "Cloned_${java.util.UUID.randomUUID().toString().substring(0, 6)}"
                     val outFile = File(HolosEngineHolder.getCustomVoicesDir(this), "$name.bin")
                     VoiceEncoderOnnx.saveEmbeddingBin(embedding, outFile)
-                    prefs.selectedVoice = "custom:$name"
+                    if (TtsModelCatalog.byId(prefs.selectedTtsModelId).supportsCustomVoices) {
+                        prefs.selectedVoice = "custom:$name"
+                    }
                     runOnUiThread {
                         dlg.dismiss()
                         Toast.makeText(this, tr("Голос $name створено та обрано!", "Voice $name cloned and selected!"), Toast.LENGTH_LONG).show()

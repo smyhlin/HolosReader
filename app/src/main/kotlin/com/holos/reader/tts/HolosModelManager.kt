@@ -216,7 +216,9 @@ object HolosModelManager {
             }
             check(code in 200..299) { "HTTP $code downloading $urlStr" }
 
-            val resuming = (code == HttpURLConnection.HTTP_PARTIAL && existingBytes > 0L)
+            val contentRange = conn.getHeaderField("Content-Range")
+            val rangeMatches = contentRange != null && contentRange.startsWith("bytes $existingBytes-")
+            val resuming = (code == HttpURLConnection.HTTP_PARTIAL && existingBytes > 0L && rangeMatches)
             val responseLen = conn.contentLengthLong
             val expectedTotal = when {
                 resuming && responseLen > 0L -> existingBytes + responseLen

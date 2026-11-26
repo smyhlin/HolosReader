@@ -248,11 +248,18 @@ object HolosEngineHolder {
             stressifier?.let { return it }
             val appCtx = context.applicationContext
 
-            // 1. Unpack & mmap v2 stress dictionary (handles both .bin.gz and AAPT-stripped .bin)
+            val assetVer = bundledAssetVersionTag(appCtx)
+            val stressVerFile = File(appCtx.filesDir, "$STRESS_UNPACKED.ver")
+            val accentorVerFile = File(appCtx.filesDir, "$ACCENTOR_ASSET.ver")
+
+            // 1. Unpack & mmap v2 stress dictionary (refreshes when APK version changes — H25)
             val outFile = File(appCtx.filesDir, STRESS_UNPACKED)
             val dict = try {
-                if (!outFile.exists() || outFile.length() == 0L) {
+                val stressStale = !outFile.exists() || outFile.length() == 0L ||
+                    !stressVerFile.exists() || stressVerFile.readText().trim() != assetVer
+                if (stressStale) {
                     unpackStressDict(appCtx, outFile)
+                    stressVerFile.writeText(assetVer)
                 }
                 try {
                     UkrainianStressDict(outFile)
@@ -272,8 +279,11 @@ object HolosEngineHolder {
             // 2. Copy & load bundled 1.17 MB accentor-lite.onnx neural accentor
             val accentorFile = File(appCtx.filesDir, ACCENTOR_ASSET)
             val accentor = try {
-                if (!accentorFile.exists() || accentorFile.length() == 0L) {
+                val accStale = !accentorFile.exists() || accentorFile.length() == 0L ||
+                    !accentorVerFile.exists() || accentorVerFile.readText().trim() != assetVer
+                if (accStale) {
                     copyAsset(appCtx, ACCENTOR_ASSET, accentorFile)
+                    accentorVerFile.writeText(assetVer)
                 }
                 NeuralAccentor(accentorFile).also { neuralAccentor = it }
             } catch (e: Exception) {
@@ -368,6 +378,13 @@ object HolosEngineHolder {
             Log.w(TAG, "ONNX $modelId EP=$ep failed to initialize; trying fallback", t)
             null
         }
+    }
+
+    private fun bundledAssetVersionTag(context: Context): String = try {
+        val pi = context.packageManager.getPackageInfo(context.packageName, 0)
+        "${pi.longVersionCode}_${pi.lastUpdateTime}"
+    } catch (_: Throwable) {
+        "v1"
     }
 
     private fun openStressAsset(context: Context): InputStream {

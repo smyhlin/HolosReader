@@ -67,6 +67,9 @@ class VoiceEncoderOnnx @JvmOverloads constructor(
                 require(vec.size == EMBEDDING_DIM) {
                     "Expected $EMBEDDING_DIM-dim voice embedding, got ${vec.size}"
                 }
+                require(vec.all { it.isFinite() } && vec.any { it != 0f }) {
+                    "Voice encoder produced invalid/non-finite embedding"
+                }
                 normalizeL2(vec)
                 return vec
             }
@@ -87,6 +90,7 @@ class VoiceEncoderOnnx @JvmOverloads constructor(
         const val TARGET_SAMPLE_RATE = 24_000
         const val EMBEDDING_DIM = 256
         private const val MAX_SECONDS = 15
+        private const val MAX_WAV_BYTES = 16 * 1024 * 1024
 
         fun saveEmbeddingBin(embedding: FloatArray, targetFile: File) {
             require(embedding.size == EMBEDDING_DIM)
@@ -97,7 +101,16 @@ class VoiceEncoderOnnx @JvmOverloads constructor(
         }
 
         fun decodePcm16Wav(stream: InputStream): Pair<FloatArray, Int> {
-            val bytes = stream.readBytes()
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(1 shl 14)
+            var total = 0
+            while (total < MAX_WAV_BYTES) {
+                val n = stream.read(buf, 0, minOf(buf.size, MAX_WAV_BYTES - total))
+                if (n <= 0) break
+                out.write(buf, 0, n)
+                total += n
+            }
+            val bytes = out.toByteArray()
             require(bytes.size > 44 && String(bytes, 0, 4) == "RIFF" && String(bytes, 8, 4) == "WAVE") {
                 "Unsupported file: please select a 16-bit PCM .wav voice recording"
             }
@@ -112,6 +125,7 @@ class VoiceEncoderOnnx @JvmOverloads constructor(
             while (pos + 8 <= bytes.size) {
                 val id = String(bytes, pos, 4)
                 val size = bb.getInt(pos + 4)
+                require(size >= 0) { "Malformed negative WAV chunk size" }
                 val bodyStart = pos + 8
                 if (id == "fmt " && bodyStart + 16 <= bytes.size) {
                     val audioFormat = bb.getShort(bodyStart).toInt() and 0xFFFF
@@ -124,7 +138,9 @@ class VoiceEncoderOnnx @JvmOverloads constructor(
                     dataSize = size.coerceAtMost(bytes.size - bodyStart)
                     break
                 }
-                pos = bodyStart + size + (size and 1)
+                val nextPos = bodyStart.toLong() + size.toLong() + (size and 1).toLong()
+                if (nextPos <= pos.toLong() || nextPos > bytes.size.toLong()) break
+                pos = nextPos.toInt()
             }
 
             require(dataOffset >= 0 && dataSize > 0) { "WAV file has no audio data chunk" }
