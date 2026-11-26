@@ -4,6 +4,14 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - ".gitignore"
+      - ".editorconfig"
+      - ".gitattributes"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/workflows/build-apk.yml"
   workflow_dispatch:
 
 permissions:
@@ -35,9 +43,21 @@ jobs:
       - name: Build Debug APK
         run: gradle :app:assembleDebug
 
-      - name: Stage APK artifact
+      - name: Stage APK and SHA256SUMS
+        id: stage
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk "HolosReader-v5.1.${{ github.run_number }}.apk"
+          APK="HolosReader-v5.1.${{ github.run_number }}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$APK"
+          sha256sum "$APK" > SHA256SUMS
+          APK_SHA=$(awk '{print $1}' SHA256SUMS)
+          APK_SIZE=$(stat -c%s "$APK" | sed ':a;s/\B[0-9]\{3\}\>/,&/;ta')
+          SUM_SIZE=$(stat -c%s SHA256SUMS)
+          {
+            echo "apk_name=$APK"
+            echo "apk_sha=$APK_SHA"
+            echo "apk_size=$APK_SIZE"
+            echo "sum_size=$SUM_SIZE"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -45,9 +65,20 @@ jobs:
           tag_name: v5.1.${{ github.run_number }}
           name: HolosReader v5.1.${{ github.run_number }}
           body: |
-            Automated build from commit ${{ github.sha }}.
-            Install or update directly inside HolosReader without logging into GitHub.
+            > [!NOTE]
+            > Automated build from commit `${{ github.sha }}`. Requires Android 10+ (API 29–35). APKs are debug-signed for consistent zero-login in-app updates; verify downloads against `SHA256SUMS`.
+
+            ## Downloads & Checksums
+
+            | File | Platform | Size | SHA-256 |
+            |---|---|---:|---|
+            | `${{ steps.stage.outputs.apk_name }}` | Android 10+ (API 29–35, Universal) | ${{ steps.stage.outputs.apk_size }} B | `${{ steps.stage.outputs.apk_sha }}` |
+            | `SHA256SUMS` | All | ${{ steps.stage.outputs.sum_size }} B | Checksum list for release artifacts |
+
+            **Full Changelog:** https://github.com/${{ github.repository }}/commits/v5.1.${{ github.run_number }}
           make_latest: true
-          files: HolosReader-v5.1.${{ github.run_number }}.apk
+          files: |
+            HolosReader-v5.1.${{ github.run_number }}.apk
+            SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

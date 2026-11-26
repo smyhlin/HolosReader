@@ -64,3 +64,11 @@ When syncing changes from an isolated sandbox VM to GitHub via `@cloudkey`:
   - `ReaderPreferences.kt`: Persistent settings (`fullscreenMode = true`, `footerTapHidden`, `dismissedUpdateTag`, etc.).
   - `ReaderAudioService.kt`: Foreground TTS playback, `MediaSession` with `Icon.createWithResource` actions, cached cover art (`ALBUM_ART` / `DISPLAY_ICON` / `setLargeIcon`), live spoken snippet + chapter subtitle, `METADATA_KEY_DURATION` + `ACTION_SEEK_TO`, `VISIBILITY_PUBLIC`.
 - **Auto-Updater:** `GitHubUpdater.kt`, `ApkFileProvider.kt`.
+
+---
+
+## 5. Branching & Release Workflow
+
+- **`dev` (active development branch):** Default branch for all feature work, experiments, and bug fixes. Every push to `dev` runs `.github/workflows/build-apk.yml` and uploads a test APK artifact (`HolosReader-EPUB3-HolosTTS-apk`) without publishing a public GitHub Release.
+- **`main` (release branch):** Reserved for tested, ready-to-ship builds. Merging `dev` → `main` triggers `.github/workflows/release.yml`, which auto-stamps `versionName`, generates `SHA256SUMS`, and publishes the APK to GitHub Releases for zero-login in-app updates.
+- **Docs-only commits on `main`:** `.github/workflows/release.yml` ignores `**.md`, `LICENSE`, `.gitignore`, `.editorconfig`, `.gitattributes`, `.github/ISSUE_TEMPLATE/**`, and `.github/workflows/build-apk.yml` so documentation updates never cut spurious releases.

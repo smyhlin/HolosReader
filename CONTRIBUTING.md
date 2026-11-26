@@ -2,6 +2,11 @@
 
 Contributions, bug reports, and feature ideas are welcome.
 
+## Branching Model
+
+- **`dev`** — Primary integration branch for all new features and bug fixes. Pushes and PRs to `dev` run CI APK builds (`build-apk.yml`) without publishing a public Release.
+- **`main`** — Release branch. Merging `dev` into `main` automatically builds and publishes a new GitHub Release (`release.yml`) for in-app updates.
+
 ## Development Rules
 
 Before submitting changes, please review [`AGENTS.md`](AGENTS.md) for the complete architectural and CI constraints. In short:
@@ -13,7 +18,7 @@ Before submitting changes, please review [`AGENTS.md`](AGENTS.md) for the comple
 
 ## Submitting a Pull Request
 
-1. Fork the repository and create a topic branch from `main`.
+1. Fork the repository and create a topic branch from `dev` (e.g., `feat/...` or `fix/...`).
 2. Keep commits focused and descriptive (e.g., `feat(ui): ...`, `fix(tts): ...`, `docs: ...`).
 3. Verify the APK builds cleanly with `gradle :app:assembleDebug`.
-4. Open a pull request describing the change and any visual or behavioral impact.
+4. Open a pull request targeting **`dev`** describing the change and any visual or behavioral impact.

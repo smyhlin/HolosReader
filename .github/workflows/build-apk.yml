@@ -2,7 +2,9 @@ name: Build HolosReader APK
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, dev ]
+  pull_request:
+    branches: [ main, dev ]
   workflow_dispatch:
 
 jobs:
