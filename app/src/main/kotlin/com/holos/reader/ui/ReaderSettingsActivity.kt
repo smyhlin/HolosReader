@@ -24,7 +24,11 @@ import com.holos.reader.R
 import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.HolosModelManager
 import com.holos.reader.tts.TtsModelCatalog
+import com.holos.reader.tts.OnnxAddonCatalog
+import com.holos.reader.tts.OnnxAddonId
+import com.holos.reader.tts.OnnxAddonManager
 import com.holos.reader.tts.TtsModelId
+import com.holos.tts.VoiceEncoderOnnx
 import com.holos.reader.tts.HolosVoiceCatalog
 import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.ReaderTheme
@@ -714,6 +718,119 @@ class ReaderSettingsActivity : Activity() {
             ),
         )))
 
+        host.addView(sectionLabel(tr("Додаткові ONNX-модулі (Опціонально)", "Optional ONNX Add-ons")))
+        val addonRows = ArrayList<View>()
+
+        // 1. FlashSR 48 kHz upsampler (~0.5 MB direct download)
+        val flashSrReady = OnnxAddonManager.isAddonReady(this, OnnxAddonId.FLASH_SR)
+        if (flashSrReady) {
+            addonRows.add(
+                toggleRow(
+                    label = tr("FlashSR 48 кГц апскейлер", "FlashSR 48 kHz Upsampler"),
+                    subtitle = tr(
+                        "Піднімає якість звуку HolosTTS з 24 до 48 кГц (~0,5 МБ)",
+                        "Neural super-resolution lifting HolosTTS 24 kHz audio to 48 kHz (~0.5 MB)",
+                    ),
+                    initial = prefs.flashSrEnabled,
+                    onChanged = {
+                        prefs.flashSrEnabled = it
+                        HolosEngineHolder.resetAddons()
+                    },
+                )
+            )
+        } else {
+            addonRows.add(
+                actionRow(
+                    label = OnnxAddonCatalog.FLASH_SR.title(en),
+                    subtitle = "${OnnxAddonCatalog.FLASH_SR.summary(en)} (${OnnxAddonCatalog.FLASH_SR.sizeLabel(en)})",
+                    trailing = tr("Завантажити ›", "Download ›"),
+                    onClick = { downloadAddonFromSettings(OnnxAddonId.FLASH_SR) },
+                )
+            )
+        }
+
+        // 2. Ukrainian Emotion Pacing (~580 MB direct download)
+        val emotionReady = OnnxAddonManager.isAddonReady(this, OnnxAddonId.UK_EMOTION)
+        if (emotionReady) {
+            addonRows.add(
+                toggleRow(
+                    label = tr("Емоційна динаміка (7 емоцій)", "Ukrainian Emotion Pacing (7 Emotions)"),
+                    subtitle = tr(
+                        "Автоматично регулює темп і паузи у бойових, сумних та радісних сценах",
+                        "Dynamically adjusts speech speed & pauses for anger, sadness, joy, and fear",
+                    ),
+                    initial = prefs.emotionPacingEnabled,
+                    onChanged = {
+                        prefs.emotionPacingEnabled = it
+                        HolosEngineHolder.resetAddons()
+                    },
+                )
+            )
+        } else {
+            addonRows.add(
+                actionRow(
+                    label = OnnxAddonCatalog.UK_EMOTION.title(en),
+                    subtitle = "${OnnxAddonCatalog.UK_EMOTION.summary(en)} (${OnnxAddonCatalog.UK_EMOTION.sizeLabel(en)})",
+                    trailing = tr("Завантажити ›", "Download ›"),
+                    onClick = { downloadAddonFromSettings(OnnxAddonId.UK_EMOTION) },
+                )
+            )
+        }
+
+        // 3. Contextual Ukrainian Stress (Homographs) — import exported ONNX
+        val ctxStressReady = OnnxAddonManager.isAddonReady(this, OnnxAddonId.CONTEXTUAL_STRESS)
+        if (ctxStressReady) {
+            addonRows.add(
+                toggleRow(
+                    label = tr("Контекстні наголоси (омографи)", "Contextual Stress (Homographs)"),
+                    subtitle = tr(
+                        "Розрізняє за́мок/замо́к, му́ка/мука́ за контекстом речення",
+                        "Disambiguates Ukrainian homographs (за́мок/замо́к, му́ка/мука́) in context",
+                    ),
+                    initial = prefs.contextualStressEnabled,
+                    onChanged = {
+                        prefs.contextualStressEnabled = it
+                        HolosEngineHolder.resetAddons()
+                    },
+                )
+            )
+        } else {
+            addonRows.add(
+                actionRow(
+                    label = OnnxAddonCatalog.CONTEXTUAL_STRESS.title(en),
+                    subtitle = OnnxAddonCatalog.CONTEXTUAL_STRESS.summary(en),
+                    trailing = tr("Імпорт .onnx ›", "Import .onnx ›"),
+                    onClick = { launchAddonFilePicker(REQ_IMPORT_STRESS_ONNX, "*/*") },
+                )
+            )
+        }
+
+        // 4. On-Device Voice Cloner (voice_encoder.onnx)
+        val voiceEncReady = OnnxAddonManager.isAddonReady(this, OnnxAddonId.VOICE_ENCODER)
+        if (voiceEncReady) {
+            addonRows.add(
+                actionRow(
+                    label = tr("Клонувати голос із WAV-файлу", "Clone Voice from WAV Clip"),
+                    subtitle = tr(
+                        "Оберіть 5–15 с WAV-запис для створення власного диктора HolosTTS",
+                        "Pick a 5–15s 16-bit PCM WAV sample to create a custom HolosTTS voice",
+                    ),
+                    trailing = tr("Обрати WAV ›", "Pick WAV ›"),
+                    onClick = { launchAddonFilePicker(REQ_CLONE_WAV, "audio/*") },
+                )
+            )
+        } else {
+            addonRows.add(
+                actionRow(
+                    label = OnnxAddonCatalog.VOICE_ENCODER.title(en),
+                    subtitle = OnnxAddonCatalog.VOICE_ENCODER.summary(en),
+                    trailing = tr("Імпорт .onnx ›", "Import .onnx ›"),
+                    onClick = { launchAddonFilePicker(REQ_IMPORT_VOICE_ENCODER_ONNX, "*/*") },
+                )
+            )
+        }
+        host.addView(groupedCard(addonRows))
+
         host.addView(sectionLabel(tr("Підсвічування TTS", "TTS Highlighting")))
         val granLabels = mapOf(
             "WORD" to tr("Слово (1:1)", "Word (1:1)"),
@@ -818,6 +935,142 @@ class ReaderSettingsActivity : Activity() {
                         Toast.LENGTH_LONG,
                     ).show()
                     rebuildFullUi()
+                }
+            }
+        }.start()
+    }
+
+    private fun launchAddonFilePicker(requestCode: Int, mimeType: String) {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = mimeType
+        }
+        startActivityForResult(intent, requestCode)
+    }
+
+    @Deprecated("Framework activity result")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        when (requestCode) {
+            REQ_IMPORT_STRESS_ONNX -> importAddonFromUri(OnnxAddonId.CONTEXTUAL_STRESS, uri)
+            REQ_IMPORT_VOICE_ENCODER_ONNX -> importAddonFromUri(OnnxAddonId.VOICE_ENCODER, uri)
+            REQ_CLONE_WAV -> cloneVoiceFromWavUri(uri)
+        }
+    }
+
+    private fun downloadAddonFromSettings(addonId: OnnxAddonId) {
+        val en = AppStrings.isEnglish(this)
+        val spec = OnnxAddonCatalog.byId(addonId)
+        val msgTv = TextView(this).apply {
+            text = tr("Підготовка завантаження…", "Preparing download…")
+            textSize = 13.5f
+            setTextColor(p.primaryText)
+            setPadding(d(20), d(14), d(20), d(10))
+        }
+        val dlgBuilder = UiTheme.dialogBuilder(this, prefs.theme)
+            .setTitle(spec.title(en))
+            .setView(msgTv)
+            .setCancelable(false)
+        val dlg = UiTheme.showThemedDialog(dlgBuilder, prefs.theme)
+
+        Thread {
+            try {
+                OnnxAddonManager.downloadAddon(this, addonId) { msg, pct ->
+                    runOnUiThread { msgTv.text = "$msg ($pct%)" }
+                }
+                if (addonId == OnnxAddonId.FLASH_SR) prefs.flashSrEnabled = true
+                if (addonId == OnnxAddonId.UK_EMOTION) prefs.emotionPacingEnabled = true
+                HolosEngineHolder.resetAddons()
+                runOnUiThread {
+                    dlg.dismiss()
+                    Toast.makeText(this, tr("${spec.title(false)} готовий!", "${spec.title(true)} ready!"), Toast.LENGTH_SHORT).show()
+                    rebuildFullUi()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    dlg.dismiss()
+                    Toast.makeText(
+                        this,
+                        tr("Помилка завантаження: ", "Download failed: ") + (e.message ?: e.javaClass.simpleName),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    rebuildFullUi()
+                }
+            }
+        }.start()
+    }
+
+    private fun importAddonFromUri(addonId: OnnxAddonId, uri: android.net.Uri) {
+        val en = AppStrings.isEnglish(this)
+        val spec = OnnxAddonCatalog.byId(addonId)
+        val msgTv = TextView(this).apply {
+            text = tr("Імпорт ONNX-модуля…", "Importing ONNX add-on…")
+            textSize = 13.5f
+            setTextColor(p.primaryText)
+            setPadding(d(20), d(14), d(20), d(10))
+        }
+        val dlgBuilder = UiTheme.dialogBuilder(this, prefs.theme)
+            .setTitle(spec.title(en))
+            .setView(msgTv)
+            .setCancelable(false)
+        val dlg = UiTheme.showThemedDialog(dlgBuilder, prefs.theme)
+
+        Thread {
+            try {
+                OnnxAddonManager.importOnnxFile(this, addonId, uri) { msg, pct ->
+                    runOnUiThread { msgTv.text = "$msg ($pct%)" }
+                }
+                if (addonId == OnnxAddonId.CONTEXTUAL_STRESS) prefs.contextualStressEnabled = true
+                HolosEngineHolder.resetAddons()
+                runOnUiThread {
+                    dlg.dismiss()
+                    Toast.makeText(this, tr("${spec.title(false)} імпортовано!", "${spec.title(true)} imported!"), Toast.LENGTH_SHORT).show()
+                    rebuildFullUi()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    dlg.dismiss()
+                    Toast.makeText(this, tr("Помилка імпорту: ", "Import failed: ") + (e.message ?: e.javaClass.simpleName), Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    private fun cloneVoiceFromWavUri(uri: android.net.Uri) {
+        val msgTv = TextView(this).apply {
+            text = tr("Вилучення вектора голосу…", "Extracting 256-dim voice embedding…")
+            textSize = 13.5f
+            setTextColor(p.primaryText)
+            setPadding(d(20), d(14), d(20), d(10))
+        }
+        val dlgBuilder = UiTheme.dialogBuilder(this, prefs.theme)
+            .setTitle(tr("Клонування голосу", "Voice Cloning"))
+            .setView(msgTv)
+            .setCancelable(false)
+        val dlg = UiTheme.showThemedDialog(dlgBuilder, prefs.theme)
+
+        Thread {
+            try {
+                val encFile = File(OnnxAddonManager.getAddonDir(this, OnnxAddonId.VOICE_ENCODER), "voice_encoder.onnx")
+                VoiceEncoderOnnx(encFile).use { encoder ->
+                    val embedding = contentResolver.openInputStream(uri)?.use { encoder.extractFromWav(it) }
+                        ?: throw IllegalStateException("Cannot open WAV file")
+                    val name = "Cloned_${System.currentTimeMillis() % 10000}"
+                    val outFile = File(HolosEngineHolder.getCustomVoicesDir(this), "$name.bin")
+                    VoiceEncoderOnnx.saveEmbeddingBin(embedding, outFile)
+                    prefs.selectedVoice = "custom:$name"
+                    runOnUiThread {
+                        dlg.dismiss()
+                        Toast.makeText(this, tr("Голос $name створено та обрано!", "Voice $name cloned and selected!"), Toast.LENGTH_LONG).show()
+                        rebuildFullUi()
+                    }
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    dlg.dismiss()
+                    Toast.makeText(this, tr("Помилка клонування: ", "Voice clone failed: ") + (e.message ?: e.javaClass.simpleName), Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
@@ -1113,6 +1366,9 @@ class ReaderSettingsActivity : Activity() {
     }
 
     companion object {
+        private const val REQ_IMPORT_STRESS_ONNX = 9401
+        private const val REQ_IMPORT_VOICE_ENCODER_ONNX = 9402
+        private const val REQ_CLONE_WAV = 9403
                 const val EXTRA_TAB_INDEX = "tab_index"
         const val EXTRA_AS_SHEET = "as_sheet"
         private const val STATE_TAB_INDEX = "state_tab_index"
