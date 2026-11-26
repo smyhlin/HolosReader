@@ -40,6 +40,8 @@ import com.holos.reader.tts.HolosSafeSynthesizer
 import com.holos.reader.tts.HolosVoiceCatalog
 import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.TtsModelCatalog
+import com.holos.reader.tts.HolosTtsEngine
+import com.holos.tts.FlashSrOnnx
 import com.holos.reader.tts.TtsPlaybackController
 import com.holos.reader.tts.VoiceRole
 import java.io.File
@@ -1445,11 +1447,19 @@ class AudioSheetController(
         offlineBadgeTv.setTextColor(0xFFE53935.toInt())
 
         previewWorker.execute {
+            try {
             val engine = HolosEngineHolder.getEngine(activity)
             if (engine == null) {
-                activity.runOnUiThread { offlineSubTv.text = "Спочатку завантажте модель HolosTTS" }
+                activity.runOnUiThread {
+                    offlineSubTv.text = AppStrings.t(activity, "Спочатку завантажте модель TTS", "Download a TTS model first")
+                    offlineBadgeTv.text = AppStrings.t(activity, "Офлайн ›", "Offline ›")
+                    offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
+                }
                 return@execute
             }
+            val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(activity) else null
+            val emotionClassifier = HolosEngineHolder.getEmotionClassifier(activity)
+            val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
             val stressifier = HolosEngineHolder.getStressifier(activity)
             val defaultVoice = prefs.selectedVoice?.takeIf {
                 it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
@@ -1468,7 +1478,7 @@ class AudioSheetController(
                         totalPcmBytes += buf.size
                     }
                     val blockIndices = ArrayList<TtsPlaybackController.OfflineBlockIndex>(blocks.size)
-                    val paraPause = FloatArray((engine.sampleRate * 260) / 1000)
+                    val paraPause = FloatArray((outputRate * 260) / 1000)
                     for ((i, b) in blocks.withIndex()) {
                         if (offlineRenderCancel.get()) break
                         val startSample = totalPcmBytes / 2L
@@ -1512,14 +1522,24 @@ class AudioSheetController(
                         }
                     }
                     raf.seek(0)
-                    raf.write(buildWavHeader(totalPcmBytes.toInt(), engine.sampleRate))
-                    if (!offlineRenderCancel.get()) {
-                        TtsPlaybackController.writeOfflineIndex(File(outFile.path + ".idx"), blockIndices)
-                    }
+                    raf.write(buildWavHeader(totalPcmBytes.toInt(), outputRate))
+                    raf.fd.sync()
                 }
-                if (!offlineRenderCancel.get()) {
+                val tmpIdx = File(outFile.path + ".idx.part")
+                val finalIdx = File(outFile.path + ".idx")
+                if (!offlineRenderCancel.get() && totalPcmBytes > 0L) {
+                    TtsPlaybackController.writeOfflineIndex(tmpIdx, blockIndices)
                     if (outFile.exists()) outFile.delete()
-                    tmp.renameTo(outFile)
+                    if (finalIdx.exists()) finalIdx.delete()
+                    val wavOk = tmp.renameTo(outFile)
+                    val idxOk = wavOk && tmpIdx.renameTo(finalIdx)
+                    if (!idxOk) {
+                        tmp.delete()
+                        tmpIdx.delete()
+                        outFile.delete()
+                        finalIdx.delete()
+                        throw IllegalStateException("Atomic offline WAV/index publish failed")
+                    }
                     activity.runOnUiThread {
                         offlineSubTv.text = "Розділ збережено локально (0% CPU)"
                         offlineBadgeTv.text = "Готово"
@@ -1540,6 +1560,7 @@ class AudioSheetController(
                     offlineBadgeTv.text = "Офлайн ›"
                     offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
                 }
+            }
             } finally {
                 offlineRendering.set(false)
             }

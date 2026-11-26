@@ -227,21 +227,23 @@ class HolosOnnx @JvmOverloads constructor(
         trimSilence: Boolean = true,
         isCancelled: (() -> Boolean)? = null,
         listener: ChunkListener,
-    ) = rwLock.read {
-        check(!closed) { "HolosOnnx engine has been closed" }
-        check(streamInfo != null) { "stream() needs a HolosOnnx loaded with streaming = true" }
+    ) {
+        rwLock.read {
+            check(!closed) { "HolosOnnx engine has been closed" }
+            check(streamInfo != null) { "stream() needs a HolosOnnx loaded with streaming = true" }
+        }
         require(chunkFrames in 1..maxChunkFrames) { "chunkFrames must be between 1 and $maxChunkFrames" }
-        if (isCancelled?.invoke() == true) return@read
+        if (isCancelled?.invoke() == true) return
         if (!trimSilence) {
-            decodeWindows(encoded, chunkFrames, isCancelled, listener)
-            return@read
+            decodeWindowsUnlockedCallbacks(encoded, chunkFrames, isCancelled, listener)
+            return
         }
         val silence = encoded.durations[0] * samplesPerFrame
         var skip = max(0, silence - Math.round(SILENCE_MARGIN_SECONDS * sampleRate).toInt())
         val fade = if (skip > 0) FADE_IN_SAMPLES else 0
         var faded = 0
-        decodeWindows(encoded, chunkFrames, isCancelled) { chunk ->
-            if (isCancelled?.invoke() == true) return@decodeWindows
+        decodeWindowsUnlockedCallbacks(encoded, chunkFrames, isCancelled) { chunk ->
+            if (isCancelled?.invoke() == true) return@decodeWindowsUnlockedCallbacks
             val from = min(skip, chunk.size)
             skip -= from
             val trimmed = chunk.copyOfRange(from, chunk.size)
@@ -279,7 +281,11 @@ class HolosOnnx @JvmOverloads constructor(
     /**
      * Decodes the chunks of chunkFrames frames one by one, exiting promptly when [isCancelled] returns true.
      */
-    private fun decodeWindows(
+    /**
+     * Decodes each streaming window under [rwLock].read, then releases the lock BEFORE invoking
+     * [listener.onChunk] so a blocked consumer queue can never deadlock [close] on [rwLock].write (H11).
+     */
+    private fun decodeWindowsUnlockedCallbacks(
         encoded: Encoded,
         chunkFrames: Int,
         isCancelled: (() -> Boolean)?,
@@ -288,10 +294,13 @@ class HolosOnnx @JvmOverloads constructor(
         if (isCancelled?.invoke() == true) return
         val frames = encoded.frames
         val step = samplesPerFrame
-        val excitation = withOwnedTensors(
-            { "f0" to tensor(encoded.f0, 1, 2L * frames) }
-        ) { srcInputs ->
-            runStage(source!!, srcInputs, emptyList()) { it.floats("source") }
+        val excitation = rwLock.read {
+            if (closed || isCancelled?.invoke() == true) return
+            withOwnedTensors(
+                { "f0" to tensor(encoded.f0, 1, 2L * frames) }
+            ) { srcInputs ->
+                runStage(source!!, srcInputs, emptyList()) { it.floats("source") }
+            }
         }
         if (isCancelled?.invoke() == true) return
 
@@ -300,29 +309,33 @@ class HolosOnnx @JvmOverloads constructor(
         try {
             voice = tensor(encoded.voice, 1, VOICE_DIM.toLong())
             for (start in 0 until frames step chunkFrames) {
-                if (isCancelled?.invoke() == true || closed) return
+                if (isCancelled?.invoke() == true) return
                 val end = min(start + chunkFrames, frames)
                 val windowStart = max(0, start - contextFrames)
                 val windowEnd = min(frames, end + contextFrames)
                 val width = (windowEnd - windowStart).toLong()
                 val offset = (start - windowStart) * step
 
-                val chunk = withOwnedTensors(
-                    { "frame_to_token" to tensor(encoded.frameToToken.copyOfRange(windowStart, windowEnd), width) },
-                    { "f0" to tensor(encoded.f0.copyOfRange(2 * windowStart, 2 * windowEnd), 1, 2 * width) },
-                    { "energy" to tensor(encoded.energy.copyOfRange(2 * windowStart, 2 * windowEnd), 1, 2 * width) },
-                    { "source" to tensor(excitation.copyOfRange(step * windowStart, step * windowEnd), 1, step * width) },
-                ) { inputs ->
-                    val allInputs = HashMap<String, OnnxTensor>(inputs.size + 2).apply {
-                        putAll(inputs)
-                        put("acoustic_tokens", acoustic)
-                        put("voice", voice)
-                    }
-                    runStage(decoder, allInputs, emptyList()) { result ->
-                        result.floats("audio").copyOfRange(offset, offset + (end - start) * step)
+                val chunk = rwLock.read {
+                    if (closed || isCancelled?.invoke() == true) return
+                    withOwnedTensors(
+                        { "frame_to_token" to tensor(encoded.frameToToken.copyOfRange(windowStart, windowEnd), width) },
+                        { "f0" to tensor(encoded.f0.copyOfRange(2 * windowStart, 2 * windowEnd), 1, 2 * width) },
+                        { "energy" to tensor(encoded.energy.copyOfRange(2 * windowStart, 2 * windowEnd), 1, 2 * width) },
+                        { "source" to tensor(excitation.copyOfRange(step * windowStart, step * windowEnd), 1, step * width) },
+                    ) { inputs ->
+                        val allInputs = HashMap<String, OnnxTensor>(inputs.size + 2).apply {
+                            putAll(inputs)
+                            put("acoustic_tokens", acoustic)
+                            put("voice", voice)
+                        }
+                        runStage(decoder, allInputs, emptyList()) { result ->
+                            result.floats("audio").copyOfRange(offset, offset + (end - start) * step)
+                        }
                     }
                 }
                 checkFinite(chunk)
+                // Invoked strictly OUTSIDE rwLock.read!
                 listener.onChunk(chunk)
             }
         } finally {

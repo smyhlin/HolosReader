@@ -624,16 +624,22 @@ class TtsPlaybackController(context: Context) {
                 }
             }
 
-            fun flushPrebuffer() {
-                if (prebuffer.isEmpty()) return
+            fun flushPrebuffer(): Boolean {
+                if (prebuffer.isEmpty()) return true
+                // Start AudioTrack before any blocking write exceeding stopped buffer capacity (H13)
+                ensurePlaying()
                 for (ap in prebuffer) {
-                    if (!isCurrent(gen, sessionCancel)) return
-                    if (!writeAudioPacket(ap)) return
-                    ensurePlaying()
+                    if (!isCurrent(gen, sessionCancel)) return false
+                    if (!writeAudioPacket(ap)) {
+                        sessionCancel.set(true)
+                        listener?.onError(AppStrings.t(appContext, "Помилка аудіовиводу", "Audio output error"))
+                        return false
+                    }
                 }
                 prebuffer.clear()
                 prebufferSamples = 0
                 playbackStarted = true
+                return true
             }
 
             try {

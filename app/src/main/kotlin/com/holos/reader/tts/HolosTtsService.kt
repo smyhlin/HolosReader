@@ -76,6 +76,7 @@ class HolosTtsService : TextToSpeechService() {
         val engine = try { HolosEngineHolder.getEngine(this) } catch (_: Exception) { null }
         if (engine == null) {
             callback.error(TextToSpeech.ERROR_NOT_INSTALLED_YET)
+            callback.done()
             return
         }
         val stressifier = HolosEngineHolder.getStressifier(this)
@@ -106,6 +107,7 @@ class HolosTtsService : TextToSpeechService() {
             } catch (e: Exception) {
                 Log.e("HolosTtsService", "Synthesis failed", e)
                 callback.error()
+                callback.done()
             }
         }
     }
