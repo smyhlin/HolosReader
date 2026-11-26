@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HolosReader</string>
+    <string name="title_stress_editor">Власні наголоси</string>
+    <string name="title_statistics">Статистика читання</string>
+    <string name="title_settings">Налаштування</string>
+</resources>

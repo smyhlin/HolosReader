@@ -20,6 +20,8 @@ import android.text.Layout
 import android.text.style.LeadingMarginSpan
 import android.view.KeyEvent
 import android.view.WindowManager
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import android.widget.ProgressBar
 import android.graphics.Typeface
 import android.view.animation.DecelerateInterpolator
@@ -170,6 +172,18 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val cb = OnBackInvokedCallback {
+                if (!handleBackOverlay()) {
+                    finish()
+                }
+            }
+            backInvokedCallback = cb
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(
+                OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                cb,
+            )
+        }
         db = BookDatabase(this)
         prefs = ReaderPreferences(this)
         applicationContext.getSharedPreferences("holos_reader_prefs", Context.MODE_PRIVATE)
@@ -241,15 +255,23 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         return super.onKeyDown(keyCode, event)
     }
 
-    @Deprecated("Zero-AndroidX compatibility")
+    private var backInvokedCallback: Any? = null
+
+    private fun handleBackOverlay(): Boolean {
+        return when {
+            ::tocSheet.isInitialized && tocSheet.isVisible() -> { tocSheet.hide(); true }
+            ::audioSheet.isInitialized && audioSheet.isVisible() -> { audioSheet.hide(); true }
+            ::bookScrubberBar.isInitialized && bookScrubberBar.visibility == View.VISIBLE -> { closeAllBottomPanels(); true }
+            ::lightThemeBar.isInitialized && lightThemeBar.visibility == View.VISIBLE -> { closeAllBottomPanels(); true }
+            ::quickFontBar.isInitialized && quickFontBar.visibility == View.VISIBLE -> { closeAllBottomPanels(); true }
+            else -> false
+        }
+    }
+
+    @Deprecated("Zero-AndroidX compatibility for API 29-32")
     override fun onBackPressed() {
-        when {
-            ::tocSheet.isInitialized && tocSheet.isVisible() -> tocSheet.hide()
-            ::audioSheet.isInitialized && audioSheet.isVisible() -> audioSheet.hide()
-            ::bookScrubberBar.isInitialized && bookScrubberBar.visibility == View.VISIBLE -> closeAllBottomPanels()
-            ::lightThemeBar.isInitialized && lightThemeBar.visibility == View.VISIBLE -> closeAllBottomPanels()
-            ::quickFontBar.isInitialized && quickFontBar.visibility == View.VISIBLE -> closeAllBottomPanels()
-            else -> super.onBackPressed()
+        if (!handleBackOverlay()) {
+            super.onBackPressed()
         }
     }
 
@@ -260,6 +282,12 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            (backInvokedCallback as? OnBackInvokedCallback)?.let {
+                onBackInvokedDispatcher.unregisterOnBackInvokedCallback(it)
+            }
+            backInvokedCallback = null
+        }
         autoScrolling = false
         wordAnimator?.cancel()
         applicationContext.getSharedPreferences("holos_reader_prefs", Context.MODE_PRIVATE)

@@ -135,17 +135,23 @@ object GitHubUpdater {
             val name = json.optString("name", tag).ifBlank { tag }
             val notes = json.optString("body", "").trim()
             val assets = json.optJSONArray("assets") ?: return null
-            var apkUrl: String? = null
-            var apkSize = 0L
+            val apkAssets = mutableListOf<Triple<String, String, Long>>()
             for (i in 0 until assets.length()) {
                 val a = assets.optJSONObject(i) ?: continue
                 val assetName = a.optString("name", "")
-                if (assetName.endsWith(".apk", ignoreCase = true)) {
-                    apkUrl = a.optString("browser_download_url", "").takeIf { it.isNotBlank() }
-                    apkSize = a.optLong("size", 0L)
-                    break
+                val url = a.optString("browser_download_url", "")
+                if (assetName.endsWith(".apk", ignoreCase = true) && url.isNotBlank()) {
+                    apkAssets.add(Triple(assetName, url, a.optLong("size", 0L)))
                 }
             }
+            if (apkAssets.isEmpty()) return null
+            val supportedAbis = Build.SUPPORTED_ABIS ?: emptyArray()
+            val chosen = supportedAbis.firstNotNullOfOrNull { abi ->
+                apkAssets.firstOrNull { it.first.contains(abi, ignoreCase = true) }
+            } ?: apkAssets.firstOrNull { it.first.contains("universal", ignoreCase = true) }
+                ?: apkAssets.first()
+            val apkUrl: String? = chosen.second
+            val apkSize = chosen.third
             if (apkUrl == null) return null
             return ReleaseInfo(tag, version, name, notes, apkUrl, apkSize)
         } finally {
