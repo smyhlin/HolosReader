@@ -193,10 +193,6 @@ object UkrainianTextNormalizer {
     )
 
 
-    private val RE_STUTTER_WORD = Regex(
-        """(?<![\p{L}-])([А-ЯІЇЄҐа-яіїєґ])-\1([а-яіїєґ]{1,})(?![\p{L}-])""",
-        RegexOption.IGNORE_CASE,
-    )
     private val RE_HYPHEN_STRETCH = Regex("""(?<![\p{L}-])([А-ЯІЇЄҐа-яіїєґ]{1,6}(?:-[А-ЯІЇЄҐа-яіїєґ]{1,6}){1,})(?![\p{L}-])""")
     private val RE_LAUGH_REPEAT = Regex("""(?<![\p{L}-])((?:[Хх][аеіо]|[Гг]і|[Мм]у|[Бб]у)(?:-(?:[Хх][аеіо]|[Гг]і|[Мм]у|[Бб]у)){3,})(?![\p{L}-])""")
     private val RE_LONG_LETTER_RUN = Regex("""([А-ЯІЇЄҐа-яіїєґ])\1{3,}""")
@@ -216,32 +212,32 @@ object UkrainianTextNormalizer {
             m.value.split('-').take(3).joinToString("-")
         }
 
-        // 2. Hyphen-stretched screams/groans (`А-А-А-АРГХ`, `М-м-м-гх-х-х-а-а-а`, `Н-н-нгххх`, `Кх-х`, `Гм-м`)
+        // 2. Hyphen-stretched screams/groans & single-letter stutters (`А-А-А-АРГХ`, `М-м-м-гх-х-х-а-а-а`, `Щ-що`, `Кх-х`)
         text = RE_HYPHEN_STRETCH.replace(text) { m ->
             val parts = m.value.split('-')
+            val isStutterWord = parts.size == 2 && parts[0].length == 1 && parts[1].length >= 2 &&
+                parts[0][0].lowercaseChar() == parts[1][0].lowercaseChar() &&
+                !m.value.equals("з-за", ignoreCase = true)
             val isLongStretch = parts.size >= 3 && parts.count { it.length <= 2 } >= 2
             val isTrailingEcho = parts.size == 2 && parts[1].length <= 2 &&
                 parts[0].last().lowercaseChar() == parts[1].first().lowercaseChar()
-            if (!isLongStretch && !isTrailingEcho) {
-                m.value
-            } else {
-                val joined = buildString {
-                    parts.forEachIndexed { idx, part ->
-                        if (idx == 0) {
-                            append(part.first())
-                            if (part.length > 1) append(part.substring(1).lowercase())
-                        } else {
-                            append(part.lowercase())
+            when {
+                isStutterWord -> parts[0] + parts[1].substring(1)
+                isLongStretch || isTrailingEcho -> {
+                    val joined = buildString {
+                        parts.forEachIndexed { idx, part ->
+                            if (idx == 0) {
+                                append(part.first())
+                                if (part.length > 1) append(part.substring(1).lowercase())
+                            } else {
+                                append(part.lowercase())
+                            }
                         }
                     }
+                    capRepeatedLetters(joined)
                 }
-                capRepeatedLetters(joined)
+                else -> m.value
             }
-        }
-
-        // 3. Single-letter stutters before a word (`Щ-що` -> `Що`, `п-про` -> `про`)
-        text = RE_STUTTER_WORD.replace(text) { m ->
-            if (m.value.equals("з-за", ignoreCase = true)) m.value else m.groupValues[1] + m.groupValues[2]
         }
 
         // 4. Non-hyphenated 4+ letter runs (`Аггггх` -> `Аггх`, `Ааааа` -> `Ааа`)
