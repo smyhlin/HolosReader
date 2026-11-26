@@ -51,4 +51,20 @@ class G2pUnitTest {
         assertTrue("Expected comma preserved in '$ipa'", ipa.contains(","))
         assertTrue("Expected exclamation preserved in '$ipa'", ipa.contains("!"))
     }
+
+    @Test
+    fun textNormalizer_collapsesStretchedScreamsAndStutters() {
+        assertEquals("Аааргх!", UkrainianTextNormalizer.normalize("А-А-А-А-А-А-АРГХ!"))
+        assertEquals("Ммгххааа…", UkrainianTextNormalizer.normalize("М-м-м-гх-х-х-а-а-а…"))
+        assertEquals("Ннгхх…", UkrainianTextNormalizer.normalize("Н-н-нгххх…"))
+        assertEquals("Кхх…", UkrainianTextNormalizer.normalize("Кх-х…"))
+        assertEquals("Гмм?", UkrainianTextNormalizer.normalize("Гм-м?"))
+        assertEquals("Аггх!", UkrainianTextNormalizer.normalize("Аггггх!"))
+        assertEquals("Що?!", UkrainianTextNormalizer.normalize("Щ-що?!"))
+        assertEquals("Хто ти?!", UkrainianTextNormalizer.normalize("Х-хто ти?!"))
+        assertEquals("Хе-хе-хе…", UkrainianTextNormalizer.normalize("Хе-хе-хе-хе…"))
+        // Normal Ukrainian hyphenated words must stay untouched
+        assertEquals("по-українськи", UkrainianTextNormalizer.normalize("по-українськи"))
+        assertEquals("темно-сірий", UkrainianTextNormalizer.normalize("темно-сірий"))
+    }
 }

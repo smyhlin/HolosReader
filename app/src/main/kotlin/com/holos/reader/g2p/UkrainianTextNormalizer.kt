@@ -192,6 +192,86 @@ object UkrainianTextNormalizer {
         "「" to " ", "」" to " ", "『" to " ", "』" to " ", "《" to " ", "》" to " ",
     )
 
+
+    private val RE_STUTTER_WORD = Regex("""\b([А-ЯІЇЄҐа-яіїєґ])-\1([а-яіїєґ]{2,})\b""")
+    private val RE_HYPHEN_STRETCH = Regex("""\b([А-ЯІЇЄҐа-яіїєґ]{1,6}(?:-[А-ЯІЇЄҐа-яіїєґ]{1,6}){1,})\b""")
+    private val RE_LAUGH_REPEAT = Regex("""\b((?:[Хх][аеіо]|[Гг]і|[Мм]у|[Бб]у)(?:-(?:[Хх][аеіо]|[Гг]і|[Мм]у|[Бб]у)){3,})\b""")
+    private val RE_LONG_LETTER_RUN = Regex("""([А-ЯІЇЄҐа-яіїєґ])\1{3,}""")
+    private const val UKR_VOWELS_ALL = "аеєиіїоуюяАЕЄИІЇОУЮЯ"
+
+    /**
+     * Collapses hyphen-stretched screams/groans (`А-А-А-АРГХ!` -> `Аааргх!`,
+     * `М-м-м-гх-х-х-а-а-а…` -> `Ммгххааа…`), single-letter stutters (`Щ-що?!` -> `Що?!`),
+     * and excessive laughter repeats (`Хе-хе-хе-хе` -> `Хе-хе-хе`) so HolosTTS
+     * voices them smoothly instead of spelling out isolated letters.
+     */
+    internal fun normalizeStretchedInterjections(input: String): String {
+        var text = input
+
+        // 1. Cap excessive laughter repetitions (4+ identical syllables -> 3)
+        text = RE_LAUGH_REPEAT.replace(text) { m ->
+            m.value.split('-').take(3).joinToString("-")
+        }
+
+        // 2. Single-letter stutters before a word (`Щ-що` -> `Що`, `п-про` -> `про`)
+        text = RE_STUTTER_WORD.replace(text) { m ->
+            val first = m.groupValues[1]
+            val rest = m.groupValues[2]
+            first + rest
+        }
+
+        // 3. Hyphen-stretched screams/groans (`А-А-А-АРГХ`, `М-м-м-гх-х-х-а-а-а`, `Кх-х`, `Гм-м`, `Ха-а-а`)
+        text = RE_HYPHEN_STRETCH.replace(text) { m ->
+            val parts = m.value.split('-')
+            val isLongStretch = parts.size >= 3 && parts.count { it.length <= 2 } >= 2
+            val isTrailingEcho = parts.size == 2 && parts[1].length <= 2 &&
+                parts[0].last().lowercaseChar() == parts[1].first().lowercaseChar()
+            if (!isLongStretch && !isTrailingEcho) {
+                m.value
+            } else {
+                val joined = buildString {
+                    parts.forEachIndexed { idx, part ->
+                        if (idx == 0) {
+                            append(part.first())
+                            if (part.length > 1) append(part.substring(1).lowercase())
+                        } else {
+                            append(part.lowercase())
+                        }
+                    }
+                }
+                capRepeatedLetters(joined)
+            }
+        }
+
+        // 4. Non-hyphenated 4+ letter runs (`Аггггх` -> `Аггх`, `Ааааа` -> `Ааа`)
+        text = RE_LONG_LETTER_RUN.replace(text) { m ->
+            val ch = m.groupValues[1]
+            val cap = if (ch[0] in UKR_VOWELS_ALL) 3 else 2
+            ch + ch.lowercase().repeat(cap - 1)
+        }
+        return text
+    }
+
+    private fun capRepeatedLetters(s: String): String {
+        if (s.length <= 2) return s
+        val out = StringBuilder(s.length)
+        var runChar = ' '
+        var runCount = 0
+        for (ch in s) {
+            val lower = ch.lowercaseChar()
+            if (lower == runChar) {
+                runCount++
+                val maxRun = if (ch in UKR_VOWELS_ALL) 3 else 2
+                if (runCount <= maxRun) out.append(ch)
+            } else {
+                runChar = lower
+                runCount = 1
+                out.append(ch)
+            }
+        }
+        return out.toString()
+    }
+
     fun normalize(raw: String, ensureTerminalPunctuation: Boolean = false): String {
         var text = RE_INVISIBLE.replace(raw, "").trim()
         if (text.isEmpty() || RE_SCENE_BREAK.matches(text)) return ""
@@ -209,6 +289,9 @@ object UkrainianTextNormalizer {
         // 2. NFKC normalization (matches spaces/patriotyk/HolosTTS/app.py), preserving combining acute
         text = Normalizer.normalize(text, Normalizer.Form.NFKC)
         text = text.replace("...", "…")
+
+        // 2b. Collapse stretched screams/groans & stutters before dash/prosody rules
+        text = normalizeStretchedInterjections(text)
 
         // 3. Star ratings & ranks (★★★☆☆, ★★★, 5★)
         text = RE_MIXED_STARS.replace(text) { m ->
