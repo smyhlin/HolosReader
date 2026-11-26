@@ -10,13 +10,21 @@ import java.io.File
 import java.util.zip.ZipFile
 
 /**
- * Keeps a single open [ZipFile] handle for the active book (avoiding expensive 6,000-entry
- * ZIP central-directory re-parses), decodes/caches downsampled inline illustrations via [LruCache],
- * and resolves embedded EPUB fonts (.ttf/.otf) or CSS generic font hints.
+ * Keeps a single open [ZipFile] handle for the active book with a reference-counted
+ * borrow/retire lifetime boundary (H02):
+ * - Every read borrows the handle via [borrowZip]; new borrows return `null` once retired.
+ * - [close] never blocks the UI thread waiting for in-flight reads; the last returning reader
+ *   closes the underlying [ZipFile] cleanly so closed-handle crashes cannot happen.
  */
 class EpubSession(private val epubFile: File) : Closeable {
 
-    val zip: ZipFile = ZipFile(epubFile)
+    private val zip: ZipFile = ZipFile(epubFile)
+    private val stateLock = Any()
+    private val zipIoLock = Any()
+    private var activeReaders: Int = 0
+    private var retired: Boolean = false
+    private var zipClosed: Boolean = false
+
     private val cacheSizeKb = (Runtime.getRuntime().maxMemory() / 1024L / 8L).toInt().coerceIn(8192, 65536)
     private val bitmapCache = object : LruCache<String, Bitmap>(cacheSizeKb) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
@@ -28,13 +36,40 @@ class EpubSession(private val epubFile: File) : Closeable {
     private var embeddedBoldFont: Typeface? = null
     private var cssHintFamily: Typeface? = null
 
+    val isRetired: Boolean
+        get() = synchronized(stateLock) { retired }
+
+    fun <T> borrowZip(block: (ZipFile) -> T): T? {
+        synchronized(stateLock) {
+            if (retired || zipClosed) return null
+            activeReaders++
+        }
+        return try {
+            synchronized(zipIoLock) {
+                if (zipClosed) null else block(zip)
+            }
+        } finally {
+            var shouldCloseNow = false
+            synchronized(stateLock) {
+                activeReaders--
+                if (retired && activeReaders == 0 && !zipClosed) {
+                    zipClosed = true
+                    shouldCloseNow = true
+                }
+            }
+            if (shouldCloseNow) {
+                closeZipQuietly()
+            }
+        }
+    }
+
     fun loadImage(entryPath: String, maxWidthPx: Int): Bitmap? {
         val safeMaxWidth = maxWidthPx.coerceAtLeast(64)
         val key = "$entryPath@$safeMaxWidth"
         bitmapCache.get(key)?.let { return it }
 
-        val bytes = synchronized(zip) {
-            EpubStreamingParser.extractEntryBytes(zip, entryPath)
+        val bytes = borrowZip { z ->
+            EpubStreamingParser.extractEntryBytes(z, entryPath)
         } ?: return null
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -54,19 +89,17 @@ class EpubSession(private val epubFile: File) : Closeable {
             inPreferredConfig = if (hasAlpha) Bitmap.Config.ARGB_8888 else Bitmap.Config.RGB_565
         }
         val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return null
-        bitmapCache.put(key, bmp)
+        if (!isRetired) {
+            bitmapCache.put(key, bmp)
+        }
         return bmp
     }
 
-    /**
-     * Resolves the EPUB's own embedded font (.ttf/.otf) or CSS generic font-family hint.
-     * Returns null if the EPUB specifies neither.
-     */
     fun resolveBookTypeface(cacheDir: File, bold: Boolean): Typeface? {
         if (!fontScanned) {
-            synchronized(zip) {
+            borrowZip { z ->
                 if (!fontScanned) {
-                    scanBookFonts(cacheDir)
+                    scanBookFonts(z, cacheDir)
                     fontScanned = true
                 }
             }
@@ -79,11 +112,11 @@ class EpubSession(private val epubFile: File) : Closeable {
         return if (bold) Typeface.create(hint, Typeface.BOLD) else hint
     }
 
-    private fun scanBookFonts(cacheDir: File) {
+    private fun scanBookFonts(z: ZipFile, cacheDir: File) {
         val fontEntries = ArrayList<String>()
         val cssEntries = ArrayList<String>()
         try {
-            val entries = zip.entries()
+            val entries = z.entries()
             while (entries.hasMoreElements()) {
                 val e = entries.nextElement()
                 if (e.isDirectory) continue
@@ -113,16 +146,15 @@ class EpubSession(private val epubFile: File) : Closeable {
 
             val fontDir = File(cacheDir, "epub_fonts").apply { mkdirs() }
             val bookPrefix = (epubFile.name + "_" + epubFile.length()).hashCode().toUInt().toString(16)
-            embeddedRegularFont = extractAndLoadFont(fontDir, bookPrefix, regularName)
+            embeddedRegularFont = extractAndLoadFont(z, fontDir, bookPrefix, regularName)
             if (boldName != null) {
-                embeddedBoldFont = extractAndLoadFont(fontDir, bookPrefix, boldName)
+                embeddedBoldFont = extractAndLoadFont(z, fontDir, bookPrefix, boldName)
             }
             if (embeddedRegularFont != null) return
         }
 
-        // Fallback: inspect CSS body/global font-family hint
         for (cssName in cssEntries.take(4)) {
-            val bytes = EpubStreamingParser.extractEntryBytes(zip, cssName) ?: continue
+            val bytes = EpubStreamingParser.extractEntryBytes(z, cssName) ?: continue
             val css = String(bytes, Charsets.UTF_8)
             val m = RE_CSS_FONT_FAMILY.find(css) ?: continue
             val valLow = m.groupValues[1].lowercase()
@@ -136,12 +168,12 @@ class EpubSession(private val epubFile: File) : Closeable {
         }
     }
 
-    private fun extractAndLoadFont(fontDir: File, bookPrefix: String, entryName: String): Typeface? {
+    private fun extractAndLoadFont(z: ZipFile, fontDir: File, bookPrefix: String, entryName: String): Typeface? {
         return try {
             val safeName = entryName.substringAfterLast('/').replace(Regex("[^a-zA-Z0-9._-]"), "_")
             val target = File(fontDir, "${bookPrefix}_$safeName")
             if (!target.exists() || target.length() == 0L) {
-                val bytes = EpubStreamingParser.extractEntryBytes(zip, entryName) ?: return null
+                val bytes = EpubStreamingParser.extractEntryBytes(z, entryName) ?: return null
                 target.writeBytes(bytes)
             }
             Typeface.createFromFile(target)
@@ -153,6 +185,20 @@ class EpubSession(private val epubFile: File) : Closeable {
 
     override fun close() {
         bitmapCache.evictAll()
+        var shouldCloseNow = false
+        synchronized(stateLock) {
+            retired = true
+            if (activeReaders == 0 && !zipClosed) {
+                zipClosed = true
+                shouldCloseNow = true
+            }
+        }
+        if (shouldCloseNow) {
+            closeZipQuietly()
+        }
+    }
+
+    private fun closeZipQuietly() {
         try {
             zip.close()
         } catch (e: Exception) {

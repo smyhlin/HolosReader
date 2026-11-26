@@ -28,6 +28,7 @@ import android.view.animation.DecelerateInterpolator
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.Editable
 import android.text.Spannable
 import android.text.SpannableStringBuilder
@@ -95,7 +96,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var tocSheet: TocSheetController
     private val autoScrollHandler = Handler(Looper.getMainLooper())
     private var autoScrolling = false
-    private var sessionStartMs = 0L
+    private var sessionStartElapsedMs = 0L
+    @Volatile
+    private var contentCommitted = false
+    private var viewportBlockIndex: Int = 0
+    private var suppressViewportScroll = false
     private lateinit var lightThemeBar: LinearLayout
     private lateinit var brightnessSlider: PillSliderView
     private lateinit var themeCardsRow: LinearLayout
@@ -221,7 +226,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         db.getCoverFile(loaded)?.let { cf ->
             coverBitmap = BitmapFactory.decodeFile(cf.absolutePath)
         }
-        sessionStartMs = System.currentTimeMillis()
+        sessionStartElapsedMs = 0L
+        contentCommitted = false
         val restoredCh = savedInstanceState?.getInt(STATE_CHAPTER_IDX, loaded.lastChapterIndex) ?: loaded.lastChapterIndex
         val restoredBlock = savedInstanceState?.getInt(STATE_BLOCK_IDX, loaded.lastBlockIndex) ?: loaded.lastBlockIndex
         chapterIndex = restoredCh.coerceIn(0, (loaded.chapterCount - 1).coerceAtLeast(0))
@@ -278,7 +284,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt(STATE_CHAPTER_IDX, chapterIndex)
-        outState.putInt(STATE_BLOCK_IDX, activeBlockIndex.coerceAtLeast(0))
+        outState.putInt(STATE_BLOCK_IDX, currentAnchorBlock())
     }
 
     override fun onDestroy() {
@@ -293,7 +299,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         applicationContext.getSharedPreferences("holos_reader_prefs", Context.MODE_PRIVATE)
             .unregisterOnSharedPreferenceChangeListener(livePrefsListener)
         autoScrollHandler.removeCallbacksAndMessages(null)
-        if (book != null) saveProgress()
+        if (book != null && contentCommitted) saveProgress()
         if (::controller.isInitialized) {
             controller.stop()
             if (ReaderAudioService.activeController === controller) {
@@ -344,8 +350,16 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             setPadding(d(18), d(4), d(18), d(130))
             clipToPadding = false
             setOnScrollListener(object : AbsListView.OnScrollListener {
-                override fun onScrollStateChanged(view: AbsListView?, scrollState: Int) {}
+                override fun onScrollStateChanged(view: AbsListView?, scrollState: Int) {
+                    if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_IDLE && contentCommitted && !controller.isPlaying) {
+                        updateBookmarkIcon()
+                        saveProgress(viewportBlockIndex)
+                    }
+                }
                 override fun onScroll(view: AbsListView?, firstVisibleItem: Int, visibleItemCount: Int, totalItemCount: Int) {
+                    if (contentCommitted && !suppressViewportScroll && totalItemCount > 0 && currentBlocks.isNotEmpty()) {
+                        viewportBlockIndex = firstVisibleItem.coerceIn(0, currentBlocks.lastIndex)
+                    }
                     updatePageFooter(firstVisibleItem, visibleItemCount)
                 }
             })
@@ -414,7 +428,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             override fun onSeekBlock(blockIndex: Int) = startPlaybackAt(blockIndex)
             override fun onJumpChapter(delta: Int) = jumpChapter(chapterIndex + delta, autoPlay = controller.isPlaying)
             override fun onVoiceSelected(voice: String) {
-                if (controller.isPlaying) startPlaybackAt(activeBlockIndex.coerceAtLeast(0))
+                if (controller.isPlaying) startPlaybackAt(currentAnchorBlock())
             }
             override fun onImportCustomVoice() {
                 startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -620,10 +634,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             val bytesPerPage = (3200.0 * (19.0 / prefs.fontSizeSp.toDouble())).toLong().coerceIn(1400L, 6000L)
             val starts = IntArray(hrefs.size + 1)
             var acc = 0
-            synchronized(session.zip) {
+            session.borrowZip { z ->
                 for (i in hrefs.indices) {
                     starts[i] = acc
-                    val sz = session.zip.getEntry(hrefs[i])?.size?.coerceAtLeast(400L) ?: 3200L
+                    val sz = z.getEntry(hrefs[i])?.size?.coerceAtLeast(400L) ?: 3200L
                     val pages = ((sz + bytesPerPage - 1L) / bytesPerPage).toInt().coerceAtLeast(1)
                     acc += pages
                 }
@@ -648,48 +662,81 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         return (chStart + (frac * (chPages - 1)).roundToInt() + 1).coerceIn(1, totalBookPages.coerceAtLeast(1))
     }
 
-    private fun loadChapter(index: Int, scrollToBlock: Int = 0, autoPlay: Boolean = false, targetFraction: Float? = null) {
+    private fun currentAnchorBlock(): Int =
+        if (controller.isPlaying) activeBlockIndex.coerceAtLeast(0) else viewportBlockIndex.coerceAtLeast(0)
+
+    private fun loadChapter(
+        index: Int,
+        scrollToBlock: Int = 0,
+        autoPlay: Boolean = false,
+        targetFraction: Float? = null,
+        targetFragment: String? = null,
+    ) {
         val b = book ?: return
         val session = epubSession ?: return
         if (b.chapterCount <= 0) return
 
+        val targetChapter = index.coerceIn(0, b.chapterCount - 1)
+        val spineItem = db.getSpineItem(b.id, targetChapter) ?: return
+        val targetTitle = db.getChapterTitle(b.id, targetChapter, b.chapterCount)
+
         controller.stop()
-        chapterIndex = index.coerceIn(0, b.chapterCount - 1)
-        val spineItem = db.getSpineItem(b.id, chapterIndex) ?: return
-        chapterTitle = db.getChapterTitle(b.id, chapterIndex, b.chapterCount)
-
-        subtleHeaderTv.text = chapterTitle
-        miniChapterTv.text = chapterTitle
-        updatePageFooter(0, 1)
-        chapterProgressBar.progress = (((chapterIndex + 1) * 100) / b.chapterCount.coerceAtLeast(1)).coerceIn(0, 100)
-
         val loadGen = chapterLoadGen.incrementAndGet()
-        // Parse chapter on background thread for instant UI responsiveness
         bgExecutor.execute {
-            val blocks = synchronized(session.zip) {
-                EpubStreamingParser.parseChapterBlocks(session.zip, spineItem)
+            val blocks = session.borrowZip { z ->
+                EpubStreamingParser.parseChapterBlocks(z, spineItem)
             }
             runOnUiThread {
                 if (chapterLoadGen.get() != loadGen || isFinishing || isDestroyed) return@runOnUiThread
+                if (blocks == null) {
+                    Toast.makeText(
+                        this,
+                        AppStrings.t(this, "Не вдалося прочитати розділ", "Failed to read chapter"),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    return@runOnUiThread
+                }
+                // Commit chapter state atomically only on valid load (H03)
+                chapterIndex = targetChapter
+                chapterTitle = targetTitle
                 currentBlocks = blocks
-                val resolvedBlock = if (targetFraction != null && blocks.isNotEmpty()) {
-                    (targetFraction.coerceIn(0f, 1f) * (blocks.size - 1)).roundToInt()
-                } else {
-                    scrollToBlock
+                if (!contentCommitted) {
+                    contentCommitted = true
+                    sessionStartElapsedMs = SystemClock.elapsedRealtime()
                 }
-                activeBlockIndex = resolvedBlock.coerceIn(0, (blocks.size - 1).coerceAtLeast(0))
+
+                subtleHeaderTv.text = chapterTitle
+                miniChapterTv.text = chapterTitle
+                chapterProgressBar.progress = (((chapterIndex + 1) * 100) / b.chapterCount.coerceAtLeast(1)).coerceIn(0, 100)
+
+                val fragmentBlock = if (!targetFragment.isNullOrBlank()) {
+                    blocks.indexOfFirst { it.anchorId.equals(targetFragment, ignoreCase = true) }.takeIf { it >= 0 }
+                } else null
+                val resolvedBlock = when {
+                    fragmentBlock != null -> fragmentBlock
+                    targetFraction != null && blocks.isNotEmpty() ->
+                        (targetFraction.coerceIn(0f, 1f) * (blocks.size - 1)).roundToInt()
+                    else -> scrollToBlock
+                }.coerceIn(0, (blocks.size - 1).coerceAtLeast(0))
+
+                viewportBlockIndex = resolvedBlock
+                activeBlockIndex = resolvedBlock
+                suppressViewportScroll = true
                 blocksAdapter.notifyDataSetChanged()
-                if (activeBlockIndex in blocks.indices) {
-                    blocksListView.setSelection(activeBlockIndex)
+                if (resolvedBlock in blocks.indices) {
+                    blocksListView.setSelection(resolvedBlock)
                 }
-                saveProgress(activeBlockIndex)
+                blocksListView.post { suppressViewportScroll = false }
+                updatePageFooter(resolvedBlock, blocksListView.childCount.coerceAtLeast(1))
+                saveProgress(resolvedBlock)
                 updateBookmarkIcon()
                 refreshBookScrubberUi()
                 if (audioSheet.isVisible()) {
                     audioSheet.updateState(activeBlockIndex, controller.isPlaying, controller.isPaused)
                 }
                 if (autoPlay && blocks.isNotEmpty()) {
-                    startPlaybackAt(0)
+                    val speakStart = (resolvedBlock until blocks.size).firstOrNull { blocks[it].isSpeakable } ?: resolvedBlock
+                    startPlaybackAt(speakStart)
                 }
             }
         }
@@ -750,12 +797,19 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         loadChapter(targetIndex, scrollToBlock = 0, autoPlay = autoPlay)
     }
 
-    private fun saveProgress(blockIdx: Int = activeBlockIndex.coerceAtLeast(0)) {
+    private fun saveProgress(blockIdx: Int = currentAnchorBlock()) {
         val b = book ?: return
-        val now = System.currentTimeMillis()
-        val deltaSec = ((now - sessionStartMs) / 1000L).coerceIn(0L, 7200L)
-        sessionStartMs = now
-        db.updateProgress(b.id, chapterIndex, blockIdx, addSeconds = deltaSec)
+        if (!contentCommitted) return
+        val nowElapsed = SystemClock.elapsedRealtime()
+        val deltaSec = if (sessionStartElapsedMs > 0L) {
+            ((nowElapsed - sessionStartElapsedMs) / 1000L).coerceIn(0L, 1800L)
+        } else 0L
+        sessionStartElapsedMs = nowElapsed
+        val reachedEnd = b.chapterCount > 0 &&
+            chapterIndex >= b.chapterCount - 1 &&
+            currentBlocks.isNotEmpty() &&
+            blockIdx >= currentBlocks.lastIndex
+        db.updateProgress(b.id, chapterIndex, blockIdx, addSeconds = deltaSec, reachedEnd = reachedEnd)
     }
 
     // --- TtsPlaybackController.Listener ---
@@ -1013,7 +1067,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     private fun toggleCurrentBookmark() {
         val b = book ?: return
-        val idx = activeBlockIndex.coerceIn(0, (currentBlocks.size - 1).coerceAtLeast(0))
+        val idx = currentAnchorBlock().coerceIn(0, (currentBlocks.size - 1).coerceAtLeast(0))
         val existingId = db.findBookmarkId(b.id, chapterIndex, idx)
         if (existingId != null) {
             db.deleteBookmark(existingId)
@@ -1030,7 +1084,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private fun updateBookmarkIcon() {
         if (!::topBookmarkBtn.isInitialized) return
         val b = book ?: return
-        val idx = activeBlockIndex.coerceIn(0, (currentBlocks.size - 1).coerceAtLeast(0))
+        val idx = currentAnchorBlock().coerceIn(0, (currentBlocks.size - 1).coerceAtLeast(0))
         val isBookmarked = db.findBookmarkId(b.id, chapterIndex, idx) != null
         val p = UiTheme.palette(prefs.theme)
         if (isBookmarked) {
@@ -1702,7 +1756,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private fun navigateWithHistory(targetChapter: Int, targetBlock: Int = 0, targetFraction: Float? = null) {
         val total = book?.chapterCount ?: return
         val clamped = targetChapter.coerceIn(0, (total - 1).coerceAtLeast(0))
-        navBackStack.addLast(chapterIndex to activeBlockIndex.coerceAtLeast(0))
+        navBackStack.addLast(chapterIndex to currentAnchorBlock())
         if (navBackStack.size > 30) navBackStack.removeFirst()
         navForwardStack.clear()
         loadChapter(clamped, scrollToBlock = targetBlock, autoPlay = controller.isPlaying, targetFraction = targetFraction)
@@ -1727,7 +1781,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val chPages = (starts.getOrElse(targetCh + 1) { chStart + 1 } - chStart).coerceAtLeast(1)
         val fracInCh = ((clamped - chStart).toFloat() / chPages.toFloat()).coerceIn(0f, 1f)
         if (targetCh == chapterIndex && currentBlocks.isNotEmpty()) {
-            navBackStack.addLast(chapterIndex to activeBlockIndex.coerceAtLeast(0))
+            navBackStack.addLast(chapterIndex to currentAnchorBlock())
             if (navBackStack.size > 30) navBackStack.removeFirst()
             navForwardStack.clear()
             val blk = (fracInCh * (currentBlocks.size - 1)).roundToInt().coerceIn(0, currentBlocks.lastIndex)
@@ -1781,7 +1835,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         scrubRedoBtn = UiTheme.iconView(this, R.drawable.ic_redo, padDp = 8, tagName = "scrub_redo") {
             if (navForwardStack.isNotEmpty()) {
                 val (nextCh, nextBlk) = navForwardStack.removeLast()
-                navBackStack.addLast(chapterIndex to activeBlockIndex.coerceAtLeast(0))
+                navBackStack.addLast(chapterIndex to currentAnchorBlock())
                 loadChapter(nextCh, scrollToBlock = nextBlk, autoPlay = controller.isPlaying)
             }
         }
