@@ -51,9 +51,12 @@ class SupertonicLanguageSplitterTest {
     @Test
     fun handlesHyphenatedEnglishAndContractions() {
         val spans = SupertonicLanguageSplitter.split("Це high-speed режим, don't stop!", true)
-        assertEquals(3, spans.size)
+        assertEquals(4, spans.size)
         assertEquals("uk", spans[0].lang)
         assertEquals("high-speed", spans[1].text)
         assertEquals("en", spans[1].lang)
+        assertEquals("uk", spans[2].lang)
+        assertEquals("don't stop!", spans[3].text)
+        assertEquals("en", spans[3].lang)
     }
 }
