@@ -10,6 +10,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -21,6 +24,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import com.holos.reader.R
+import com.holos.reader.epub.BookDatabase
 import com.holos.reader.ui.AppStrings
 import com.holos.reader.ui.ReaderActivity
 
@@ -133,6 +137,14 @@ class ReaderAudioService : Service() {
                 override fun onSkipToPrevious() {
                     onSkipPrevAction?.invoke()
                 }
+
+                override fun onSeekTo(pos: Long) {
+                    val dur = currentDurationMs
+                    if (dur > 0L) {
+                        val frac = (pos.toFloat() / dur.toFloat()).coerceIn(0f, 1f)
+                        onSeekFractionAction?.invoke(frac)
+                    }
+                }
             })
             session.isActive = true
             mediaSession = session
@@ -158,6 +170,18 @@ class ReaderAudioService : Service() {
             ACTION_NEXT -> {
                 onSkipNextAction?.invoke()
             }
+            ACTION_REFRESH -> {
+                intent.getStringExtra(EXTRA_TITLE)?.let { currentTitle = it }
+                intent.getStringExtra(EXTRA_SUBTITLE)?.let { currentSubtitle = it }
+                intent.getStringExtra(EXTRA_ALBUM)?.let { currentAlbum = it }
+                if (intent.hasExtra(EXTRA_POS_MS)) currentPositionMs = intent.getLongExtra(EXTRA_POS_MS, currentPositionMs)
+                if (intent.hasExtra(EXTRA_DUR_MS)) currentDurationMs = intent.getLongExtra(EXTRA_DUR_MS, currentDurationMs)
+                if (intent.hasExtra(EXTRA_SPEED)) currentSpeed = intent.getFloatExtra(EXTRA_SPEED, currentSpeed)
+                if (activeController?.isPaused == true) releaseWakeLock() else acquireWakeLock()
+                updateMediaSessionMetadata(currentTitle, currentSubtitle)
+                updateMediaSessionState()
+                updateNotification(currentTitle, currentSubtitle)
+            }
             ACTION_STOP -> {
                 activeController?.stop()
                 abandonAudioFocus()
@@ -169,7 +193,14 @@ class ReaderAudioService : Service() {
                 currentTitle = intent?.getStringExtra(EXTRA_TITLE) ?: "HolosReader"
                 currentSubtitle = intent?.getStringExtra(EXTRA_SUBTITLE)
                     ?: AppStrings.t(this, "Озвучення книги…", "Reading aloud…")
-                intent?.getStringExtra(EXTRA_BOOK_ID)?.let { currentBookId = it }
+                intent?.getStringExtra(EXTRA_ALBUM)?.let { currentAlbum = it }
+                intent?.getStringExtra(EXTRA_BOOK_ID)?.let {
+                    if (it != currentBookId) cachedCoverBitmap = null
+                    currentBookId = it
+                }
+                if (intent?.hasExtra(EXTRA_POS_MS) == true) currentPositionMs = intent.getLongExtra(EXTRA_POS_MS, 0L)
+                if (intent?.hasExtra(EXTRA_DUR_MS) == true) currentDurationMs = intent.getLongExtra(EXTRA_DUR_MS, 0L)
+                if (intent?.hasExtra(EXTRA_SPEED) == true) currentSpeed = intent.getFloatExtra(EXTRA_SPEED, 1.0f)
 
                 requestAudioFocus()
                 acquireWakeLock()
@@ -262,13 +293,33 @@ class ReaderAudioService : Service() {
         }
     }
 
+    private fun loadCoverBitmap(): Bitmap? {
+        cachedCoverBitmap?.let { return it }
+        val bid = currentBookId ?: return null
+        return try {
+            val db = BookDatabase(this)
+            val rec = db.getBook(bid) ?: return null
+            val cf = db.getCoverFile(rec) ?: return null
+            BitmapFactory.decodeFile(cf.absolutePath)?.also { cachedCoverBitmap = it }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun updateMediaSessionMetadata(title: String, subtitle: String) {
         try {
-            val md = MediaMetadata.Builder()
+            val mdBuilder = MediaMetadata.Builder()
                 .putString(MediaMetadata.METADATA_KEY_TITLE, title)
                 .putString(MediaMetadata.METADATA_KEY_ARTIST, subtitle)
-                .build()
-            mediaSession?.setMetadata(md)
+                .putString(MediaMetadata.METADATA_KEY_ALBUM, currentAlbum)
+            if (currentDurationMs > 0L) {
+                mdBuilder.putLong(MediaMetadata.METADATA_KEY_DURATION, currentDurationMs)
+            }
+            loadCoverBitmap()?.let { bmp ->
+                mdBuilder.putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, bmp)
+                mdBuilder.putBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON, bmp)
+            }
+            mediaSession?.setMetadata(mdBuilder.build())
         } catch (e: Exception) {
             Log.w(TAG, "MediaMetadata update failed", e)
         }
@@ -287,10 +338,13 @@ class ReaderAudioService : Service() {
                 PlaybackState.ACTION_PLAY_PAUSE or
                 PlaybackState.ACTION_STOP or
                 PlaybackState.ACTION_SKIP_TO_NEXT or
-                PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                PlaybackState.ACTION_SKIP_TO_PREVIOUS or
+                PlaybackState.ACTION_SEEK_TO
+            val speed = if (stateCode == PlaybackState.STATE_PLAYING) currentSpeed else 0f
+            val pos = if (currentDurationMs > 0L) currentPositionMs.coerceIn(0L, currentDurationMs) else 0L
             val ps = PlaybackState.Builder()
                 .setActions(actions)
-                .setState(stateCode, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 1.0f)
+                .setState(stateCode, pos, speed)
                 .build()
             mediaSession?.setPlaybackState(ps)
         } catch (e: Exception) {
@@ -339,20 +393,29 @@ class ReaderAudioService : Service() {
         )
 
         val paused = activeController?.isPaused == true
+        val prevLabel = AppStrings.t(this, "Назад", "Previous")
         val pauseLabel = if (paused) AppStrings.t(this, "Продовжити", "Resume") else AppStrings.t(this, "Пауза", "Pause")
+        val nextLabel = AppStrings.t(this, "Далі", "Next")
         val pausedSub = AppStrings.t(this, "На паузі", "Paused")
         val stopLabel = AppStrings.t(this, "Стоп", "Stop")
 
+        val prevIcon = Icon.createWithResource(this, R.drawable.ic_skip_prev)
+        val pauseIcon = Icon.createWithResource(this, if (paused) R.drawable.ic_play else R.drawable.ic_pause)
+        val nextIcon = Icon.createWithResource(this, R.drawable.ic_skip_next)
+        val stopIcon = Icon.createWithResource(this, R.drawable.ic_stop)
+
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
-            .setContentText(if (paused) pausedSub else subtitle)
+            .setContentText(subtitle)
             .setSmallIcon(R.drawable.ic_stat_holos)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(!paused)
             .setContentIntent(openIntent)
-            .addAction(Notification.Action.Builder(null, "⏮", prevIntent).build())
-            .addAction(Notification.Action.Builder(null, pauseLabel, pauseIntent).build())
-            .addAction(Notification.Action.Builder(null, "⏭", nextIntent).build())
-            .addAction(Notification.Action.Builder(null, stopLabel, stopIntent).build())
+            .addAction(Notification.Action.Builder(prevIcon, prevLabel, prevIntent).build())
+            .addAction(Notification.Action.Builder(pauseIcon, pauseLabel, pauseIntent).build())
+            .addAction(Notification.Action.Builder(nextIcon, nextLabel, nextIntent).build())
+
+        loadCoverBitmap()?.let { builder.setLargeIcon(it) }
 
         mediaSession?.sessionToken?.let { token ->
             builder.setStyle(
@@ -383,10 +446,15 @@ class ReaderAudioService : Service() {
         const val ACTION_TOGGLE_PAUSE = "com.holos.reader.ACTION_TOGGLE_PAUSE"
         const val ACTION_PREV = "com.holos.reader.ACTION_PREV"
         const val ACTION_NEXT = "com.holos.reader.ACTION_NEXT"
+                const val ACTION_REFRESH = "com.holos.reader.ACTION_REFRESH"
         const val ACTION_STOP = "com.holos.reader.ACTION_STOP"
         const val EXTRA_TITLE = "title"
         const val EXTRA_SUBTITLE = "subtitle"
+        const val EXTRA_ALBUM = "album"
         const val EXTRA_BOOK_ID = "book_id"
+        const val EXTRA_POS_MS = "pos_ms"
+        const val EXTRA_DUR_MS = "dur_ms"
+        const val EXTRA_SPEED = "speed"
 
         @Volatile
         var activeController: TtsPlaybackController? = null
@@ -395,18 +463,43 @@ class ReaderAudioService : Service() {
         @Volatile
         var onSkipPrevAction: (() -> Unit)? = null
         @Volatile
+        var onSeekFractionAction: ((Float) -> Unit)? = null
+        @Volatile
         private var currentTitle: String = "HolosReader"
         @Volatile
         private var currentSubtitle: String = "Озвучення книги…"
         @Volatile
+        private var currentAlbum: String = "HolosReader"
+        @Volatile
         private var currentBookId: String? = null
+        @Volatile
+        private var cachedCoverBitmap: Bitmap? = null
+        @Volatile
+        private var currentPositionMs: Long = 0L
+        @Volatile
+        private var currentDurationMs: Long = 0L
+        @Volatile
+        private var currentSpeed: Float = 1.0f
 
-        fun start(context: Context, title: String, subtitle: String, bookId: String? = null) {
+        fun start(
+            context: Context,
+            title: String,
+            subtitle: String,
+            bookId: String? = null,
+            album: String? = null,
+            positionMs: Long = 0L,
+            durationMs: Long = 0L,
+            speed: Float = 1.0f,
+        ) {
             val intent = Intent(context, ReaderAudioService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_TITLE, title)
                 putExtra(EXTRA_SUBTITLE, subtitle)
+                if (album != null) putExtra(EXTRA_ALBUM, album)
                 if (bookId != null) putExtra(EXTRA_BOOK_ID, bookId)
+                putExtra(EXTRA_POS_MS, positionMs)
+                putExtra(EXTRA_DUR_MS, durationMs)
+                putExtra(EXTRA_SPEED, speed)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -416,6 +509,30 @@ class ReaderAudioService : Service() {
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Unable to start foreground service", e)
+            }
+        }
+
+        fun refresh(
+            context: Context,
+            title: String? = null,
+            subtitle: String? = null,
+            album: String? = null,
+            positionMs: Long? = null,
+            durationMs: Long? = null,
+            speed: Float? = null,
+        ) {
+            try {
+                val intent = Intent(context, ReaderAudioService::class.java).setAction(ACTION_REFRESH).apply {
+                    if (title != null) putExtra(EXTRA_TITLE, title)
+                    if (subtitle != null) putExtra(EXTRA_SUBTITLE, subtitle)
+                    if (album != null) putExtra(EXTRA_ALBUM, album)
+                    if (positionMs != null) putExtra(EXTRA_POS_MS, positionMs)
+                    if (durationMs != null) putExtra(EXTRA_DUR_MS, durationMs)
+                    if (speed != null) putExtra(EXTRA_SPEED, speed)
+                }
+                context.startService(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to refresh foreground service", e)
             }
         }
 

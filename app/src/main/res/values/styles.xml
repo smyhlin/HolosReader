@@ -8,4 +8,11 @@
         <item name="android:colorAccent">#5E9BFF</item>
         <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
     </style>
+
+    <style name="AppTheme.TranslucentSheet" parent="AppTheme">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:colorBackgroundCacheHint">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
 </resources>

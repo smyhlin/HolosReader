@@ -51,6 +51,8 @@ class ReaderSettingsActivity : Activity() {
 
     private lateinit var prefs: ReaderPreferences
     private var activeTabIndex: Int = 0
+    private var asBottomSheet: Boolean = false
+    private var sheetExpanded: Boolean = false
 
     private lateinit var rootFrame: FrameLayout
     private lateinit var rootScroll: ScrollView
@@ -66,6 +68,7 @@ class ReaderSettingsActivity : Activity() {
         super.onCreate(savedInstanceState)
         try {
             prefs = ReaderPreferences(this)
+            asBottomSheet = intent?.getBooleanExtra(EXTRA_AS_SHEET, false) == true
             activeTabIndex = (savedInstanceState?.getInt(STATE_TAB_INDEX)
                 ?: intent?.getIntExtra(EXTRA_TAB_INDEX, 0)
                 ?: 0).coerceIn(0, tabs.lastIndex)
@@ -88,17 +91,26 @@ class ReaderSettingsActivity : Activity() {
 
     private fun rebuildFullUi() {
         val pal = p
-        UiTheme.applySystemBars(this, prefs.theme)
+        if (!asBottomSheet) {
+            UiTheme.applySystemBars(this, prefs.theme)
+        }
         val activeTab = tabs[activeTabIndex]
 
+        val bgFill = if (asBottomSheet) pal.sheetBg else pal.canvasBg
         rootFrame = FrameLayout(this).apply {
-            fitsSystemWindows = true
-            setBackgroundColor(pal.canvasBg)
+            fitsSystemWindows = !asBottomSheet
+            if (asBottomSheet) {
+                setBackgroundColor(0x66000000)
+                setOnClickListener { finish() }
+            } else {
+                setBackgroundColor(pal.canvasBg)
+            }
         }
 
         rootCol = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(pal.canvasBg)
+            isClickable = true
+            setBackgroundColor(if (asBottomSheet) Color.TRANSPARENT else bgFill)
             setPadding(d(16), d(10), d(16), d(28))
         }
 
@@ -136,23 +148,41 @@ class ReaderSettingsActivity : Activity() {
 
         var dragStartY = 0f
         headerZone.setOnTouchListener { _, ev ->
+            val dragTarget: View = if (asBottomSheet && rootFrame.childCount > 0) rootFrame.getChildAt(0) else rootFrame
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     dragStartY = ev.rawY
                     true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dy = (ev.rawY - dragStartY).coerceAtLeast(0f)
-                    rootFrame.translationY = dy
+                    val dy = ev.rawY - dragStartY
+                    if (dy > 0f) {
+                        dragTarget.translationY = dy
+                    } else if (asBottomSheet && !sheetExpanded) {
+                        dragTarget.translationY = (dy * 0.25f).coerceAtLeast(-d(36).toFloat())
+                    }
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     val dy = ev.rawY - dragStartY
-                    if (dy > d(90)) {
-                        rootFrame.animate().translationY(resources.displayMetrics.heightPixels.toFloat())
-                            .setDuration(180L).withEndAction { finish() }.start()
-                    } else {
-                        rootFrame.animate().translationY(0f).setDuration(150L).start()
+                    when {
+                        asBottomSheet && !sheetExpanded && dy < -d(55) -> {
+                            sheetExpanded = true
+                            dragTarget.translationY = 0f
+                            rebuildFullUi()
+                        }
+                        asBottomSheet && sheetExpanded && dy > d(85) -> {
+                            sheetExpanded = false
+                            dragTarget.translationY = 0f
+                            rebuildFullUi()
+                        }
+                        dy > d(90) -> {
+                            dragTarget.animate().translationY(resources.displayMetrics.heightPixels.toFloat())
+                                .setDuration(180L).withEndAction { finish() }.start()
+                        }
+                        else -> {
+                            dragTarget.animate().translationY(0f).setDuration(150L).start()
+                        }
                     }
                     true
                 }
@@ -211,10 +241,34 @@ class ReaderSettingsActivity : Activity() {
         }
 
         rootScroll = ScrollView(this).apply {
-            setBackgroundColor(pal.canvasBg)
+            setBackgroundColor(if (asBottomSheet) Color.TRANSPARENT else pal.canvasBg)
+            isClickable = true
             addView(rootCol, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         }
-        rootFrame.addView(rootScroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        if (asBottomSheet) {
+            val sheetWrapper = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                isClickable = true
+                background = if (sheetExpanded) {
+                    UiTheme.rounded(pal.sheetBg, 0f)
+                } else {
+                    UiTheme.topRounded(pal.sheetBg, d(24).toFloat())
+                }
+                elevation = d(12).toFloat()
+                addView(rootScroll, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            }
+            val sheetHeight = if (sheetExpanded) {
+                MATCH_PARENT
+            } else {
+                (resources.displayMetrics.heightPixels * 0.68f).toInt()
+            }
+            rootFrame.addView(
+                sheetWrapper,
+                FrameLayout.LayoutParams(MATCH_PARENT, sheetHeight, Gravity.BOTTOM)
+            )
+        } else {
+            rootFrame.addView(rootScroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        }
         setContentView(rootFrame)
     }
 
@@ -955,7 +1009,8 @@ class ReaderSettingsActivity : Activity() {
     }
 
     companion object {
-        const val EXTRA_TAB_INDEX = "tab_index"
+                const val EXTRA_TAB_INDEX = "tab_index"
+        const val EXTRA_AS_SHEET = "as_sheet"
         private const val STATE_TAB_INDEX = "state_tab_index"
 
         private val fontCache = ConcurrentHashMap<String, Typeface>()

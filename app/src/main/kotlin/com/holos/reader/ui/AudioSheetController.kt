@@ -72,6 +72,8 @@ class AudioSheetController(
         fun onSpeedCycle()
         fun onSpeedChanged(speed: Float)
         fun onSleepTimerClick()
+        fun onSleepTimerMinutesSelected(minutes: Int) {}
+        fun onSleepAtChapterEndSelected() {}
         fun onFontDelta(deltaSp: Float)
         fun onDismiss()
         fun getCurrentBlocks(): List<ReaderBlock>
@@ -96,6 +98,12 @@ class AudioSheetController(
     private val playerPage: LinearLayout
     private val voicePage: LinearLayout
     private val speedPage: LinearLayout
+    private val sleepPage: LinearLayout
+    private lateinit var sleepBackBtn: ImageView
+    private lateinit var sleepHeaderTv: TextView
+    private lateinit var sleepListContainer: LinearLayout
+    private lateinit var sleepListScroll: ScrollView
+    private var activeSleepCode: String = "OFF"
     private var isExpanded: Boolean = false
     private lateinit var lyricActiveScroll: ScrollView
     private lateinit var voiceListScroll: ScrollView
@@ -172,6 +180,7 @@ class AudioSheetController(
         playerPage = buildPlayerPage()
         voicePage = buildVoicePage().apply { visibility = View.GONE }
         speedPage = buildSpeedPage().apply { visibility = View.GONE }
+        sleepPage = buildSleepPage().apply { visibility = View.GONE }
 
         val handle = View(activity).apply { tag = "handle" }
         val handleZone = LinearLayout(activity).apply {
@@ -185,6 +194,7 @@ class AudioSheetController(
         sheetContainer.addView(playerPage, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         sheetContainer.addView(voicePage, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         sheetContainer.addView(speedPage, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        sheetContainer.addView(sleepPage, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         overlayRoot.addView(
             sheetContainer,
@@ -202,6 +212,7 @@ class AudioSheetController(
         playerPage.visibility = View.VISIBLE
         voicePage.visibility = View.GONE
         speedPage.visibility = View.GONE
+        sleepPage.visibility = View.GONE
         sheetContainer.translationY = 0f
         setExpanded(false)
         applyLyricFontSize()
@@ -423,6 +434,11 @@ class AudioSheetController(
         voiceHeaderTv.setTextColor(p.primaryText)
         speedBackBtn.setColorFilter(p.primaryText)
         speedHeaderTv.setTextColor(p.primaryText)
+        if (::sleepBackBtn.isInitialized) {
+            sleepBackBtn.setColorFilter(p.primaryText)
+            sleepHeaderTv.setTextColor(p.primaryText)
+            if (sleepPage.visibility == View.VISIBLE) renderSleepOptions()
+        }
         speedBigValTv.setTextColor(p.primaryText)
         speedRuler.applyPalette(p)
         styleSpeedPresets(p)
@@ -771,7 +787,7 @@ class AudioSheetController(
             setPadding(d(8), d(10), d(8), d(10))
             addView(sleepIconIv, LinearLayout.LayoutParams(d(20), d(20)).apply { bottomMargin = d(2) })
             addView(sleepSubTv)
-            setOnClickListener { callbacks.onSleepTimerClick() }
+            setOnClickListener { openSleepPage() }
         }
 
         val pillsRow = LinearLayout(activity).apply {
@@ -1055,6 +1071,7 @@ class AudioSheetController(
     private fun openSpeedPage() {
         playerPage.visibility = View.GONE
         voicePage.visibility = View.GONE
+        sleepPage.visibility = View.GONE
         speedPage.visibility = View.VISIBLE
         speedRuler.setSpeed(prefs.speechSpeed)
         speedBigValTv.text = String.format(Locale.US, "%.2f×", prefs.speechSpeed)
@@ -1064,10 +1081,105 @@ class AudioSheetController(
     private fun openVoicePage() {
         playerPage.visibility = View.GONE
         speedPage.visibility = View.GONE
+        sleepPage.visibility = View.GONE
         voicePage.visibility = View.VISIBLE
         if (!prefs.adaptiveVoicesEnabled) editingRole = VoiceRole.NARRATOR
         applyPalette()
         renderVoiceList()
+    }
+
+    private fun buildSleepPage(): LinearLayout {
+        val page = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        sleepBackBtn = UiTheme.iconView(activity, R.drawable.ic_chevron_left, padDp = 6, tagName = "icon_btn") {
+            sleepPage.visibility = View.GONE
+            playerPage.visibility = View.VISIBLE
+        }
+        sleepHeaderTv = TextView(activity).apply {
+            text = AppStrings.t(activity, "Таймер сну", "Set Timeout")
+            textSize = 17f
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+        }
+        val topRow = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(sleepBackBtn, LinearLayout.LayoutParams(d(36), d(36)))
+            addView(sleepHeaderTv, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(View(activity), LinearLayout.LayoutParams(d(36), d(1)))
+        }
+        page.addView(topRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(12) })
+
+        sleepListContainer = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        sleepListScroll = ScrollView(activity).apply { addView(sleepListContainer) }
+        page.addView(sleepListScroll, LinearLayout.LayoutParams(MATCH_PARENT, d(360)))
+        return page
+    }
+
+    private fun openSleepPage() {
+        playerPage.visibility = View.GONE
+        voicePage.visibility = View.GONE
+        speedPage.visibility = View.GONE
+        sleepPage.visibility = View.VISIBLE
+        sleepHeaderTv.text = AppStrings.t(activity, "Таймер сну", "Set Timeout")
+        applyPalette()
+        renderSleepOptions()
+    }
+
+    private fun renderSleepOptions() {
+        sleepListContainer.removeAllViews()
+        val p = UiTheme.palette(prefs.theme)
+        val en = AppStrings.isEnglish(activity)
+        val items = listOf(
+            Triple("OFF", if (en) "No Timeout" else "Вимкнено", 0),
+            Triple("CHAPTER", if (en) "End of Chapter" else "Кінець розділу", -1),
+            Triple("1", if (en) "1 minute" else "1 хвилина", 1),
+            Triple("3", if (en) "3 minutes" else "3 хвилини", 3),
+            Triple("5", if (en) "5 minutes" else "5 хвилин", 5),
+            Triple("10", if (en) "10 minutes" else "10 хвилин", 10),
+            Triple("20", if (en) "20 minutes" else "20 хвилин", 20),
+            Triple("30", if (en) "30 minutes" else "30 хвилин", 30),
+            Triple("45", if (en) "45 minutes" else "45 хвилин", 45),
+            Triple("60", if (en) "1 hour" else "1 година", 60),
+            Triple("120", if (en) "2 hours" else "2 години", 120),
+            Triple("180", if (en) "3 hours" else "3 години", 180),
+            Triple("240", if (en) "4 hours" else "4 години", 240),
+            Triple("360", if (en) "6 hours" else "6 годин", 360),
+        )
+        for ((code, label, mins) in items) {
+            val selected = code == activeSleepCode
+            val row = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(d(8), d(13), d(12), d(13))
+                val checkIv = ImageView(activity).apply {
+                    setImageResource(R.drawable.ic_check)
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setColorFilter(p.primaryText)
+                    visibility = if (selected) View.VISIBLE else View.INVISIBLE
+                }
+                val tv = TextView(activity).apply {
+                    text = label
+                    textSize = 15.5f
+                    setTextColor(if (selected) p.primaryText else p.secondaryText)
+                    if (selected) setTypeface(null, Typeface.BOLD)
+                }
+                addView(checkIv, LinearLayout.LayoutParams(d(20), d(20)).apply { rightMargin = d(14) })
+                addView(tv, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                setOnClickListener {
+                    activeSleepCode = code
+                    if (mins == -1) {
+                        callbacks.onSleepAtChapterEndSelected()
+                    } else {
+                        callbacks.onSleepTimerMinutesSelected(mins)
+                    }
+                    renderSleepOptions()
+                    sleepPage.visibility = View.GONE
+                    playerPage.visibility = View.VISIBLE
+                    Toast.makeText(activity, label, Toast.LENGTH_SHORT).show()
+                }
+            }
+            sleepListContainer.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
     }
 
     private fun renderVoiceList() {

@@ -36,6 +36,7 @@ import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.HolosModelManager
 import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.ReaderTheme
+import com.holos.reader.update.GitHubUpdater
 import java.util.concurrent.Executors
 
 /**
@@ -109,6 +110,7 @@ class LibraryActivity : Activity() {
             importSingleUri(uri)
         }
         checkModelStatus()
+        GitHubUpdater.checkInBackground(this, prefs)
     }
 
     override fun onNewIntent(newIntent: Intent?) {

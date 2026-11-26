@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="true"
@@ -52,6 +53,7 @@
         <activity
             android:name=".ui.ReaderSettingsActivity"
             android:exported="false"
+            android:theme="@style/AppTheme.TranslucentSheet"
             android:label="Налаштування" />
 
         <activity
@@ -85,5 +87,10 @@
                 android:name="android.speech.tts"
                 android:resource="@xml/tts_engine" />
         </service>
+        <provider
+            android:name=".update.ApkFileProvider"
+            android:authorities="com.holos.reader.apkprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

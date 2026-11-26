@@ -374,6 +374,17 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         }
     }
 
+    fun getAllSpineHrefs(bookId: String): List<String> {
+        val out = ArrayList<String>(256)
+        readableDatabase.rawQuery(
+            "SELECT href FROM spine WHERE book_id=? ORDER BY idx ASC",
+            arrayOf(bookId)
+        ).use { c ->
+            while (c.moveToNext()) out.add(c.getString(0))
+        }
+        return out
+    }
+
     fun getSpineItem(bookId: String, index: Int): SpineItem? {
         readableDatabase.rawQuery(
             "SELECT idx, item_id, href, media_type FROM spine WHERE book_id=? AND idx=?",

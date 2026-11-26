@@ -133,6 +133,10 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getBoolean("show_footer", true)
         set(v) = prefs.edit().putBoolean("show_footer", v).apply()
 
+    var footerTapHidden: Boolean
+        get() = prefs.getBoolean("footer_tap_hidden", false)
+        set(v) = prefs.edit().putBoolean("footer_tap_hidden", v).apply()
+
     var showProgressBar: Boolean
         get() = prefs.getBoolean("show_progress_bar", false)
         set(v) = prefs.edit().putBoolean("show_progress_bar", v).apply()
@@ -146,6 +150,11 @@ class ReaderPreferences(context: Context) {
     var theme: ReaderTheme
         get() = ReaderTheme.fromId(prefs.getInt("theme", ReaderTheme.DARK.id))
         set(v) = prefs.edit().putInt("theme", v.id).apply()
+
+    // -1f = system brightness, 0.01f..1.0f = custom reader brightness
+    var readerBrightness: Float
+        get() = prefs.getFloat("reader_brightness", -1f)
+        set(v) = prefs.edit().putFloat("reader_brightness", if (v < 0f) -1f else v.coerceIn(0.01f, 1.0f)).apply()
 
     var invertImagesInDark: Boolean
         get() = prefs.getBoolean("invert_images_dark", false)
@@ -169,7 +178,7 @@ class ReaderPreferences(context: Context) {
         set(v) = prefs.edit().putBoolean("keep_screen_awake", v).apply()
 
     var fullscreenMode: Boolean
-        get() = prefs.getBoolean("fullscreen_mode", false)
+        get() = prefs.getBoolean("fullscreen_mode", true)
         set(v) = prefs.edit().putBoolean("fullscreen_mode", v).apply()
 
     var autoScrollSpeed: Int
@@ -204,4 +213,8 @@ class ReaderPreferences(context: Context) {
     var lastBookId: String?
         get() = prefs.getString("last_book_id", null)
         set(v) = prefs.edit().putString("last_book_id", v).apply()
+
+    var dismissedUpdateTag: String?
+        get() = prefs.getString("dismissed_update_tag", null)
+        set(v) = prefs.edit().putString("dismissed_update_tag", v).apply()
 }

@@ -22,7 +22,9 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.holos.reader.R
+import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.ReaderTheme
+import com.holos.reader.update.GitHubUpdater
 
 data class UiPalette(
     val isDark: Boolean,
@@ -445,6 +447,9 @@ object UiTheme {
         showThemedDialog(
             dialogBuilder(activity, theme)
                 .setView(scroll)
+                .setNeutralButton(if (en) "Check for updates" else "Перевірити оновлення") { _, _ ->
+                    GitHubUpdater.checkManually(activity, ReaderPreferences(activity))
+                }
                 .setPositiveButton(if (en) "Close" else "Закрити", null),
             theme,
         )
