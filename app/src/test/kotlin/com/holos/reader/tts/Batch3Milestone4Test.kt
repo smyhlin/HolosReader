@@ -114,4 +114,24 @@ class Batch3Milestone4Test {
         assertFalse(wav.exists())
     }
 
+    @Test
+    fun prunePreservesCurrentGenerationThatCompletesAfterScan() {
+        val dir = tmp.newFolder()
+        val malformed = File(dir, "book_ch0_abcdef.wav").apply { writeText("old incomplete") }
+        val publishing = File(dir, "book_ch1_abcdef.wav").apply { writeText("incomplete") }
+        assertTrue(malformed.setLastModified(1_000L))
+        assertTrue(publishing.setLastModified(2_000L))
+
+        val result = OfflineStorageManager.pruneStale(listOf(dir), currentRecipeHex = "abcdef", deleter = { file ->
+            if (file == malformed) {
+                OfflineStorageManager.acquireWrite(publishing)!!.use {
+                    createValidChapter(dir, "book", 1, "abcdef")
+                }
+            }
+            file.delete()
+        })
+        assertEquals(1, result.deletedFiles)
+        assertTrue(OfflineAudioCache.validate(publishing) != null)
+    }
+
 }

@@ -187,7 +187,7 @@ object OfflineStorageManager {
             .sortedBy { it.lastModified }
 
         if (maxStaleBytes <= 0L) {
-            return deleteGenerations(allStale, protectedWavPaths, deleter)
+            return deleteGenerations(allStale, protectedWavPaths, deleter, preserveNewlyValid = true)
         }
 
         var remainingStale = allStale.sumOf { it.totalBytes }
@@ -197,7 +197,7 @@ object OfflineStorageManager {
             toDelete.add(g)
             remainingStale -= g.totalBytes
         }
-        return deleteGenerations(toDelete, protectedWavPaths, deleter)
+        return deleteGenerations(toDelete, protectedWavPaths, deleter, preserveNewlyValid = true)
     }
 
     fun clearAll(
@@ -213,6 +213,7 @@ object OfflineStorageManager {
         generations: List<GenerationGroup>,
         protectedWavPaths: Set<String>,
         deleter: (File) -> Boolean,
+        preserveNewlyValid: Boolean = false,
     ): DeletionResult {
         var freed = 0L
         var deleted = 0
@@ -223,15 +224,18 @@ object OfflineStorageManager {
                 val path = g.wavFile.absolutePath
                 if (path in readers || path in writers || path in protectedWavPaths) {
                     skipped += g.files.size
-                } else {
-                    for (f in g.files) {
-                        val len = f.length()
-                        if (deleter(f)) {
-                            freed += len
-                            deleted++
-                        } else {
-                            failed++
-                        }
+                    return@synchronized
+                }
+                if (preserveNewlyValid && g.isCurrentRecipe && OfflineAudioCache.validate(g.wavFile) != null) {
+                    return@synchronized
+                }
+                for (f in g.files) {
+                    val len = f.length()
+                    if (deleter(f)) {
+                        freed += len
+                        deleted++
+                    } else {
+                        failed++
                     }
                 }
             }
