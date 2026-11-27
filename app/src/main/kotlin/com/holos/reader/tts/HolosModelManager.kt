@@ -111,9 +111,14 @@ object HolosModelManager {
         if (!manifestFile.exists() || manifestFile.length() == 0L) {
             onProgress(if (en) "Downloading $modelName manifest…" else "Завантаження маніфесту $modelName…", 0)
             downloadFile(baseUrl + HOLOS_MANIFEST_NAME, manifestFile) { _, _ -> }
+            ModelIntegrityChecker.recordVerifiedFile(dir, HOLOS_MANIFEST_NAME, manifestFile, baseUrl + HOLOS_MANIFEST_NAME)
         }
         val files = requiredHolosFiles(dir, manifestFile)
-        downloadFileList(files.map { f -> (baseUrl + f.name) to f }, modelName, en, onProgress)
+        val items = files.map { f ->
+            val rel = f.relativeTo(dir.canonicalFile).invariantSeparatorsPath
+            (baseUrl + rel) to f
+        }
+        downloadFileList(dir, items, modelName, en, onProgress)
         return dir
     }
 
@@ -130,11 +135,12 @@ object HolosModelManager {
             require(target.path.startsWith(prefix)) { "Unsafe path in Supertonic bundle: $rel" }
             (SUPERTONIC_3_BASE_URL + rel) to target
         }
-        downloadFileList(items, modelName, en, onProgress)
+        downloadFileList(dir, items, modelName, en, onProgress)
         return dir
     }
 
     private fun downloadFileList(
+        bundleDir: File,
         items: List<Pair<String, File>>,
         modelName: String,
         en: Boolean,
@@ -144,8 +150,7 @@ object HolosModelManager {
         for ((index, pair) in items.withIndex()) {
             val (url, target) = pair
             val name = target.name
-            val bundleDir = target.parentFile ?: target
-            val relKey = target.name
+            val relKey = target.relativeTo(bundleDir.canonicalFile).invariantSeparatorsPath
             val existingDiag = ModelIntegrityChecker.diagnoseBundle(
                 bundleDir = bundleDir,
                 expected = listOf(ModelIntegrityChecker.ExpectedFile(relKey, target, url)),
@@ -223,7 +228,8 @@ object HolosModelManager {
                 if (manifestFile.isFile && manifestFile.length() > 0L) {
                     try {
                         for (f in requiredHolosFiles(dir, manifestFile)) {
-                            out.add(ModelIntegrityChecker.ExpectedFile(f.name, f, baseUrl + f.name, modelId.id))
+                            val rel = f.relativeTo(dir.canonicalFile).invariantSeparatorsPath
+                            out.add(ModelIntegrityChecker.ExpectedFile(rel, f, baseUrl + rel, modelId.id))
                         }
                     } catch (_: Exception) {}
                 }
