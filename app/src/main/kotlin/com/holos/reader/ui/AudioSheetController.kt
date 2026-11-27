@@ -34,6 +34,10 @@ import android.widget.Toast
 import com.holos.reader.R
 import com.holos.reader.epub.ReaderBlock
 import com.holos.reader.tts.AdaptiveVoiceRouter
+import com.holos.reader.tts.AdaptiveEngineSet
+import com.holos.reader.tts.AdaptiveVoicePlan
+import com.holos.reader.tts.HolosModelManager
+import com.holos.reader.tts.TtsModelId
 import com.holos.reader.tts.CustomVoiceLoader
 import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.HolosSafeSynthesizer
@@ -154,6 +158,8 @@ class AudioSheetController(
     private lateinit var adaptiveTogglePill: TextView
     private lateinit var adaptiveRolesRow: LinearLayout
     private val rolePills = LinkedHashMap<VoiceRole, Triple<LinearLayout, TextView, TextView>>()
+    private lateinit var voiceModelRow: LinearLayout
+    private var pickerModel: TtsModelId? = null
     private lateinit var voiceFilterRow: LinearLayout
     private val voiceFilterTabs = ArrayList<Pair<String, TextView>>()
     private lateinit var voiceListContainer: LinearLayout
@@ -357,7 +363,7 @@ class AudioSheetController(
 
         playCircleBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
         speedValTv.text = String.format(Locale.US, "%.2f×", prefs.speechSpeed).replace(".00×", ".0×")
-        voiceValTv.text = HolosVoiceCatalog.displayName(prefs.selectedVoice).take(16)
+        voiceValTv.text = HolosVoiceCatalog.displayName(displayedNarratorVoice()).take(16)
         voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
 
         val tl = if (cachedTimeline.blocks === blocks) cachedTimeline else com.holos.reader.tts.ChapterTimeline(blocks).also { cachedTimeline = it }
@@ -503,7 +509,10 @@ class AudioSheetController(
         adaptiveTogglePill.setTextColor(if (enabled) Color.WHITE else p.secondaryText)
         adaptiveRolesRow.visibility = if (enabled) View.VISIBLE else View.GONE
 
-        val available = HolosEngineHolder.peekVoicesOrEmpty()
+        val downloaded = HolosModelManager.downloadedModels(activity)
+        val defaultModel = pickerDefaultModel(downloaded)
+        val available = HolosEngineHolder.peekVoicesOrEmpty(defaultModel)
+            .ifEmpty { HolosVoiceCatalog.defaultVoicesFor(defaultModel) }
         for ((role, triple) in rolePills) {
             val (pill, titleV, voiceV) = triple
             val active = role == editingRole
@@ -514,9 +523,11 @@ class AudioSheetController(
                 strokeWidthPx = if (active) d(2) else 1,
             )
             titleV.setTextColor(if (active) p.accentBlue else p.primaryText)
-            val resolved = AdaptiveVoiceRouter.resolveVoice(role, prefs, available)
+            val assigned = prefs.roleModel(role)?.takeIf { it in downloaded }
+            val resolved = if (assigned != null) prefs.roleVoice(role)
+            else AdaptiveVoiceRouter.resolveVoice(role, prefs, available)
             val shortName = resolved?.let { HolosVoiceCatalog.info(it).ukrainianName } ?: "Авто"
-            voiceV.text = shortName
+            voiceV.text = if (assigned == null) shortName else "$shortName\n${modelShortName(assigned)}"
             voiceV.setTextColor(p.secondaryText)
         }
     }
@@ -885,7 +896,7 @@ class AudioSheetController(
             stopPreview()
             voicePage.visibility = View.GONE
             playerPage.visibility = View.VISIBLE
-            voiceValTv.text = HolosVoiceCatalog.displayName(prefs.selectedVoice).take(16)
+            voiceValTv.text = HolosVoiceCatalog.displayName(displayedNarratorVoice()).take(16)
             voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
         }
         voiceHeaderTv = TextView(activity).apply {
@@ -935,6 +946,8 @@ class AudioSheetController(
             setOnClickListener {
                 prefs.adaptiveVoicesEnabled = !prefs.adaptiveVoicesEnabled
                 if (!prefs.adaptiveVoicesEnabled) editingRole = VoiceRole.NARRATOR
+                stopPreview()
+                pickerModel = if (prefs.adaptiveVoicesEnabled) prefs.roleModel(editingRole) else null
                 styleAdaptiveCard(UiTheme.palette(prefs.theme))
                 renderVoiceList()
                 voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
@@ -959,7 +972,7 @@ class AudioSheetController(
                 text = "Авто"
                 textSize = 11f
                 gravity = Gravity.CENTER
-                maxLines = 1
+                maxLines = 2
                 ellipsize = TextUtils.TruncateAt.END
             }
             val pill = LinearLayout(activity).apply {
@@ -970,6 +983,8 @@ class AudioSheetController(
                 addView(rVoice)
                 setOnClickListener {
                     editingRole = role
+                    stopPreview()
+                    pickerModel = prefs.roleModel(role)
                     styleAdaptiveCard(UiTheme.palette(prefs.theme))
                     renderVoiceList()
                 }
@@ -987,6 +1002,9 @@ class AudioSheetController(
             addView(adaptiveRolesRow)
         }
         page.addView(adaptiveCard, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
+
+        voiceModelRow = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
+        page.addView(voiceModelRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(8) })
 
         // Segmented filter: All | Female | Male
         voiceFilterRow = LinearLayout(activity).apply {
@@ -1121,6 +1139,7 @@ class AudioSheetController(
         sleepPage.visibility = View.GONE
         voicePage.visibility = View.VISIBLE
         if (!prefs.adaptiveVoicesEnabled) editingRole = VoiceRole.NARRATOR
+        pickerModel = if (prefs.adaptiveVoicesEnabled) prefs.roleModel(editingRole) else null
         applyPalette()
         renderVoiceList()
     }
@@ -1219,10 +1238,57 @@ class AudioSheetController(
         }
     }
 
+    private fun displayedNarratorVoice(): String? {
+        val model = prefs.roleModel(VoiceRole.NARRATOR)
+        return if (prefs.adaptiveVoicesEnabled && model != null && HolosModelManager.isModelReady(activity, model)) {
+            prefs.roleVoice(VoiceRole.NARRATOR) ?: prefs.selectedVoice
+        } else prefs.selectedVoice
+    }
+
+    private fun pickerDefaultModel(downloaded: List<TtsModelId>): TtsModelId =
+        prefs.selectedTtsModelId.takeIf { it in downloaded } ?: downloaded.firstOrNull() ?: prefs.selectedTtsModelId
+
+    private fun modelShortName(model: TtsModelId): String = when (model) {
+        TtsModelId.HOLOS_INT8 -> "Holos INT8"
+        TtsModelId.HOLOS_FP32 -> "Holos FP32"
+        TtsModelId.SUPERTONIC_3 -> "Supertonic 3"
+    }
+
     private fun renderVoiceList() {
         voiceListContainer.removeAllViews()
         previewRowViews.clear()
         val p = UiTheme.palette(prefs.theme)
+
+        val downloaded = HolosModelManager.downloadedModels(activity)
+        val defaultModel = pickerDefaultModel(downloaded)
+        val model = pickerModel?.takeIf { it in downloaded } ?: defaultModel
+        voiceModelRow.removeAllViews()
+        voiceModelRow.visibility = if (downloaded.size > 1) View.VISIBLE else View.GONE
+        if (downloaded.size > 1) {
+            for ((index, option) in downloaded.withIndex()) {
+                val selectedModel = model == option
+                val tab = TextView(activity).apply {
+                    text = modelShortName(option)
+                    textSize = 12f
+                    gravity = Gravity.CENTER
+                    setPadding(d(4), d(9), d(4), d(9))
+                    setTextColor(if (selectedModel) Color.WHITE else p.primaryText)
+                    background = UiTheme.rounded(if (selectedModel) p.accentBlue else p.cardBg, d(12).toFloat())
+                    isSelected = selectedModel
+                    setOnClickListener {
+                        if (option != model) {
+                            stopPreview()
+                            pickerModel = option
+                            renderVoiceList()
+                            voiceListScroll.scrollTo(0, 0)
+                        }
+                    }
+                }
+                voiceModelRow.addView(tab, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
+                    if (index != 0) leftMargin = d(6)
+                })
+            }
+        }
 
         val importBtn = TextView(activity).apply {
             text = "+ Імпортувати клонований голос (.pt / .npy / .bin)"
@@ -1234,10 +1300,13 @@ class AudioSheetController(
             setPadding(d(12), d(10), d(12), d(10))
             setOnClickListener { callbacks.onImportCustomVoice() }
         }
-        voiceListContainer.addView(importBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
-
-        val customVoices = if (TtsModelCatalog.byId(prefs.selectedTtsModelId).supportsCustomVoices) CustomVoiceLoader.listCustomVoices(HolosEngineHolder.getCustomVoicesDir(activity)) else emptyList()
-        val presetVoices = HolosEngineHolder.peekVoicesOrEmpty().ifEmpty { HolosVoiceCatalog.defaultVoicesFor(prefs.selectedTtsModelId) }
+        val supportsCustom = TtsModelCatalog.byId(model).supportsCustomVoices
+        if (supportsCustom) {
+            voiceListContainer.addView(importBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
+        }
+        val customVoices = if (supportsCustom) CustomVoiceLoader.listCustomVoices(HolosEngineHolder.getCustomVoicesDir(activity)) else emptyList()
+        val presetVoices = if (downloaded.isEmpty()) emptyList()
+        else HolosEngineHolder.peekVoicesOrEmpty(model).ifEmpty { HolosVoiceCatalog.defaultVoicesFor(model) }
         val voices = customVoices + presetVoices
         if (voices.isEmpty()) {
             voiceListContainer.addView(TextView(activity).apply {
@@ -1250,7 +1319,12 @@ class AudioSheetController(
 
         val filtered = HolosVoiceCatalog.sortAndFilter(voices, voiceFilter)
         val activeRole = if (prefs.adaptiveVoicesEnabled) editingRole else VoiceRole.NARRATOR
-        val currentForRole = AdaptiveVoiceRouter.resolveVoice(activeRole, prefs, voices)
+        val assigned = if (prefs.adaptiveVoicesEnabled) prefs.roleModel(activeRole)?.takeIf { it in downloaded } else null
+        val currentForRole = when {
+            assigned == model -> prefs.roleVoice(activeRole)
+            assigned == null && model == defaultModel -> AdaptiveVoiceRouter.resolveVoice(activeRole, prefs, presetVoices)
+            else -> null
+        }
 
         for (voice in filtered) {
             val isPreviewing = voice == previewingVoice
@@ -1263,7 +1337,7 @@ class AudioSheetController(
                     UiTheme.rounded(p.cardBg, d(14).toFloat())
                 }
                 setPadding(d(12), d(10), d(14), d(10))
-                setOnClickListener { onVoiceRowClicked(voice, activeRole) }
+                setOnClickListener { onVoiceRowClicked(model, voice, activeRole) }
             }
 
             val previewBtn = ImageView(activity).apply {
@@ -1272,7 +1346,7 @@ class AudioSheetController(
                 setPadding(d(9), d(9), d(9), d(9))
                 background = UiTheme.circle(if (isPreviewing) p.accentBlue else p.inlineHighlightBg)
                 setColorFilter(if (isPreviewing) Color.WHITE else p.primaryText)
-                setOnClickListener { toggleVoicePreview(voice) }
+                setOnClickListener { toggleVoicePreview(model, voice) }
             }
             previewRowViews[voice] = row to previewBtn
 
@@ -1287,9 +1361,8 @@ class AudioSheetController(
                     setTextColor(p.primaryText)
                 })
                 addView(TextView(activity).apply {
-                    val activeModel = prefs.selectedTtsModelId
                     val rateLabel = when {
-                        activeModel == com.holos.reader.tts.TtsModelId.SUPERTONIC_3 -> "44,1 кГц офлайн"
+                        model == TtsModelId.SUPERTONIC_3 -> "44,1 кГц офлайн"
                         prefs.flashSrEnabled && com.holos.reader.tts.OnnxAddonManager.isAddonReady(activity, com.holos.reader.tts.OnnxAddonId.FLASH_SR) -> "48 кГц (FlashSR)"
                         else -> "24 кГц офлайн"
                     }
@@ -1320,13 +1393,11 @@ class AudioSheetController(
         }
     }
 
-    private fun onVoiceRowClicked(voice: String, role: VoiceRole) {
-        when (role) {
-            VoiceRole.NARRATOR -> prefs.selectedVoice = voice
-            VoiceRole.SYSTEM -> prefs.systemVoice = voice
-            VoiceRole.DIALOGUE -> prefs.dialogueVoice = voice
-        }
+    private fun onVoiceRowClicked(model: TtsModelId, voice: String, role: VoiceRole) {
+        if (prefs.adaptiveVoicesEnabled) prefs.assignRoleVoice(role, model, voice)
+        else prefs.assignNarratorVoice(model, voice)
         callbacks.onVoiceSelected(voice)
+        voiceValTv.text = HolosVoiceCatalog.displayName(displayedNarratorVoice()).take(16)
 
         if (prefs.adaptiveVoicesEnabled) {
             styleAdaptiveCard(UiTheme.palette(prefs.theme))
@@ -1340,7 +1411,6 @@ class AudioSheetController(
             stopPreview()
             voicePage.visibility = View.GONE
             playerPage.visibility = View.VISIBLE
-            voiceValTv.text = HolosVoiceCatalog.displayName(voice).take(16)
         }
     }
 
@@ -1373,7 +1443,7 @@ class AudioSheetController(
         activity.runOnUiThread { updatePreviewVisuals() }
     }
 
-    private fun toggleVoicePreview(voice: String) {
+    private fun toggleVoicePreview(model: TtsModelId, voice: String) {
         if (previewingVoice == voice) {
             stopPreview()
             return
@@ -1398,7 +1468,7 @@ class AudioSheetController(
             if (previewGen.get() != myGen) return@execute
             previewCancel.set(false)
             try {
-                val lease = HolosEngineHolder.acquireEngineLease(activity) ?: run {
+                val lease = HolosEngineHolder.acquireEngineLease(activity, model) ?: run {
                     activity.runOnUiThread {
                         if (previewGen.get() == myGen) {
                             previewingVoice = null
@@ -1554,24 +1624,25 @@ class AudioSheetController(
             }
             lease.use { activeLease ->
             val engine = activeLease.engine
-            val flashSrLease = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.acquireFlashSrLease(activity) else null
+            val voicePlan = AdaptiveVoicePlan.capture(activity, prefs)
+            AdaptiveEngineSet.acquire(activity, engine, voicePlan).use { roleEngines ->
+            val flashSrLease = if (roleEngines.hasHolos) HolosEngineHolder.acquireFlashSrLease(activity) else null
             val emotionLease = HolosEngineHolder.acquireEmotionLease(activity)
             val flashSr = flashSrLease?.engine
             val emotionClassifier = emotionLease?.engine
-            val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
+            val outputRate = roleEngines.outputRate(flashSr != null)
             val stressifier = HolosEngineHolder.getStressifier(activity)
             val snapshot = TtsPlaybackController.resolveOfflineSnapshot(
                 context = activity,
                 prefs = prefs,
                 effectiveModelOverride = engine.modelId,
+                voicePlan = voicePlan,
                 flashSrActiveOverride = flashSr != null,
                 emotionActiveOverride = emotionClassifier != null,
                 contextualStressActiveOverride = prefs.contextualStressEnabled && com.holos.reader.tts.OnnxAddonManager.isAddonReady(activity, com.holos.reader.tts.OnnxAddonId.CONTEXTUAL_STRESS),
             )
             val outFile = TtsPlaybackController.offlineChapterFile(activity, renderBookId, renderChapterIdx, snapshot.recipe)
-            val defaultVoice = snapshot.selectedVoice?.takeIf {
-                it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
-            } ?: engine.voices.firstOrNull()
+            val defaultVoice = roleEngines.route(VoiceRole.NARRATOR).voice
             val cacheLease = com.holos.reader.tts.OfflineStorageManager.acquireWrite(outFile)
             if (cacheLease == null) {
                 emotionLease?.close()
@@ -1604,19 +1675,12 @@ class AudioSheetController(
                         if (snapshot.adaptiveVoicesEnabled) {
                             for (seg in AdaptiveVoiceRouter.segmentParagraph(b.text)) {
                                 if (offlineRenderCancel.get()) break
-                                val segVoice = AdaptiveVoiceRouter.resolveVoice(
-                                    role = seg.role,
-                                    selectedVoice = snapshot.selectedVoice,
-                                    adaptiveVoicesEnabled = snapshot.adaptiveVoicesEnabled,
-                                    systemVoice = snapshot.systemVoice,
-                                    dialogueVoice = snapshot.dialogueVoice,
-                                    availableVoices = engine.voices,
-                                )
+                                val route = roleEngines.route(seg.role)
                                 HolosSafeSynthesizer.synthesizeParagraphStreaming(
-                                    engine = engine,
+                                    engine = route.engine,
                                     stressifier = stressifier,
                                     rawParagraph = seg.text,
-                                    voice = segVoice,
+                                    voice = route.voice,
                                     speed = snapshot.speechSpeed,
                                     cancelled = offlineRenderCancel,
                                     customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
@@ -1624,8 +1688,9 @@ class AudioSheetController(
                                     supertonicSteps = snapshot.supertonicSteps,
                                     flashSr = flashSr,
                                     emotionClassifier = emotionClassifier,
-                                    onChunk = writeFloats,
-                                )
+                                ) { chunk ->
+                                    writeFloats(roleEngines.toOutput(chunk, route, flashSr != null, outputRate))
+                                }
                             }
                         } else {
                             HolosSafeSynthesizer.synthesizeParagraphStreaming(
@@ -1694,7 +1759,14 @@ class AudioSheetController(
                 emotionLease?.close()
                 flashSrLease?.close()
             }
-                        }
+            }
+            }
+            } catch (e: Exception) {
+                activity.runOnUiThread {
+                    offlineSubTv.text = AppStrings.t(activity, "Помилка: ${e.message}", "Error: ${e.message}")
+                    offlineBadgeTv.text = AppStrings.t(activity, "Офлайн ›", "Offline ›")
+                    offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
+                }
             } finally {
                 offlineRendering.set(false)
             }

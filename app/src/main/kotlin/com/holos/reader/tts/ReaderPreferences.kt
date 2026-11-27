@@ -77,6 +77,25 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getString("voice_dialogue", null)
         set(v) = prefs.edit().putString("voice_dialogue", v).apply()
 
+    fun assignNarratorVoice(model: TtsModelId, voice: String) {
+        prefs.edit().putString("tts_model_id", model.id).putString("voice", voice).apply()
+    }
+
+    fun roleModel(role: VoiceRole): TtsModelId? {
+        val id = prefs.getString("adaptive_model_${role.name}", null)
+        return TtsModelId.entries.firstOrNull { it.id == id }
+    }
+
+    fun roleVoice(role: VoiceRole): String? =
+        prefs.getString("adaptive_voice_${role.name}", null)
+
+    fun assignRoleVoice(role: VoiceRole, model: TtsModelId, voice: String) {
+        prefs.edit()
+            .putString("adaptive_model_${role.name}", model.id)
+            .putString("adaptive_voice_${role.name}", voice)
+            .apply()
+    }
+
     var speechSpeed: Float
         get() = prefs.getFloat("speed", 1.1f).coerceIn(0.5f, 2.5f)
         set(v) = prefs.edit().putFloat("speed", v.coerceIn(0.5f, 2.5f)).apply()

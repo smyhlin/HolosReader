@@ -34,6 +34,7 @@ data class AudioCacheRecipe(
     val contextualStressRevision: String = "",
     val stressOverridesMtime: Long = 0L,
     val stressOverridesSize: Long = 0L,
+    val adaptiveRoleAssignments: String = "",
 ) {
     fun canonicalString(): String {
         val speedMillis = (speechSpeed * 1000f).roundToInt()
@@ -60,6 +61,7 @@ data class AudioCacheRecipe(
             append("|ctxrev=").append(contextualStressRevision)
             append("|sm=").append(stressOverridesMtime)
             append("|ss=").append(stressOverridesSize)
+            if (adaptiveRoleAssignments.isNotEmpty()) append("|routes=").append(adaptiveRoleAssignments)
         }
     }
 
