@@ -61,6 +61,8 @@ import java.util.concurrent.Executors
  */
 class LibraryActivity : Activity() {
 
+    private fun tr(uk: String, en: String): String = AppStrings.t(this, uk, en)
+
     private val worker = Executors.newFixedThreadPool(2)
     private val queryExecutor = Executors.newSingleThreadExecutor()
     private val queryGen = AtomicLong(0L)
@@ -294,7 +296,7 @@ class LibraryActivity : Activity() {
             addView(appMenuBtn, LinearLayout.LayoutParams(d(40), d(40)))
         }
         selectAllBtn = TextView(this).apply {
-            text = "Усі"
+            text = tr("Усі", "All")
             textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
             tag = "primary_icon"
@@ -448,18 +450,18 @@ class LibraryActivity : Activity() {
 
         val row1 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(actionTile(R.drawable.ic_book, "Відкрити") {
+            addView(actionTile(R.drawable.ic_book, tr("Відкрити", "Open")) {
                 selectedIds.firstOrNull()?.let { id -> db.getBook(id)?.let { openBook(it) } }
                 exitSelectionMode()
             }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(actionTile(R.drawable.ic_label, "Тег") { showTagSelectedDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(actionTile(R.drawable.ic_check, "Статус") { showStatusSelectedDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_label, tr("Тег", "Tag")) { showTagSelectedDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_check, tr("Статус", "Status")) { showStatusSelectedDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
         val row2 = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(actionTile(R.drawable.ic_info, "Деталі") { showSelectedDetailsDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(actionTile(R.drawable.ic_delete, "Видалити", isDanger = true) { deleteSelectedBooks() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-            addView(actionTile(R.drawable.ic_close, "Скасувати") { exitSelectionMode() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_info, tr("Деталі", "Details")) { showSelectedDetailsDialog() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_delete, tr("Видалити", "Delete"), isDanger = true) { deleteSelectedBooks() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(actionTile(R.drawable.ic_close, tr("Скасувати", "Cancel")) { exitSelectionMode() }, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
         }
 
         return LinearLayout(this).apply {
@@ -657,7 +659,7 @@ class LibraryActivity : Activity() {
             }
             titleTv.text = book.title
             titleTv.setTextColor(p.primaryText)
-            metaTv.text = "${book.progressPercent}%  ·  ${book.chapterCount} розд."
+            metaTv.text = "${book.progressPercent}%  ·  ${book.chapterCount} ${tr("розд.", "ch.")}"
             metaTv.setTextColor(p.secondaryText)
             card.setOnClickListener {
                 if (selectionMode) toggleSelection(book.id) else openBook(book)
@@ -685,7 +687,7 @@ class LibraryActivity : Activity() {
                 val wrap = (convertView as? FrameLayout) ?: FrameLayout(this@LibraryActivity).apply {
                     setPadding(0, d(14), 0, 0)
                     addView(TextView(this@LibraryActivity).apply {
-                        text = "+  Імпортувати книги"
+                        text = tr("+  Імпортувати книги", "+  Import Books")
                         textSize = 14f
                         setTypeface(typeface, Typeface.BOLD)
                         gravity = Gravity.CENTER
@@ -788,7 +790,7 @@ class LibraryActivity : Activity() {
                 descTv.visibility = View.GONE
             }
             val tagSuffix = if (book.tags.isNotBlank()) "  ·  ${book.tags}" else ""
-            metaTv.text = "${book.progressPercent}%  ·  ${book.chapterCount} розд.$tagSuffix"
+            metaTv.text = "${book.progressPercent}%  ·  ${book.chapterCount} ${tr("розд.", "ch.")}$tagSuffix"
             metaTv.setTextColor(p.secondaryText)
             if (selectionMode) {
                 val isSel = book.id in selectedIds
@@ -847,7 +849,7 @@ class LibraryActivity : Activity() {
         UiTheme.showIconMenuDialog(
             this,
             prefs.theme,
-            "Додати книгу",
+            tr("Додати книгу", "Add Book"),
             listOf(
                 IconMenuItem(
                     R.drawable.ic_book,
@@ -868,10 +870,10 @@ class LibraryActivity : Activity() {
                 ) {
                     openFromGoogleDrive()
                 },
-                IconMenuItem(R.drawable.ic_layout, "Імпортувати папку з EPUB", "Пакетне додавання всієї бібліотеки") {
+                IconMenuItem(R.drawable.ic_layout, tr("Імпортувати папку з EPUB", "Import EPUB folder"), tr("Пакетне додавання всієї бібліотеки", "Batch import an entire folder")) {
                     startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_PICK_DIR)
                 },
-                IconMenuItem(R.drawable.ic_font, "Зі вставленого тексту", "Створити книгу з буфера обміну") {
+                IconMenuItem(R.drawable.ic_font, tr("Зі вставленого тексту", "From pasted text"), tr("Створити книгу з буфера обміну", "Create a book from clipboard text")) {
                     showPasteTextDialog()
                 },
             ),
@@ -880,9 +882,9 @@ class LibraryActivity : Activity() {
 
     private fun showPasteTextDialog() {
         val p = UiTheme.palette(prefs.theme)
-        val titleEt = EditText(this).apply { hint = "Назва (напр., Розділ 1)"; setTextColor(p.primaryText); setHintTextColor(p.mutedText) }
+        val titleEt = EditText(this).apply { hint = tr("Назва (напр., Розділ 1)", "Title (e.g., Chapter 1)"); setTextColor(p.primaryText); setHintTextColor(p.mutedText) }
         val bodyEt = EditText(this).apply {
-            hint = "Вставте український текст…"
+            hint = tr("Вставте текст…", "Paste text…")
             setTextColor(p.primaryText)
             setHintTextColor(p.mutedText)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
@@ -895,9 +897,9 @@ class LibraryActivity : Activity() {
             addView(bodyEt)
         }
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Створити книгу з тексту")
+            .setTitle(tr("Створити книгу з тексту", "Create Book from Text"))
             .setView(box)
-            .setPositiveButton("Створити") { _, _ ->
+            .setPositiveButton(tr("Створити", "Create")) { _, _ ->
                 val text = bodyEt.text.toString().trim()
                 if (text.isNotEmpty()) {
                     worker.execute {
@@ -909,7 +911,7 @@ class LibraryActivity : Activity() {
                     }
                 }
             }
-            .setNegativeButton("Скасувати", null)
+            .setNegativeButton(tr("Скасувати", "Cancel"), null)
             .showThemed()
     }
 
@@ -917,30 +919,30 @@ class LibraryActivity : Activity() {
         UiTheme.showIconMenuDialog(
             this,
             prefs.theme,
-            "Вигляд полиці",
+            tr("Вигляд полиці", "Library View"),
             listOf(
-                IconMenuItem(R.drawable.ic_menu, "Список (List)", checked = !prefs.isGridView) {
+                IconMenuItem(R.drawable.ic_menu, tr("Список", "List"), checked = !prefs.isGridView) {
                     prefs.isGridView = false; refreshBooks()
                 },
-                IconMenuItem(R.drawable.ic_layout, "Сітка (Grid)", "Колонок: ${prefs.gridColumns}", checked = prefs.isGridView) {
+                IconMenuItem(R.drawable.ic_layout, tr("Сітка", "Grid"), tr("Колонок: ${prefs.gridColumns}", "Columns: ${prefs.gridColumns}"), checked = prefs.isGridView) {
                     prefs.isGridView = true; refreshBooks()
                 },
-                IconMenuItem(R.drawable.ic_more_horiz, "Колонок у сітці: ${prefs.gridColumns}", "Перемкнути 2 / 3 / 4") {
+                IconMenuItem(R.drawable.ic_more_horiz, tr("Колонок у сітці: ${prefs.gridColumns}", "Grid columns: ${prefs.gridColumns}"), tr("Перемкнути 2 / 3 / 4", "Switch 2 / 3 / 4")) {
                     prefs.gridColumns = when (prefs.gridColumns) { 2 -> 3; 3 -> 4; else -> 2 }; refreshBooks()
                 },
-                IconMenuItem(R.drawable.ic_timer, "Сортування: Останні прочитані", checked = prefs.sortBy == "RECENT") {
+                IconMenuItem(R.drawable.ic_timer, tr("Сортування: Останні прочитані", "Sort: Recently Read"), checked = prefs.sortBy == "RECENT") {
                     prefs.sortBy = "RECENT"; refreshBooks()
                 },
-                IconMenuItem(R.drawable.ic_font, "Сортування: За назвою", checked = prefs.sortBy == "TITLE") {
+                IconMenuItem(R.drawable.ic_font, tr("Сортування: За назвою", "Sort: Title"), checked = prefs.sortBy == "TITLE") {
                     prefs.sortBy = "TITLE"; refreshBooks()
                 },
-                IconMenuItem(R.drawable.ic_book, "Сортування: За автором", checked = prefs.sortBy == "AUTHOR") {
+                IconMenuItem(R.drawable.ic_book, tr("Сортування: За автором", "Sort: Author"), checked = prefs.sortBy == "AUTHOR") {
                     prefs.sortBy = "AUTHOR"; refreshBooks()
                 },
-                IconMenuItem(R.drawable.ic_stats, "Сортування: За прогресом", checked = prefs.sortBy == "PROGRESS") {
+                IconMenuItem(R.drawable.ic_stats, tr("Сортування: За прогресом", "Sort: Progress"), checked = prefs.sortBy == "PROGRESS") {
                     prefs.sortBy = "PROGRESS"; refreshBooks()
                 },
-                IconMenuItem(R.drawable.ic_label, "Фільтр статусу", "Усі / Читаю / Непрочитані / Прочитані") {
+                IconMenuItem(R.drawable.ic_label, tr("Фільтр статусу", "Status Filter"), tr("Усі / Читаю / Непрочитані / Прочитані", "All / Reading / Unread / Finished")) {
                     showStatusFilterDialog()
                 },
             ),
@@ -948,10 +950,10 @@ class LibraryActivity : Activity() {
     }
 
     private fun showStatusFilterDialog() {
-        val labels = arrayOf("Усі книги", "Читаю", "Непрочитані", "Прочитані")
+        val labels = arrayOf(tr("Усі книги", "All books"), tr("Читаю", "Reading"), tr("Непрочитані", "Unread"), tr("Прочитані", "Finished"))
         val codes = arrayOf("ALL", "READING", "UNREAD", "FINISHED")
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Фільтр за статусом")
+            .setTitle(tr("Фільтр за статусом", "Filter by Status"))
             .setItems(labels) { _, which ->
                 prefs.statusFilter = codes[which]
                 refreshBooks()
@@ -966,21 +968,21 @@ class LibraryActivity : Activity() {
             prefs.theme,
             "HolosReader",
             listOf(
-                IconMenuItem(R.drawable.ic_settings, "Налаштування читання", "Шрифт, макет, тема, поведінка, TTS") {
+                IconMenuItem(R.drawable.ic_settings, tr("Налаштування читання", "Reading Settings"), tr("Шрифт, макет, тема, поведінка, TTS", "Font, layout, theme, behavior, TTS")) {
                     startActivity(Intent(this, ReaderSettingsActivity::class.java))
                 },
-                IconMenuItem(R.drawable.ic_stats, "Статистика читання", "Графіки часу, активність та серії") {
+                IconMenuItem(R.drawable.ic_stats, tr("Статистика читання", "Reading Statistics"), tr("Графіки часу, активність та серії", "Time charts, activity & streaks")) {
                     startActivity(Intent(this, StatisticsActivity::class.java))
                 },
-                IconMenuItem(R.drawable.ic_font, "Словник наголосів", "Редагувати stress_user.txt") {
+                IconMenuItem(R.drawable.ic_font, tr("Словник наголосів", "Stress Dictionary"), tr("Редагувати stress_user.txt", "Edit stress_user.txt")) {
                     startActivity(Intent(this, StressEditorActivity::class.java))
                 },
-                IconMenuItem(R.drawable.ic_palette, "Темна тема", "Швидке перемикання Dark / Light", checked = darkOn) {
+                IconMenuItem(R.drawable.ic_palette, tr("Темна тема", "Dark Theme"), tr("Швидке перемикання теми", "Quick dark / light toggle"), checked = darkOn) {
                     prefs.theme = if (darkOn) ReaderTheme.LIGHT else ReaderTheme.DARK
                     applyTheme()
                     renderBooks()
                 },
-                IconMenuItem(R.drawable.ic_book, "Відкривати останню книгу", "Автостарт при запуску додатка", checked = prefs.openLastBookOnStart) {
+                IconMenuItem(R.drawable.ic_book, tr("Відкривати останню книгу", "Open Last Book"), tr("Автостарт при запуску застосунку", "Auto-open on app launch"), checked = prefs.openLastBookOnStart) {
                     prefs.openLastBookOnStart = !prefs.openLastBookOnStart
                 },
                 IconMenuItem(
@@ -990,7 +992,7 @@ class LibraryActivity : Activity() {
                 ) {
                     openModelSelector(isFirstLaunch = false)
                 },
-                IconMenuItem(R.drawable.ic_info, "Про програму (About)", "GitHub, HolosTTS, словники та джерела") {
+                IconMenuItem(R.drawable.ic_info, tr("Про програму", "About"), tr("GitHub, HolosTTS, словники та джерела", "GitHub, HolosTTS, dictionaries & credits")) {
                     UiTheme.showAboutDialog(this, prefs.theme)
                 },
             ),
@@ -1002,13 +1004,9 @@ class LibraryActivity : Activity() {
         val mins = s.totalReadingSec / 60L
         val hrs = mins / 60L
         val remMin = mins % 60L
-        val msg = "Усього книг: ${s.totalBooks}\n" +
-            "Зараз читається: ${s.readingBooks}\n" +
-            "Завершено: ${s.finishedBooks}\n" +
-            "Пройдено розділів: ${s.totalChaptersRead}\n" +
-            "Час читання/прослуховування: ${hrs} год ${remMin} хв"
+        val msg = tr("Усього книг: ${s.totalBooks}\nЗараз читається: ${s.readingBooks}\nЗавершено: ${s.finishedBooks}\nПройдено розділів: ${s.totalChaptersRead}\nЧас читання/прослуховування: ${hrs} год ${remMin} хв", "Total books: ${s.totalBooks}\nReading: ${s.readingBooks}\nFinished: ${s.finishedBooks}\nChapters read: ${s.totalChaptersRead}\nReading/listening time: ${hrs}h ${remMin}m")
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Статистика читання")
+            .setTitle(tr("Статистика читання", "Reading Statistics"))
             .setMessage(msg)
             .setPositiveButton("OK", null)
             .showThemed()
@@ -1016,24 +1014,24 @@ class LibraryActivity : Activity() {
 
     private fun showTagSelectedDialog() {
         val p = UiTheme.palette(prefs.theme)
-        val et = EditText(this).apply { hint = "Напр.: LitRPG, Ранобе, Улюблене"; setTextColor(p.primaryText); setHintTextColor(p.mutedText) }
+        val et = EditText(this).apply { hint = tr("Напр.: LitRPG, Ранобе, Улюблене", "e.g.: LitRPG, Light Novel, Favorites"); setTextColor(p.primaryText); setHintTextColor(p.mutedText) }
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Додати тег (${selectedIds.size})")
+            .setTitle(tr("Додати тег (${selectedIds.size})", "Add Tag (${selectedIds.size})"))
             .setView(et)
-            .setPositiveButton("Зберегти") { _, _ ->
+            .setPositiveButton(tr("Зберегти", "Save")) { _, _ ->
                 db.updateTags(selectedIds, et.text.toString())
                 exitSelectionMode()
                 refreshBooks()
             }
-            .setNegativeButton("Скасувати", null)
+            .setNegativeButton(tr("Скасувати", "Cancel"), null)
             .showThemed()
     }
 
     private fun showStatusSelectedDialog() {
         val statuses = ReadingStatus.entries.toTypedArray()
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Змінити статус (${selectedIds.size})")
-            .setItems(statuses.map { it.label }.toTypedArray()) { _, which ->
+            .setTitle(tr("Змінити статус (${selectedIds.size})", "Change Status (${selectedIds.size})"))
+            .setItems(statuses.map { it.label(AppStrings.isEnglish(this)) }.toTypedArray()) { _, which ->
                 db.updateStatus(selectedIds, statuses[which])
                 exitSelectionMode()
                 refreshBooks()
@@ -1044,15 +1042,12 @@ class LibraryActivity : Activity() {
     private fun showSelectedDetailsDialog() {
         val b = selectedIds.firstOrNull()?.let { db.getBook(it) } ?: return
         val sizeMb = db.getBookFile(b).length() / (1024.0 * 1024.0)
-        val msg = "Назва: ${b.title}\n" +
-            "Автор: ${b.author}\n" +
-            "Розділів: ${b.chapterCount}\n" +
-            "Прогрес: ${b.progressPercent}% (розд. ${b.lastChapterIndex + 1})\n" +
-            "Статус: ${b.status.label}\n" +
-            "Теги: ${b.tags.ifBlank { "—" }}\n" +
-            String.format("Розмір файлу: %.2f МБ", sizeMb)
+        val msg = tr(
+            "Назва: ${b.title}\nАвтор: ${b.author}\nРозділів: ${b.chapterCount}\nПрогрес: ${b.progressPercent}% (розд. ${b.lastChapterIndex + 1})\nСтатус: ${b.status.label(false)}\nТеги: ${b.tags.ifBlank { "—" }}\n" + String.format(java.util.Locale.US, "Розмір файлу: %.2f МБ", sizeMb),
+            "Title: ${b.title}\nAuthor: ${b.author}\nChapters: ${b.chapterCount}\nProgress: ${b.progressPercent}% (ch. ${b.lastChapterIndex + 1})\nStatus: ${b.status.name}\nTags: ${b.tags.ifBlank { "—" }}\n" + String.format(java.util.Locale.US, "File size: %.2f MB", sizeMb),
+        )
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Деталі книги")
+            .setTitle(tr("Деталі книги", "Book Details"))
             .setMessage(msg)
             .setPositiveButton("OK", null)
             .showThemed()
@@ -1062,13 +1057,13 @@ class LibraryActivity : Activity() {
         val booksToDelete = selectedIds.toList()
         if (booksToDelete.isEmpty()) return
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Видалити ${booksToDelete.size} книг(и)?")
-            .setPositiveButton("Видалити") { _, _ ->
+            .setTitle(tr("Видалити ${booksToDelete.size} книг(и)?", "Delete ${booksToDelete.size} book(s)?"))
+            .setPositiveButton(tr("Видалити", "Delete")) { _, _ ->
                 db.deleteBooks(booksToDelete)
                 exitSelectionMode()
                 refreshBooks()
             }
-            .setNegativeButton("Скасувати", null)
+            .setNegativeButton(tr("Скасувати", "Cancel"), null)
             .showThemed()
     }
 
@@ -1106,7 +1101,7 @@ class LibraryActivity : Activity() {
                     } else {
                         modelStatusTv.text = AppStrings.t(
                             this,
-                            "Словник (2,88 млн) і ONNX-акцентор готові. Оберіть модель озвучення:",
+                            tr("Словник (2,88 млн) і ONNX-акцентор готові. Оберіть модель озвучення:", "Dictionary (2.88M forms) & ONNX accentor ready. Choose a TTS model:"),
                             "Dictionary (2.88M) & ONNX accentor ready. Choose a TTS voice model:",
                         )
                         downloadModelBtn.text = AppStrings.t(this, "Обрати та завантажити модель TTS", "Choose & Download TTS Model")
@@ -1118,7 +1113,7 @@ class LibraryActivity : Activity() {
                     }
                 }
             } catch (e: Exception) {
-                runOnUiThread { modelStatusTv.text = "Помилка: ${e.message}" }
+                runOnUiThread { modelStatusTv.text = tr("Помилка: ${e.message}", "Error: ${e.message}") }
             }
         }
     }
@@ -1179,7 +1174,7 @@ class LibraryActivity : Activity() {
                 this,
                 AppStrings.t(
                     this,
-                    "Оберіть .epub у Google Drive → «Надіслати копію» або «Відкрити за допомогою» → HolosReader",
+                    tr("Оберіть .epub у Google Drive → «Надіслати копію» або «Відкрити за допомогою» → HolosReader", "Pick an .epub in Google Drive → Share / Open with → HolosReader"),
                     "Pick an .epub in Google Drive → Share / Open with → HolosReader",
                 ),
                 Toast.LENGTH_LONG,
@@ -1214,7 +1209,7 @@ class LibraryActivity : Activity() {
                             }
                         } catch (e: Exception) {
                             runOnUiThread {
-                                Toast.makeText(this, e.message ?: "Помилка прив’язки EPUB", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this, e.message ?: tr("Помилка прив’язки EPUB", "Failed to relink EPUB"), Toast.LENGTH_LONG).show()
                             }
                         }
                     }
@@ -1249,7 +1244,7 @@ class LibraryActivity : Activity() {
     }
 
     private fun importSingleUri(uri: Uri) {
-        Toast.makeText(this, "Індексація EPUB…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, tr("Індексація EPUB…", "Indexing EPUB…"), Toast.LENGTH_SHORT).show()
         worker.execute {
             try {
                 val name = queryDisplayName(uri)
@@ -1259,13 +1254,13 @@ class LibraryActivity : Activity() {
                     openBook(book)
                 }
             } catch (e: Exception) {
-                runOnUiThread { Toast.makeText(this, "Помилка EPUB: ${e.message}", Toast.LENGTH_LONG).show() }
+                runOnUiThread { Toast.makeText(this, tr("Помилка EPUB: ${e.message}", "EPUB error: ${e.message}"), Toast.LENGTH_LONG).show() }
             }
         }
     }
 
     private fun importDirectoryUri(treeUri: Uri) {
-        Toast.makeText(this, "Пакетний імпорт EPUB із папки…", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, tr("Пакетний імпорт EPUB із папки…", "Batch importing EPUBs from folder…"), Toast.LENGTH_SHORT).show()
         worker.execute {
             val result = db.importFromDirectoryTree(treeUri)
             runOnUiThread { showBatchImportResult(result) }
@@ -1277,7 +1272,7 @@ class LibraryActivity : Activity() {
         refreshBooks()
         val summary = AppStrings.t(
             this,
-            "Додано: ${result.added}. Відновлено: ${result.reattached}. Вже в бібліотеці: ${result.duplicates}. Помилок: ${result.failed}",
+            tr("Додано: ${result.added}. Відновлено: ${result.reattached}. Вже в бібліотеці: ${result.duplicates}. Помилок: ${result.failed}", "Added: ${result.added}. Relinked: ${result.reattached}. Already in library: ${result.duplicates}. Failed: ${result.failed}"),
             "Added: ${result.added}. Restored: ${result.reattached}. Already in library: ${result.duplicates}. Failed: ${result.failed}",
         )
         if (result.failed == 0) {

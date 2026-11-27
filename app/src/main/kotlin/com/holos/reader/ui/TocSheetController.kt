@@ -79,6 +79,7 @@ class TocSheetController(
 
     private val dp = activity.resources.displayMetrics.density
     private fun d(v: Int): Int = (v * dp).toInt()
+    private fun tr(uk: String, en: String): String = AppStrings.t(activity, uk, en)
 
     private val adapter = object : BaseAdapter() {
         override fun getCount(): Int = if (activeTab == 0) tocRows.size else bookmarks.size
@@ -109,7 +110,7 @@ class TocSheetController(
             if (activeTab == 0) {
                 when (val item = tocRows[position]) {
                     is RowItem.CurrentMarker -> {
-                        left.text = "●  Поточна позиція"
+                        left.text = tr("●  Поточна позиція", "●  Current position")
                         left.setTextColor(p.accentBlue)
                         left.setTypeface(null, Typeface.BOLD)
                         right.text = "${item.chapterIndex + 1}"
@@ -129,7 +130,7 @@ class TocSheetController(
                 left.text = bm.excerpt
                 left.setTextColor(p.primaryText)
                 left.setTypeface(null, Typeface.NORMAL)
-                right.text = "Розд. ${bm.chapterIndex + 1}"
+                right.text = tr("Розд. ${bm.chapterIndex + 1}", "Ch. ${bm.chapterIndex + 1}")
                 right.setTextColor(p.secondaryText)
             }
             return row
@@ -150,7 +151,7 @@ class TocSheetController(
         backBtn = UiTheme.iconView(activity, R.drawable.ic_chevron_left, padDp = 10) { hide() }
         searchInput = EditText(activity).apply {
             background = null
-            hint = "Пошук розділу…"
+            hint = tr("Пошук розділу…", "Search chapters…")
             textSize = 14f
             isSingleLine = true
             setPadding(d(6), d(8), d(6), d(8))
@@ -246,7 +247,7 @@ class TocSheetController(
 
         // Bottom Tabs: TOC | Bookmarks
         tocTabBtn = TextView(activity).apply {
-            text = "Зміст"
+            text = tr("Зміст", "Contents")
             textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
@@ -254,7 +255,7 @@ class TocSheetController(
             setOnClickListener { switchTab(0) }
         }
         bmTabBtn = TextView(activity).apply {
-            text = "Закладки"
+            text = tr("Закладки", "Bookmarks")
             textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
@@ -290,7 +291,7 @@ class TocSheetController(
         book = bookRecord
         currentChapter = activeChapterIndex
         titleTv.text = bookRecord.title
-        authorTv.text = "${bookRecord.author}  ·  ${bookRecord.chapterCount} розд."
+        authorTv.text = "${bookRecord.author}  ·  ${bookRecord.chapterCount} ${tr("розд.", "ch.")}"
         coverImg.setImageBitmap(coverBmp)
         searchInput.setText("")
         applyPalette()

@@ -3,16 +3,18 @@ package com.holos.reader.tts
 import android.content.Context
 import android.content.SharedPreferences
 
-enum class ReaderTheme(val id: Int, val label: String) {
-    LIGHT(0, "Світла"),
-    GRAY(1, "Сіра"),
-    SEPIA(2, "Сепія"),
-    GREEN(3, "Трава"),
-    DARK(4, "Темна"),
-    CHERRY(5, "Вишня"),
-    SKY(6, "Небо"),
-    NORD(7, "Nord"),
-    AMOLED(8, "AMOLED");
+enum class ReaderTheme(val id: Int, val label: String, val labelEn: String) {
+    LIGHT(0, "Світла", "Light"),
+    GRAY(1, "Сіра", "Gray"),
+    SEPIA(2, "Сепія", "Sepia"),
+    GREEN(3, "Трава", "Green"),
+    DARK(4, "Темна", "Dark"),
+    CHERRY(5, "Вишня", "Cherry"),
+    SKY(6, "Небо", "Sky"),
+    NORD(7, "Nord", "Nord"),
+    AMOLED(8, "AMOLED", "AMOLED");
+
+    fun label(en: Boolean): String = if (en) labelEn else label
 
     companion object {
         fun fromId(id: Int): ReaderTheme = entries.firstOrNull { it.id == id } ?: DARK

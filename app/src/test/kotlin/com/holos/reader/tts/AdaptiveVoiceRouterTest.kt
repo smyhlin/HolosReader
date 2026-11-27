@@ -78,4 +78,62 @@ class AdaptiveVoiceRouterTest {
         assertEquals(VoiceRole.NARRATOR, segs[1].role)
         assertEquals(VoiceRole.DIALOGUE, segs[2].role)
     }
+
+    @Test
+    fun defaultAdaptiveVoices_useDaryna78ForSystemAndLada3ForDialogue() {
+        val voices = HolosVoiceCatalog.defaultVoicesFor(TtsModelId.HOLOS_INT8)
+
+        val narrator = AdaptiveVoiceRouter.resolveVoice(
+            role = VoiceRole.NARRATOR,
+            selectedVoice = "Speaker_11",
+            adaptiveVoicesEnabled = true,
+            systemVoice = null,
+            dialogueVoice = null,
+            availableVoices = voices,
+        )
+        val system = AdaptiveVoiceRouter.resolveVoice(
+            role = VoiceRole.SYSTEM,
+            selectedVoice = "Speaker_11",
+            adaptiveVoicesEnabled = true,
+            systemVoice = null,
+            dialogueVoice = null,
+            availableVoices = voices,
+        )
+        val dialogue = AdaptiveVoiceRouter.resolveVoice(
+            role = VoiceRole.DIALOGUE,
+            selectedVoice = "Speaker_11",
+            adaptiveVoicesEnabled = true,
+            systemVoice = null,
+            dialogueVoice = null,
+            availableVoices = voices,
+        )
+
+        assertEquals("Speaker_11", narrator)
+        assertEquals("Speaker_78", system)
+        assertEquals("Дарина (78)", HolosVoiceCatalog.displayName(system!!))
+        assertEquals("Speaker_3", dialogue)
+        assertEquals("Лада (3)", HolosVoiceCatalog.displayName(dialogue!!))
+    }
+
+    @Test
+    fun localizedEnumLabels_haveCleanEnglishAndUkrainianVariants() {
+        val cyrillic = Regex("[А-Яа-яІіЇїЄєҐґ]")
+        for (role in VoiceRole.entries) {
+            org.junit.Assert.assertFalse("VoiceRole.${role.name} EN label has Cyrillic", cyrillic.containsMatchIn(role.label(true)))
+            org.junit.Assert.assertFalse("VoiceRole.${role.name} EN shortLabel has Cyrillic", cyrillic.containsMatchIn(role.shortLabel(true)))
+        }
+        for (gender in VoiceGender.entries) {
+            org.junit.Assert.assertFalse("VoiceGender.${gender.name} EN label has Cyrillic", cyrillic.containsMatchIn(gender.label(true)))
+        }
+        for (id in HolosVoiceCatalog.defaultVoicesFor(TtsModelId.HOLOS_INT8)) {
+            val info = HolosVoiceCatalog.info(id)
+            org.junit.Assert.assertFalse("VoiceInfo($id) EN timbre has Cyrillic: ${info.timbre(true)}", cyrillic.containsMatchIn(info.timbre(true)))
+        }
+        for (status in com.holos.reader.epub.ReadingStatus.entries) {
+            org.junit.Assert.assertFalse("ReadingStatus.${status.name} EN label has Cyrillic", cyrillic.containsMatchIn(status.label(true)))
+        }
+        for (theme in ReaderTheme.entries) {
+            org.junit.Assert.assertFalse("ReaderTheme.${theme.name} EN label has Cyrillic", cyrillic.containsMatchIn(theme.label(true)))
+        }
+    }
 }

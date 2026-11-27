@@ -57,6 +57,7 @@ class StatisticsActivity : Activity() {
 
     private val dp get() = resources.displayMetrics.density
     private fun d(v: Int): Int = (v * dp).toInt()
+    private fun tr(uk: String, en: String): String = AppStrings.t(this, uk, en)
     private val dayFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -117,7 +118,7 @@ class StatisticsActivity : Activity() {
             setColorFilter(palette.primaryText)
         }
         val titleTv = TextView(this).apply {
-            text = "Статистика читання"
+            text = tr("Статистика читання", "Reading Statistics")
             textSize = 18f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(palette.primaryText)
@@ -133,25 +134,25 @@ class StatisticsActivity : Activity() {
         root.addView(topBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(18) })
 
         // 1. Reading Time Section
-        root.addView(sectionLabel("Час читання"))
+        root.addView(sectionLabel(tr("Час читання", "Reading Time")))
         root.addView(buildReadingTimeCard(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
             topMargin = d(8); bottomMargin = d(20)
         })
 
         // 2. Activity Heatmap Section
-        root.addView(sectionLabel("Активність"))
+        root.addView(sectionLabel(tr("Активність", "Activity")))
         root.addView(buildActivityCard(), LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
             topMargin = d(8); bottomMargin = d(20)
         })
 
         // 3. Overview Section
-        root.addView(sectionLabel("Огляд"))
+        root.addView(sectionLabel(tr("Огляд", "Overview")))
         root.addView(
             buildGroupedRowsCard(
                 listOf(
-                    "Сьогодні" to formatDuration(todaySec),
-                    "Поточна серія" to formatDays(currentStreak),
-                    "Найдовша серія" to formatDays(longestStreak),
+                    tr("Сьогодні", "Today") to formatDuration(todaySec),
+                    tr("Поточна серія", "Current Streak") to formatDays(currentStreak),
+                    tr("Найдовша серія", "Longest Streak") to formatDays(longestStreak),
                 )
             ),
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
@@ -161,13 +162,13 @@ class StatisticsActivity : Activity() {
 
         // 4. All Time Section
         val allTimeSec = max(stats.totalReadingSec, dailyActivity.values.sum())
-        root.addView(sectionLabel("За весь час"))
+        root.addView(sectionLabel(tr("За весь час", "All Time")))
         root.addView(
             buildGroupedRowsCard(
                 listOf(
-                    "Час читання" to formatDuration(allTimeSec),
-                    "Книг" to stats.totalBooks.toString(),
-                    "Сторінок" to totalPages.toString(),
+                    tr("Час читання", "Reading Time") to formatDuration(allTimeSec),
+                    tr("Книг", "Books") to stats.totalBooks.toString(),
+                    tr("Сторінок", "Pages") to totalPages.toString(),
                 )
             ),
             LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
@@ -209,9 +210,9 @@ class StatisticsActivity : Activity() {
             }
         }.also { periodTabs.add(period to it) }
 
-        segRow.addView(segTab("Тиждень", Period.WEEK), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        segRow.addView(segTab("Місяць", Period.MONTH), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
-        segRow.addView(segTab("Рік", Period.YEAR), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        segRow.addView(segTab(tr("Тиждень", "Week"), Period.WEEK), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        segRow.addView(segTab(tr("Місяць", "Month"), Period.MONTH), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        segRow.addView(segTab(tr("Рік", "Year"), Period.YEAR), LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
 
         periodTotalTv = TextView(this).apply {
             textSize = 26f
@@ -284,7 +285,7 @@ class StatisticsActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             addView(TextView(this@StatisticsActivity).apply {
-                text = "Менше"
+                text = tr("Менше", "Less")
                 textSize = 11f
                 setTextColor(palette.secondaryText)
             })
@@ -298,7 +299,7 @@ class StatisticsActivity : Activity() {
                 )
             }
             addView(TextView(this@StatisticsActivity).apply {
-                text = "Більше"
+                text = tr("Більше", "More")
                 textSize = 11f
                 setTextColor(palette.secondaryText)
                 setPadding(d(5), 0, 0, 0)
@@ -363,7 +364,7 @@ class StatisticsActivity : Activity() {
     private fun updatePeriodSummaryOnly() {
         periodTotalTv.text = formatDuration(currentPeriodTotalSec)
         val avgSec = if (currentPeriodDays > 0) currentPeriodTotalSec / currentPeriodDays else 0L
-        periodAvgTv.text = "Середнє за день ${formatDuration(avgSec)}"
+        periodAvgTv.text = tr("Середнє за день ${formatDuration(avgSec)}", "Daily avg ${formatDuration(avgSec)}")
     }
 
     private fun updatePeriodChart() {
@@ -379,7 +380,7 @@ class StatisticsActivity : Activity() {
 
         when (selectedPeriod) {
             Period.WEEK -> {
-                val dowShort = arrayOf("", "Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб")
+                val dowShort = if (AppStrings.isEnglish(this)) arrayOf("", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat") else arrayOf("", "Нд", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб")
                 cal.add(Calendar.DAY_OF_YEAR, -6)
                 var sum = 0L
                 for (i in 0 until 7) {
@@ -388,7 +389,7 @@ class StatisticsActivity : Activity() {
                     sum += sec
                     val dow = cal.get(Calendar.DAY_OF_WEEK)
                     val dayNum = cal.get(Calendar.DAY_OF_MONTH)
-                    val monName = MONTHS_SHORT[cal.get(Calendar.MONTH)]
+                    val monName = monthsShort()[cal.get(Calendar.MONTH)]
                     entries.add(BarEntry(label = dowShort[dow], tooltip = "$dayNum $monName", valueSec = sec, showLabel = true))
                     cal.add(Calendar.DAY_OF_YEAR, 1)
                 }
@@ -404,7 +405,7 @@ class StatisticsActivity : Activity() {
                     val sec = dailyActivity[key] ?: 0L
                     sum += sec
                     val dayNum = cal.get(Calendar.DAY_OF_MONTH)
-                    val monName = MONTHS_SHORT[cal.get(Calendar.MONTH)]
+                    val monName = monthsShort()[cal.get(Calendar.MONTH)]
                     entries.add(
                         BarEntry(
                             label = dayNum.toString(),
@@ -419,7 +420,7 @@ class StatisticsActivity : Activity() {
                 currentPeriodDays = 30
             }
             Period.YEAR -> {
-                val monthInitials = arrayOf("С", "Л", "Б", "К", "Т", "Ч", "Л", "С", "В", "Ж", "Л", "Г")
+                val monthInitials = if (AppStrings.isEnglish(this)) arrayOf("J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D") else arrayOf("С", "Л", "Б", "К", "Т", "Ч", "Л", "С", "В", "Ж", "Л", "Г")
                 cal.set(Calendar.DAY_OF_MONTH, 1)
                 cal.add(Calendar.MONTH, -11)
                 var sum = 0L
@@ -432,7 +433,7 @@ class StatisticsActivity : Activity() {
                     entries.add(
                         BarEntry(
                             label = monthInitials[m],
-                            tooltip = "${MONTHS_SHORT[m]} $y",
+                            tooltip = "${monthsShort()[m]} $y",
                             valueSec = sec,
                             showLabel = true,
                         )
@@ -452,7 +453,7 @@ class StatisticsActivity : Activity() {
         yearTitleTv.text = selectedYear.toString()
         val prefix = String.format(Locale.US, "%04d-", selectedYear)
         val yearSec = dailyActivity.entries.sumOf { if (it.key.startsWith(prefix)) it.value else 0L }
-        yearTotalTv.text = "${formatDuration(yearSec)} у $selectedYear"
+        yearTotalTv.text = tr("${formatDuration(yearSec)} у $selectedYear", "${formatDuration(yearSec)} in $selectedYear")
         yearHeatmap.setYearData(selectedYear, dailyActivity)
     }
 
@@ -496,14 +497,26 @@ class StatisticsActivity : Activity() {
         val totalMin = (sec / 60L).coerceAtLeast(0L)
         val h = totalMin / 60L
         val m = totalMin % 60L
-        return when {
-            h > 0L && m > 0L -> "${h}г ${m}хв"
-            h > 0L -> "${h}г 0хв"
-            else -> "${m}хв"
+        val en = AppStrings.isEnglish(this)
+        return if (en) {
+            when {
+                h > 0L && m > 0L -> "${h}h ${m}m"
+                h > 0L -> "${h}h 0m"
+                else -> "${m}m"
+            }
+        } else {
+            when {
+                h > 0L && m > 0L -> "${h}г ${m}хв"
+                h > 0L -> "${h}г 0хв"
+                else -> "${m}хв"
+            }
         }
     }
 
     private fun formatDays(days: Int): String {
+        if (AppStrings.isEnglish(this)) {
+            return if (days == 1) "1 day" else "$days days"
+        }
         val mod10 = days % 10
         val mod100 = days % 100
         val unit = when {
@@ -513,6 +526,9 @@ class StatisticsActivity : Activity() {
         }
         return "$days $unit"
     }
+
+    private fun monthsShort(): Array<String> =
+        if (AppStrings.isEnglish(this)) MONTHS_SHORT_EN else MONTHS_SHORT
 
     private data class BarEntry(
         val label: String,
@@ -725,6 +741,7 @@ class StatisticsActivity : Activity() {
 
     companion object {
         private val MONTHS_SHORT = arrayOf("Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", "Сер", "Вер", "Жов", "Лис", "Гру")
+        private val MONTHS_SHORT_EN = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
         private fun heatmapColors(isDark: Boolean, p: UiPalette): IntArray = if (isDark) {
             intArrayOf(0xFF232325.toInt(), 0xFF47474B.toInt(), 0xFF7B7B80.toInt(), 0xFFB8B8BE.toInt(), 0xFFF2F2F5.toInt())

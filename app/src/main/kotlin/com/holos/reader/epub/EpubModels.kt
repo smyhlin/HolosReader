@@ -3,10 +3,12 @@ package com.holos.reader.epub
 /**
  * Full EPUB 3 / EPUB 2 domain models optimized for massive 6,000+ chapter web novels.
  */
-enum class ReadingStatus(val code: String, val label: String) {
-    UNREAD("UNREAD", "Непрочитано"),
-    READING("READING", "Читаю"),
-    FINISHED("FINISHED", "Прочитано");
+enum class ReadingStatus(val code: String, val label: String, val labelEn: String) {
+    UNREAD("UNREAD", "Непрочитано", "Unread"),
+    READING("READING", "Читаю", "Reading"),
+    FINISHED("FINISHED", "Прочитано", "Finished");
+
+    fun label(en: Boolean): String = if (en) labelEn else label
 
     companion object {
         fun fromCode(code: String?): ReadingStatus =

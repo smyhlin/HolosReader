@@ -1,21 +1,36 @@
 package com.holos.reader.tts
 
-enum class VoiceRole(val labelUk: String, val shortLabelUk: String, val previewTextUk: String) {
+enum class VoiceRole(
+    val labelUk: String,
+    val shortLabelUk: String,
+    val previewTextUk: String,
+    val labelEn: String,
+    val shortLabelEn: String,
+) {
     NARRATOR(
         labelUk = "Оповідач",
         shortLabelUk = "Оповідач",
         previewTextUk = "Привіт! Я читатиму для тебе цю книгу українською.",
+        labelEn = "Narrator",
+        shortLabelEn = "Narrator",
     ),
     SYSTEM(
         labelUk = "[СИСТЕМА]",
         shortLabelUk = "[Система]",
         previewTextUk = "Система активована. Навичка першого рівня успішно розблокована.",
+        labelEn = "[SYSTEM]",
+        shortLabelEn = "[System]",
     ),
     DIALOGUE(
         labelUk = "Діалоги (— / «»)",
         shortLabelUk = "— / «» Діалоги",
         previewTextUk = "Тримайся поруч, попереду на нас чекає справжнє випробування!",
-    ),
+        labelEn = "Dialogue (— / «»)",
+        shortLabelEn = "— / «» Dialogue",
+    );
+
+    fun label(en: Boolean): String = if (en) labelEn else labelUk
+    fun shortLabel(en: Boolean): String = if (en) shortLabelEn else shortLabelUk
 }
 
 data class VoiceSegment(
@@ -122,14 +137,14 @@ object AdaptiveVoiceRouter {
             VoiceRole.SYSTEM -> valid(systemVoice) ?: pickContrastingDefault(
                 narrator = narrator,
                 availableVoices = availableVoices,
-                preferredIfNarratorMale = listOf("Speaker_30", "Speaker_12", "Speaker_26"),
-                preferredIfNarratorFemale = listOf("Speaker_36", "Speaker_11", "Speaker_0"),
+                preferredIfNarratorMale = listOf("Speaker_78", "Speaker_30", "Speaker_12", "Speaker_26"),
+                preferredIfNarratorFemale = listOf("Speaker_78", "Speaker_36", "Speaker_11", "Speaker_0"),
             )
             VoiceRole.DIALOGUE -> valid(dialogueVoice) ?: pickContrastingDefault(
                 narrator = narrator,
                 availableVoices = availableVoices,
-                preferredIfNarratorMale = listOf("Speaker_43", "Speaker_21", "Speaker_67"),
-                preferredIfNarratorFemale = listOf("Speaker_0", "Speaker_84", "Speaker_53"),
+                preferredIfNarratorMale = listOf("Speaker_3", "Speaker_43", "Speaker_21", "Speaker_67"),
+                preferredIfNarratorFemale = listOf("Speaker_3", "Speaker_0", "Speaker_84", "Speaker_53"),
             )
         }
     }

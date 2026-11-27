@@ -104,7 +104,7 @@ class ReaderSettingsActivity : Activity() {
             rebuildFullUi()
         } catch (t: Throwable) {
             val tv = TextView(this).apply {
-                text = "Settings error: ${t.javaClass.simpleName}: ${t.message}"
+                text = tr("Помилка налаштувань: ${t.javaClass.simpleName}: ${t.message}", "Settings error: ${t.javaClass.simpleName}: ${t.message}")
                 setTextColor(Color.WHITE)
                 setBackgroundColor(0xFF161618.toInt())
                 setPadding(32, 64, 32, 32)

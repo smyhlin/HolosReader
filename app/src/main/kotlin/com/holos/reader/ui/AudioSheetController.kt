@@ -199,6 +199,7 @@ class AudioSheetController(
 
     private val dp = activity.resources.displayMetrics.density
     private fun d(v: Int): Int = (v * dp).toInt()
+    private fun tr(uk: String, en: String): String = AppStrings.t(activity, uk, en)
 
     init {
         overlayRoot = FrameLayout(activity).apply {
@@ -359,7 +360,7 @@ class AudioSheetController(
 
         lyricPrev2.text = blocks.getOrNull(idx - 2)?.text.orEmpty()
         lyricPrev1.text = blocks.getOrNull(idx - 1)?.text.orEmpty()
-        val rawActive = blocks.getOrNull(idx)?.text?.ifBlank { "…" } ?: "Оберіть абзац для читання"
+        val rawActive = blocks.getOrNull(idx)?.text?.ifBlank { "…" } ?: tr("Оберіть абзац для читання", "Select a paragraph to read")
         val blockChanged = idx != lyricBlockIndex || rawActive != activeBlockText
         lyricBlockIndex = idx
         activeBlockText = rawActive
@@ -376,7 +377,7 @@ class AudioSheetController(
         playCircleBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
         speedValTv.text = String.format(Locale.US, "%.2f×", prefs.speechSpeed).replace(".00×", ".0×")
         voiceValTv.text = HolosVoiceCatalog.displayName(displayedNarratorVoice()).take(16)
-        voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
+        voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) tr("Адаптивна (3)", "Adaptive (3)") else tr("Диктор", "Narrator")
 
         val tl = if (cachedTimeline.blocks === blocks) cachedTimeline else com.holos.reader.tts.ChapterTimeline(blocks).also { cachedTimeline = it }
         val (elapsedSec, remainSec) = tl.estimateElapsedRemainingSec(idx, prefs.speechSpeed)
@@ -399,16 +400,16 @@ class AudioSheetController(
                         cachedOfflineReady = ok
                         activity.runOnUiThread {
                             if (!offlineRendering.get() && cachedOfflineKey == cacheKey) {
-                                offlineSubTv.text = if (ok) "Розділ збережено локально (0% CPU)" else "Зберегти аудіо розділу локально"
-                                offlineBadgeTv.text = if (ok) "Готово" else "Офлайн ›"
+                                offlineSubTv.text = if (ok) tr("Розділ збережено локально (0% CPU)", "Chapter cached locally (0% CPU)") else tr("Зберегти аудіо розділу локально", "Save chapter audio locally")
+                                offlineBadgeTv.text = if (ok) tr("Готово", "Ready") else tr("Офлайн ›", "Offline ›")
                                 offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
                             }
                         }
                     }
                 }
             }
-            offlineSubTv.text = if (cachedOfflineReady) "Розділ збережено локально (0% CPU)" else "Зберегти аудіо розділу локально"
-            offlineBadgeTv.text = if (cachedOfflineReady) "Готово" else "Офлайн ›"
+            offlineSubTv.text = if (cachedOfflineReady) tr("Розділ збережено локально (0% CPU)", "Chapter cached locally (0% CPU)") else tr("Зберегти аудіо розділу локально", "Save chapter audio locally")
+            offlineBadgeTv.text = if (cachedOfflineReady) tr("Готово", "Ready") else tr("Офлайн ›", "Offline ›")
             offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
         }
     }
@@ -541,7 +542,7 @@ class AudioSheetController(
             strokeColor = if (enabled) p.accentBlue else p.divider,
             strokeWidthPx = if (enabled) d(1) else 1,
         )
-        adaptiveTogglePill.text = if (enabled) "Увімк." else "Вимк."
+        adaptiveTogglePill.text = if (enabled) tr("Увімк.", "On") else tr("Вимк.", "Off")
         adaptiveTogglePill.background = if (enabled) {
             UiTheme.rounded(p.accentBlue, d(12).toFloat())
         } else {
@@ -567,7 +568,7 @@ class AudioSheetController(
             val assigned = prefs.roleModel(role)?.takeIf { it in downloaded }
             val resolved = if (assigned != null) prefs.roleVoice(role)
             else AdaptiveVoiceRouter.resolveVoice(role, prefs, available)
-            val shortName = resolved?.let { HolosVoiceCatalog.info(it).ukrainianName } ?: "Авто"
+            val shortName = resolved?.let { HolosVoiceCatalog.info(it).ukrainianName } ?: tr("Авто", "Auto")
             voiceV.text = if (assigned == null) shortName else "$shortName\n${modelShortName(assigned)}"
             voiceV.setTextColor(p.secondaryText)
         }
@@ -738,13 +739,13 @@ class AudioSheetController(
             setOnClickListener { onClick() }
         }
 
-        autoAdvBtn = textTransportBtn("АВТО", 11f) {
+        autoAdvBtn = textTransportBtn(tr("АВТО", "AUTO"), 11f) {
             prefs.autoAdvanceChapter = !prefs.autoAdvanceChapter
             val p = UiTheme.palette(prefs.theme)
             autoAdvBtn.setTextColor(if (prefs.autoAdvanceChapter) p.accentBlue else p.secondaryText)
             Toast.makeText(
                 activity,
-                if (prefs.autoAdvanceChapter) "Автоперехід розділів: увімк." else "Автоперехід розділів: вимк.",
+                if (prefs.autoAdvanceChapter) tr("Автоперехід розділів: увімк.", "Auto-advance chapters: on") else tr("Автоперехід розділів: вимк.", "Auto-advance chapters: off"),
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -853,9 +854,9 @@ class AudioSheetController(
             return Triple(card, topTv, subTv)
         }
 
-        val (speedCard, spTv, _) = pillCard("1.0×", "Швидкість") { openSpeedPage() }
+        val (speedCard, spTv, _) = pillCard("1.0×", tr("Швидкість", "Speed")) { openSpeedPage() }
         speedValTv = spTv
-        val (voiceCard, vcTv, vcSub) = pillCard("Голос", "Диктор") { openVoicePage() }
+        val (voiceCard, vcTv, vcSub) = pillCard(tr("Голос", "Voice"), tr("Диктор", "Narrator")) { openVoicePage() }
         voiceValTv = vcTv
         voiceSubTv = vcSub
 
@@ -864,7 +865,7 @@ class AudioSheetController(
             scaleType = ImageView.ScaleType.FIT_CENTER
         }
         val sleepSubTv = TextView(activity).apply {
-            text = "Таймер сну"
+            text = tr("Таймер сну", "Sleep Timer")
             textSize = 11f
             gravity = Gravity.CENTER
             tag = "card_sub"
@@ -893,18 +894,18 @@ class AudioSheetController(
 
         // 6. Offline Chapter Audio Card
         val offlineTitle = TextView(activity).apply {
-            text = "Офлайн-аудіо розділу"
+            text = tr("Офлайн-аудіо розділу", "Offline Chapter Audio")
             textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
             tag = "card_title"
         }
         offlineSubTv = TextView(activity).apply {
-            text = "Зберегти аудіо розділу локально"
+            text = tr("Зберегти аудіо розділу локально", "Save chapter audio locally")
             textSize = 12f
             tag = "card_sub"
         }
         offlineBadgeTv = TextView(activity).apply {
-            text = "Офлайн ›"
+            text = tr("Офлайн ›", "Offline ›")
             textSize = 13f
             tag = "card_sub"
         }
@@ -938,10 +939,10 @@ class AudioSheetController(
             voicePage.visibility = View.GONE
             playerPage.visibility = View.VISIBLE
             voiceValTv.text = HolosVoiceCatalog.displayName(displayedNarratorVoice()).take(16)
-            voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
+            voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) tr("Адаптивна (3)", "Adaptive (3)") else tr("Диктор", "Narrator")
         }
         voiceHeaderTv = TextView(activity).apply {
-            text = "Голоси та озвучка"
+            text = tr("Голоси та озвучка", "Voices & Narration")
             textSize = 17f
             setTypeface(typeface, Typeface.BOLD)
             tag = "card_title"
@@ -958,13 +959,13 @@ class AudioSheetController(
 
         // Adaptive Multi-Voice Card (Оповідач / [СИСТЕМА] / — Діалоги)
         val adaptiveTitle = TextView(activity).apply {
-            text = "Адаптивна озвучка"
+            text = tr("Адаптивна озвучка", "Adaptive Narration")
             textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
             tag = "card_title"
         }
         val adaptiveDesc = TextView(activity).apply {
-            text = "Окремі голоси: оповідач, [СИСТЕМА] та діалоги (—)"
+            text = tr("Окремі голоси: оповідач, [СИСТЕМА] та діалоги (—)", "Separate voices: narrator, [SYSTEM], and dialogue (—)")
             textSize = 11f
             tag = "card_sub"
         }
@@ -991,7 +992,7 @@ class AudioSheetController(
                 pickerModel = if (prefs.adaptiveVoicesEnabled) prefs.roleModel(editingRole) else null
                 styleAdaptiveCard(UiTheme.palette(prefs.theme))
                 renderVoiceList()
-                voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
+                voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) tr("Адаптивна (3)", "Adaptive (3)") else tr("Диктор", "Narrator")
                 callbacks.onVoiceSelected(prefs.selectedVoice.orEmpty())
             }
         }
@@ -1002,7 +1003,7 @@ class AudioSheetController(
         }
         for ((idx, role) in VoiceRole.entries.withIndex()) {
             val rTitle = TextView(activity).apply {
-                text = role.shortLabelUk
+                text = role.shortLabel(AppStrings.isEnglish(activity))
                 textSize = 11f
                 setTypeface(typeface, Typeface.BOLD)
                 gravity = Gravity.CENTER
@@ -1010,7 +1011,7 @@ class AudioSheetController(
                 ellipsize = TextUtils.TruncateAt.END
             }
             val rVoice = TextView(activity).apply {
-                text = "Авто"
+                text = tr("Авто", "Auto")
                 textSize = 11f
                 gravity = Gravity.CENTER
                 maxLines = 2
@@ -1063,9 +1064,9 @@ class AudioSheetController(
                 renderVoiceList()
             }
         }.also { voiceFilterTabs.add(key to it) }
-        voiceFilterRow.addView(filterTab("Усі", "ALL"))
-        voiceFilterRow.addView(filterTab("Жіночі", "FEMALE"))
-        voiceFilterRow.addView(filterTab("Чоловічі", "MALE"))
+        voiceFilterRow.addView(filterTab(tr("Усі", "All"), "ALL"))
+        voiceFilterRow.addView(filterTab(tr("Жіночі", "Female"), "FEMALE"))
+        voiceFilterRow.addView(filterTab(tr("Чоловічі", "Male"), "MALE"))
         page.addView(voiceFilterRow, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
 
         voiceListContainer = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
@@ -1082,7 +1083,7 @@ class AudioSheetController(
             speedValTv.text = String.format(Locale.US, "%.2f×", prefs.speechSpeed).replace(".00×", ".0×")
         }
         speedHeaderTv = TextView(activity).apply {
-            text = "Швидкість"
+            text = tr("Швидкість", "Speed")
             textSize = 17f
             setTypeface(null, Typeface.BOLD)
             gravity = Gravity.CENTER
@@ -1332,7 +1333,7 @@ class AudioSheetController(
         }
 
         val importBtn = TextView(activity).apply {
-            text = "+ Імпортувати клонований голос (.pt / .npy / .bin)"
+            text = tr("+ Імпортувати клонований голос (.pt / .npy / .bin)", "+ Import Cloned Voice (.pt / .npy / .bin)")
             textSize = 13f
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
@@ -1351,7 +1352,7 @@ class AudioSheetController(
         val voices = customVoices + presetVoices
         if (voices.isEmpty()) {
             voiceListContainer.addView(TextView(activity).apply {
-                text = "Модель HolosTTS ще не завантажена. Завантажте її на головному екрані."
+                text = tr("Модель HolosTTS ще не завантажена. Завантажте її на головному екрані.", "HolosTTS model is not downloaded yet. Download it from the home screen.")
                 setTextColor(p.secondaryText)
                 setPadding(d(8), d(16), d(8), d(16))
             })
@@ -1402,15 +1403,16 @@ class AudioSheetController(
                     setTextColor(p.primaryText)
                 })
                 addView(TextView(activity).apply {
+                    val en = AppStrings.isEnglish(activity)
                     val rateLabel = when {
-                        model == TtsModelId.SUPERTONIC_3 -> "44,1 кГц офлайн"
-                        prefs.flashSrEnabled && com.holos.reader.tts.OnnxAddonManager.isAddonReady(activity, com.holos.reader.tts.OnnxAddonId.FLASH_SR) -> "48 кГц (FlashSR)"
-                        else -> "24 кГц офлайн"
+                        model == TtsModelId.SUPERTONIC_3 -> tr("44,1 кГц офлайн", "44.1 kHz offline")
+                        prefs.flashSrEnabled && com.holos.reader.tts.OnnxAddonManager.isAddonReady(activity, com.holos.reader.tts.OnnxAddonId.FLASH_SR) -> tr("48 кГц (FlashSR)", "48 kHz (FlashSR)")
+                        else -> tr("24 кГц офлайн", "24 kHz offline")
                     }
                     text = if (voice.startsWith(CustomVoiceLoader.CUSTOM_PREFIX)) {
-                        "Клонований голос (.pt/.npy · $rateLabel)"
+                        tr("Клонований голос (.pt/.npy · $rateLabel)", "Cloned voice (.pt/.npy · $rateLabel)")
                     } else {
-                        "${vInfo.gender.labelUk} · ${vInfo.timbreUk} · $rateLabel"
+                        "${vInfo.gender.label(en)} · ${vInfo.timbre(en)} · $rateLabel"
                     }
                     textSize = 12f
                     setTextColor(p.secondaryText)
@@ -1445,7 +1447,7 @@ class AudioSheetController(
             renderVoiceList()
             Toast.makeText(
                 activity,
-                "${role.labelUk}: ${HolosVoiceCatalog.displayName(voice)}",
+                "${role.label(AppStrings.isEnglish(activity))}: ${HolosVoiceCatalog.displayName(voice)}",
                 Toast.LENGTH_SHORT
             ).show()
         } else {
@@ -1515,7 +1517,7 @@ class AudioSheetController(
                             previewingVoice = null
                             updatePreviewVisuals()
                         }
-                        Toast.makeText(activity, "Спочатку завантажте модель HolosTTS", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(activity, tr("Спочатку завантажте модель HolosTTS", "Download a HolosTTS model first"), Toast.LENGTH_SHORT).show()
                     }
                     return@execute
                 }
@@ -1617,7 +1619,7 @@ class AudioSheetController(
                 }
             } catch (t: Throwable) {
                 activity.runOnUiThread {
-                    Toast.makeText(activity, "Помилка прев’ю: ${t.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(activity, tr("Помилка прев’ю: ${t.message}", "Preview error: ${t.message}"), Toast.LENGTH_SHORT).show()
                 }
             } finally {
                 activity.runOnUiThread {
@@ -1636,8 +1638,8 @@ class AudioSheetController(
     private fun preRenderChapterOffline() {
         if (offlineRendering.get()) {
             offlineRenderCancel.set(true)
-            offlineSubTv.text = "Зупинка генерації…"
-            Toast.makeText(activity, "Генерацію офлайн-аудіо зупинено", Toast.LENGTH_SHORT).show()
+            offlineSubTv.text = tr("Зупинка генерації…", "Stopping generation…")
+            Toast.makeText(activity, tr("Генерацію офлайн-аудіо зупинено", "Offline audio generation stopped"), Toast.LENGTH_SHORT).show()
             return
         }
         val allBlocks = callbacks.getCurrentBlocks()
@@ -1648,8 +1650,8 @@ class AudioSheetController(
         val renderChapterIdx = callbacks.getChapterIndex()
         offlineRenderCancel.set(false)
         offlineRendering.set(true)
-        offlineSubTv.text = "Генерація офлайн-аудіо розділу (0/${blocks.size})…"
-        offlineBadgeTv.text = "Зупинити"
+        offlineSubTv.text = tr("Генерація офлайн-аудіо розділу (0/${blocks.size})…", "Generating chapter offline audio (0/${blocks.size})…")
+        offlineBadgeTv.text = tr("Зупинити", "Stop")
         offlineBadgeTv.setTextColor(0xFFE53935.toInt())
 
         previewWorker.execute {
@@ -1757,7 +1759,7 @@ class AudioSheetController(
                         if (i % 4 == 0 || i == blocks.lastIndex) {
                             val pct = ((i + 1) * 100) / blocks.size
                             activity.runOnUiThread {
-                                offlineSubTv.text = "Збереження розділу: $pct% (${i + 1}/${blocks.size})"
+                                offlineSubTv.text = tr("Збереження розділу: $pct% (${i + 1}/${blocks.size})", "Saving chapter: $pct% (${i + 1}/${blocks.size})")
                             }
                         }
                     }
@@ -1776,23 +1778,23 @@ class AudioSheetController(
                     activity.runOnUiThread {
                         cachedOfflineKey = ""
                         cachedOfflineReady = true
-                        offlineSubTv.text = "Розділ збережено локально (0% CPU)"
-                        offlineBadgeTv.text = "Готово"
+                        offlineSubTv.text = tr("Розділ збережено локально (0% CPU)", "Chapter cached locally (0% CPU)")
+                        offlineBadgeTv.text = tr("Готово", "Ready")
                         offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).accentBlue)
                     }
                 } else {
                     tmp.delete()
                     activity.runOnUiThread {
-                        offlineSubTv.text = "Генерацію зупинено"
-                        offlineBadgeTv.text = "Офлайн ›"
+                        offlineSubTv.text = tr("Генерацію зупинено", "Generation stopped")
+                        offlineBadgeTv.text = tr("Офлайн ›", "Offline ›")
                         offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
                     }
                 }
             } catch (e: Exception) {
                 tmp.delete()
                 activity.runOnUiThread {
-                    offlineSubTv.text = "Помилка: ${e.message}"
-                    offlineBadgeTv.text = "Офлайн ›"
+                    offlineSubTv.text = tr("Помилка: ${e.message}", "Error: ${e.message}")
+                    offlineBadgeTv.text = tr("Офлайн ›", "Offline ›")
                     offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
                 }
             } finally {

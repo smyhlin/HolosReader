@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * Lets readers fix character names, LitRPG terms, or homographs (`ка+ва`, `Сяо=Ся+о`) instantly.
  */
 class StressEditorActivity : Activity() {
+    private fun tr(uk: String, en: String): String = AppStrings.t(this, uk, en)
 
     private val worker = Executors.newSingleThreadExecutor()
     private val cancelTest = AtomicBoolean(false)
@@ -52,7 +53,7 @@ class StressEditorActivity : Activity() {
             setColorFilter(p.primaryText)
         }
         val title = TextView(this).apply {
-            text = "Власні наголоси"
+            text = tr("Власні наголоси", "Custom Stress Rules")
             textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(p.primaryText)
@@ -65,7 +66,7 @@ class StressEditorActivity : Activity() {
         }
 
         statusTv = TextView(this).apply {
-            text = "Перевірка вбудованого словника наголосів…"
+            text = tr("Перевірка вбудованого словника наголосів…", "Checking built-in stress dictionary…")
             textSize = 12f
             setTextColor(p.secondaryText)
             setPadding(d(12), d(8), d(12), d(8))
@@ -73,8 +74,12 @@ class StressEditorActivity : Activity() {
         }
 
         val hint = TextView(this).apply {
-            text = "Поставте + після наголошеної голосної (напр., ка+ва) або задайте заміну (Сюань=Сюа+нь). " +
-                "Ці правила мають найвищий пріоритет над основним словником."
+            text = tr(
+                "Поставте + після наголошеної голосної (напр., ка+ва) або задайте заміну (Сюань=Сюа+нь). " +
+                    "Ці правила мають найвищий пріоритет над основним словником.",
+                "Place + after the stressed vowel (e.g., ка+ва) or define a replacement (Сюань=Сюа+нь). " +
+                    "These rules override the built-in dictionary.",
+            )
             textSize = 13f
             setTextColor(p.secondaryText)
         }
@@ -93,7 +98,7 @@ class StressEditorActivity : Activity() {
         }
 
         val saveBtn = TextView(this).apply {
-            text = "Зберегти словник"
+            text = tr("Зберегти словник", "Save Dictionary")
             textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
@@ -105,14 +110,14 @@ class StressEditorActivity : Activity() {
                 refreshStatus()
                 Toast.makeText(
                     this@StressEditorActivity,
-                    "Збережено (${HolosEngineHolder.getUserOverrides(this@StressEditorActivity).size()} правил)",
+                    tr("Збережено (${HolosEngineHolder.getUserOverrides(this@StressEditorActivity).size()} правил)", "Saved (${HolosEngineHolder.getUserOverrides(this@StressEditorActivity).size()} rules)"),
                     Toast.LENGTH_SHORT
                 ).show()
             }
         }
 
         val testLabel = TextView(this).apply {
-            text = "Перевірка вимови (наголоси + IPA + звук):"
+            text = tr("Перевірка вимови (наголоси + IPA + звук):", "Pronunciation test (stress + IPA + audio):")
             textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(p.primaryText)
@@ -127,7 +132,7 @@ class StressEditorActivity : Activity() {
             setText("Навичка II «Бенкет»: Перезаряджання 40 с. Замок стояв на пагорбі.")
         }
         val testBtn = TextView(this).apply {
-            text = "Перевірити та озвучити"
+            text = tr("Перевірити та озвучити", "Test & Speak")
             textSize = 14f
             setTypeface(typeface, Typeface.BOLD)
             gravity = Gravity.CENTER
@@ -170,7 +175,7 @@ class StressEditorActivity : Activity() {
             val summary = try {
                 HolosEngineHolder.getStressStatusSummary(this)
             } catch (t: Throwable) {
-                "Помилка перевірки словника: ${t.message}"
+                tr("Помилка перевірки словника: ${t.message}", "Dictionary check error: ${t.message}")
             }
             runOnUiThread { statusTv.text = summary }
         }
@@ -195,7 +200,7 @@ class StressEditorActivity : Activity() {
                 val stressed = stressifier.stressify(norm)
                 val ipa = UkrainianIpa.transcribe(stressed)
                 runOnUiThread {
-                    previewOut.text = "Нормалізація: $norm\n\nНаголоси: $stressed\n\nIPA: $ipa"
+                    previewOut.text = tr("Нормалізація: $norm\n\nНаголоси: $stressed\n\nIPA: $ipa", "Normalized: $norm\n\nStress: $stressed\n\nIPA: $ipa")
                 }
 
                 val lease = try { HolosEngineHolder.acquireEngineLease(this) } catch (_: Exception) { null } ?: return@execute
@@ -296,7 +301,7 @@ class StressEditorActivity : Activity() {
                 }
             } catch (t: Throwable) {
                 runOnUiThread {
-                    Toast.makeText(this, "Помилка тесту: ${t.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this, tr("Помилка тесту: ${t.message}", "Test error: ${t.message}"), Toast.LENGTH_LONG).show()
                 }
             }
         }

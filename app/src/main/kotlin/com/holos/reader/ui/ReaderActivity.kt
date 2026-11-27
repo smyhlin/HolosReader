@@ -232,6 +232,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     private val dp get() = resources.displayMetrics.density
     private fun d(v: Int): Int = (v * dp).toInt()
+    private fun tr(uk: String, en: String): String = AppStrings.t(this, uk, en)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -269,7 +270,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val bookId = intent.getStringExtra(EXTRA_BOOK_ID)
         val loaded = bookId?.let { db.getBookForReader(it) }
         if (loaded == null) {
-            Toast.makeText(this, "Книгу не знайдено", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("Книгу не знайдено", "Book not found"), Toast.LENGTH_SHORT).show()
             finish()
             return
         }
@@ -277,7 +278,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         epubSession = try {
             EpubSession(db.getBookFile(loaded))
         } catch (e: Exception) {
-            Toast.makeText(this, "Помилка відкриття EPUB: ${e.message}", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, tr("Помилка відкриття EPUB: ${e.message}", "Failed to open EPUB: ${e.message}"), Toast.LENGTH_LONG).show()
             finish()
             return
         }
@@ -1104,7 +1105,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             targetIndex.takeIf { it in 0 until b.chapterCount }
         }
         if (resolved == null) {
-            Toast.makeText(this, "Це крайній розділ книги", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("Це крайній розділ книги", "Reached the boundary chapter"), Toast.LENGTH_SHORT).show()
             return
         }
         loadChapter(resolved, scrollToBlock = 0, autoPlay = autoPlay)
@@ -1337,7 +1338,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val b = book ?: return
         var entries: List<TocEntry> = db.queryToc(b.id)
         val searchBox = EditText(this).apply {
-            hint = "Пошук серед ${entries.size} розділів (напр., 4250)…"
+            hint = tr("Пошук серед ${entries.size} розділів (напр., 4250)…", "Search ${entries.size} chapters (e.g. 4250)…")
             setPadding(d(14), d(10), d(14), d(10))
         }
         val listView = ListView(this)
@@ -1378,7 +1379,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         }
 
         val dialog = UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Зміст (${b.chapterCount} розд.)")
+            .setTitle(tr("Зміст (${b.chapterCount} розд.)", "Contents (${b.chapterCount} ch.)"))
             .setView(container)
             .create()
 
@@ -1402,12 +1403,12 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         if (existingId != null) {
             db.deleteBookmark(existingId)
             updateBookmarkIcon()
-            Toast.makeText(this, "Закладку видалено", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("Закладку видалено", "Bookmark removed"), Toast.LENGTH_SHORT).show()
         } else {
             val excerpt = currentBlocks.getOrNull(idx)?.text?.take(80) ?: chapterTitle
             db.addBookmark(b.id, chapterIndex, idx, excerpt)
             updateBookmarkIcon()
-            Toast.makeText(this, "Закладку додано ($chapterTitle)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("Закладку додано ($chapterTitle)", "Bookmark added ($chapterTitle)"), Toast.LENGTH_SHORT).show()
         }
         if (prefs.hapticFeedback && ::topBookmarkBtn.isInitialized) {
             val constant = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -1438,12 +1439,12 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val b = book ?: return
         val list = db.listBookmarks(b.id)
         if (list.isEmpty()) {
-            Toast.makeText(this, "Закладок ще немає. Натисніть значок закладки зверху.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("Закладок ще немає. Натисніть значок закладки зверху.", "No bookmarks yet. Tap the bookmark icon at the top."), Toast.LENGTH_SHORT).show()
             return
         }
-        val labels = list.map { "Розд. ${it.chapterIndex + 1}: ${it.excerpt}" }.toTypedArray()
+        val labels = list.map { "${tr("Розд.", "Ch.")} ${it.chapterIndex + 1}: ${it.excerpt}" }.toTypedArray()
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Закладки")
+            .setTitle(tr("Закладки", "Bookmarks"))
             .setItems(labels) { _, which ->
                 val bm = list[which]
                 loadChapter(bm.chapterIndex, scrollToBlock = bm.blockIndex, autoPlay = false)
@@ -1459,16 +1460,19 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     private fun showTypographyDialog() {
         val opts = arrayOf(
-            "Тема: Світла",
-            "Тема: Сепія",
-            "Тема: Темна",
-            "Шрифт більший (A+)",
-            "Шрифт менший (A-)",
-            "Шрифт: ${if (prefs.useSerif) "Засічки → Без засічок" else "Без засічок → Засічки"}",
-            "${if (prefs.bionicReading) "✓ " else ""}Bionic Reading (жирний початок слів)",
+            tr("Тема: Світла", "Theme: Light"),
+            tr("Тема: Сепія", "Theme: Sepia"),
+            tr("Тема: Темна", "Theme: Dark"),
+            tr("Шрифт більший (A+)", "Larger Font (A+)"),
+            tr("Шрифт менший (A-)", "Smaller Font (A-)"),
+            tr(
+                "Шрифт: ${if (prefs.useSerif) "Засічки → Без засічок" else "Без засічок → Засічки"}",
+                "Font: ${if (prefs.useSerif) "Serif → Sans-Serif" else "Sans-Serif → Serif"}",
+            ),
+            "${if (prefs.bionicReading) "✓ " else ""}${tr("Біонічне читання (жирний початок слів)", "Bionic Reading (bold word prefixes)")}",
         )
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Вигляд тексту")
+            .setTitle(tr("Вигляд тексту", "Text Appearance"))
             .setItems(opts) { _, which ->
                 when (which) {
                     0 -> prefs.theme = ReaderTheme.LIGHT
@@ -1488,7 +1492,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val speeds = floatArrayOf(0.8f, 0.9f, 1.0f, 1.1f, 1.2f, 1.3f, 1.5f, 1.75f, 2.0f)
         val labels = speeds.map { String.format(Locale.US, "%.2f×", it) }.toTypedArray()
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Швидкість озвучення")
+            .setTitle(tr("Швидкість озвучення", "Speech Speed"))
             .setItems(labels) { _, which ->
                 prefs.speechSpeed = speeds[which]
                 audioSheet.updateState(activeBlockIndex, controller.isPlaying, controller.isPaused)
@@ -1498,9 +1502,16 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     private fun showSleepDialog() {
-        val labels = arrayOf("Вимкнути", "15 хвилин", "30 хвилин", "45 хвилин", "60 хвилин", "Кінець розділу")
+        val labels = arrayOf(
+            tr("Вимкнути", "Off"),
+            tr("15 хвилин", "15 minutes"),
+            tr("30 хвилин", "30 minutes"),
+            tr("45 хвилин", "45 minutes"),
+            tr("60 хвилин", "60 minutes"),
+            tr("Кінець розділу", "End of chapter"),
+        )
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Таймер сну")
+            .setTitle(tr("Таймер сну", "Sleep Timer"))
             .setItems(labels) { _, which ->
                 when (which) {
                     0 -> controller.setSleepTimerMinutes(0)
@@ -1510,7 +1521,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     4 -> controller.setSleepTimerMinutes(60)
                     5 -> controller.setSleepAtChapterEnd(true)
                 }
-                Toast.makeText(this, "Таймер: ${labels[which]}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, tr("Таймер: ${labels[which]}", "Sleep timer: ${labels[which]}"), Toast.LENGTH_SHORT).show()
             }
             .showThemed()
     }
@@ -1533,7 +1544,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 }
                 UiTheme.dialogBuilder(this, prefs.theme)
                     .setView(iv)
-                    .setPositiveButton("Закрити", null)
+                    .setPositiveButton(tr("Закрити", "Close"), null)
                     .showThemed()
             }
         }
@@ -1564,7 +1575,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     setPadding(d(16), d(14), d(16), d(14))
                 }
                 val next = nextLinearChapterIndex
-                btn.text = if (next != null) "Наступний розділ →" else "Кінець книги"
+                btn.text = if (next != null) tr("Наступний розділ →", "Next chapter →") else tr("Кінець книги", "End of book")
                 btn.background = UiTheme.rounded(p.cardBg, d(14).toFloat())
                 btn.setTextColor(p.primaryText)
                 btn.setOnClickListener {
@@ -1965,12 +1976,12 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         UiTheme.showIconMenuDialog(
             this,
             prefs.theme,
-            "Меню читання",
+            tr("Меню читання", "Reading Menu"),
             listOf(
-                IconMenuItem(R.drawable.ic_settings, "Налаштування читання", "Шрифт, макет, тема, поведінка, TTS") {
+                IconMenuItem(R.drawable.ic_settings, tr("Налаштування читання", "Reading Settings"), tr("Шрифт, макет, тема, поведінка, TTS", "Font, layout, theme, behavior, TTS")) {
                     openSettingsSheet(0)
                 },
-                IconMenuItem(R.drawable.ic_headphones, "Адаптивна озвучка", "Оповідач · [СИСТЕМА] · Діалоги (—)", checked = prefs.adaptiveVoicesEnabled) {
+                IconMenuItem(R.drawable.ic_headphones, tr("Адаптивна озвучка", "Adaptive Narration"), tr("Оповідач · [СИСТЕМА] · Діалоги (—)", "Narrator · [SYSTEM] · Dialogue (—)"), checked = prefs.adaptiveVoicesEnabled) {
                     miniPlayerPill.visibility = View.VISIBLE
                     audioSheet.showVoiceSettings(
                         bookTitle = book?.title.orEmpty(),
@@ -1981,25 +1992,25 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                         isPaused = controller.isPaused,
                     )
                 },
-                IconMenuItem(R.drawable.ic_font, "Bionic Reading", "Жирний початок кожного слова", checked = prefs.bionicReading) {
+                IconMenuItem(R.drawable.ic_font, tr("Біонічне читання", "Bionic Reading"), tr("Жирний початок кожного слова", "Bold start of each word"), checked = prefs.bionicReading) {
                     prefs.bionicReading = !prefs.bionicReading
                     applyTheme()
                 },
-                IconMenuItem(R.drawable.ic_touch, "Автопрокрутка", "Плавний скрол тексту", checked = autoScrolling) {
+                IconMenuItem(R.drawable.ic_touch, tr("Автопрокрутка", "Auto-Scroll"), tr("Плавний скрол тексту", "Smooth continuous scrolling"), checked = autoScrolling) {
                     toggleAutoScroll()
                 },
-                IconMenuItem(R.drawable.ic_palette, "Темна тема", "Швидке перемикання Dark / Light", checked = darkOn) {
+                IconMenuItem(R.drawable.ic_palette, tr("Темна тема", "Dark Theme"), tr("Швидке перемикання світлої / темної", "Quick Dark / Light toggle"), checked = darkOn) {
                     prefs.theme = if (darkOn) ReaderTheme.LIGHT else ReaderTheme.DARK
                     applyTheme()
                 },
-                IconMenuItem(R.drawable.ic_label, "Словник наголосів", "Редагувати stress_user.txt") {
+                IconMenuItem(R.drawable.ic_label, tr("Словник наголосів", "Stress Dictionary"), tr("Редагувати stress_user.txt", "Edit stress_user.txt")) {
                     startActivity(Intent(this, StressEditorActivity::class.java))
                 },
-                IconMenuItem(R.drawable.ic_stats, "Статистика читання", "Графіки часу, активність та серії") {
+                IconMenuItem(R.drawable.ic_stats, tr("Статистика читання", "Reading Statistics"), tr("Графіки часу, активність та серії", "Time charts, activity, and streaks")) {
                     saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
                     startActivity(Intent(this, StatisticsActivity::class.java))
                 },
-                IconMenuItem(R.drawable.ic_info, "Про програму (About)", "GitHub, HolosTTS, словники та джерела") {
+                IconMenuItem(R.drawable.ic_info, tr("Про програму", "About"), tr("GitHub, HolosTTS, словники та джерела", "GitHub, HolosTTS, dictionaries, and sources")) {
                     UiTheme.showAboutDialog(this, prefs.theme)
                 },
             ),
@@ -2010,7 +2021,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         autoScrolling = !autoScrolling
         autoScrollHandler.removeCallbacksAndMessages(null)
         if (autoScrolling) {
-            Toast.makeText(this, "Автопрокрутка увімкнена", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("Автопрокрутка увімкнена", "Auto-scroll enabled"), Toast.LENGTH_SHORT).show()
             val runner = object : Runnable {
                 override fun run() {
                     if (!autoScrolling) return
@@ -2020,7 +2031,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             }
             autoScrollHandler.post(runner)
         } else {
-            Toast.makeText(this, "Автопрокрутка вимкнена", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("Автопрокрутка вимкнена", "Auto-scroll disabled"), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -2035,7 +2046,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                         if (c.moveToFirst()) c.getString(0) else null
                     }?.substringBeforeLast('.') ?: "ClonedVoice"
                     val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                        ?: throw IllegalArgumentException("Не вдалося прочитати файл голосу")
+                        ?: throw IllegalArgumentException(tr("Не вдалося прочитати файл голосу", "Could not read voice file"))
                     val savedFile = CustomVoiceLoader.importCustomVoice(
                         HolosEngineHolder.getCustomVoicesDir(this),
                         name,
@@ -2043,11 +2054,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     )
                     prefs.selectedVoice = CustomVoiceLoader.canonicalVoiceId(savedFile)
                     runOnUiThread {
-                        Toast.makeText(this, "Голос «$name» імпортовано!", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, tr("Голос «$name» імпортовано!", "Voice \"$name\" imported!"), Toast.LENGTH_LONG).show()
                         audioSheet.applyPalette()
                     }
                 } catch (e: Exception) {
-                    runOnUiThread { Toast.makeText(this, "Помилка голосу: ${e.message}", Toast.LENGTH_LONG).show() }
+                    runOnUiThread { Toast.makeText(this, tr("Помилка голосу: ${e.message}", "Voice import error: ${e.message}"), Toast.LENGTH_LONG).show() }
                 }
             }
         }

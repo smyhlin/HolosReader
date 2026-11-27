@@ -1,9 +1,11 @@
 package com.holos.reader.tts
 
-enum class VoiceGender(val labelUk: String) {
-    FEMALE("Жіночий"),
-    MALE("Чоловічий"),
-    UNKNOWN("Офлайн"),
+enum class VoiceGender(val labelUk: String, val labelEn: String) {
+    FEMALE("Жіночий", "Female"),
+    MALE("Чоловічий", "Male"),
+    UNKNOWN("Офлайн", "Offline");
+
+    fun label(en: Boolean): String = if (en) labelEn else labelUk
 }
 
 data class VoiceInfo(
@@ -16,6 +18,44 @@ data class VoiceInfo(
 ) {
     val displayName: String
         get() = if (numberTag != null) "$ukrainianName ($numberTag)" else ukrainianName
+
+    fun timbre(en: Boolean): String = if (!en) timbreUk else TIMBRE_EN[timbreUk] ?: timbreUk
+
+    companion object {
+        private val TIMBRE_EN = mapOf(
+            "Баритон" to "Baritone",
+            "Бас-баритон" to "Bass-baritone",
+            "Виразне сопрано" to "Expressive soprano",
+            "Виразний баритон" to "Expressive baritone",
+            "Виразний тенор" to "Expressive tenor",
+            "Впевнений баритон" to "Confident baritone",
+            "Глибоке мецо" to "Deep mezzo",
+            "Глибокий альт" to "Deep alto",
+            "Глибокий баритон" to "Deep baritone",
+            "Глибокий бас" to "Deep bass",
+            "Глибокий диктор" to "Deep narrator",
+            "Густий баритон" to "Rich baritone",
+            "Дзвінке сопрано" to "Clear soprano",
+            "Дзвінкий тенор" to "Clear tenor",
+            "Динамічний голос" to "Dynamic voice",
+            "Мецо-сопрано" to "Mezzo-soprano",
+            "М’яке сопрано" to "Soft soprano",
+            "М’який оповідач" to "Soft narrator",
+            "Ніжне сопрано" to "Gentle soprano",
+            "Ніжний диктор" to "Gentle narrator",
+            "Оксамитове мецо" to "Velvet mezzo",
+            "Оксамитовий баритон" to "Velvet baritone",
+            "Світле сопрано" to "Bright soprano",
+            "Світлий тенор" to "Bright tenor",
+            "Спокійний баритон" to "Calm baritone",
+            "Тенор" to "Tenor",
+            "Тенор-баритон" to "Tenor-baritone",
+            "Тепле мецо" to "Warm mezzo",
+            "Теплий альт" to "Warm alto",
+            "Чисте мецо" to "Pure mezzo",
+            "Чисте сопрано" to "Pure soprano",
+        )
+    }
 }
 
 /**
