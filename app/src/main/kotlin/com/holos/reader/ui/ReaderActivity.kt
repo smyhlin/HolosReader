@@ -150,7 +150,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var bottomFontBtn: TextView
     private val livePrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
         runOnUiThread {
-            if (::frameRoot.isInitialized && !isFinishing && !isDestroyed && !quickTypographyWrite) {
+            if (::frameRoot.isInitialized && !isFinishing && !isDestroyed) {
                 applyTheme()
             }
         }
@@ -356,9 +356,9 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         wordAnimator?.cancel()
         applicationContext.getSharedPreferences("holos_reader_prefs", Context.MODE_PRIVATE)
             .unregisterOnSharedPreferenceChangeListener(livePrefsListener)
-        autoScrollHandler.removeCallbacksAndMessages(null)
         readerUiHandler.removeCallbacksAndMessages(null)
         releaseChapterTone()
+        autoScrollHandler.removeCallbacksAndMessages(null)
         saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
         if (::controller.isInitialized) {
             controller.close()
@@ -643,6 +643,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     private fun applyTheme() {
+        if (quickTypographyWrite) return
         UiTheme.applySystemBars(this, prefs.theme)
         val p = UiTheme.palette(prefs.theme)
         frameRoot.setBackgroundColor(p.canvasBg)
