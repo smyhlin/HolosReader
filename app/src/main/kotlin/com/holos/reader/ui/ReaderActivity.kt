@@ -328,6 +328,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             }
         }
         if (::audioSheet.isInitialized) audioSheet.destroy()
+        if (::tocSheet.isInitialized) tocSheet.destroy()
         ReaderAudioService.stop(this)
         epubSession?.close()
         bgExecutor.shutdownNow()
