@@ -194,6 +194,13 @@ class LibraryActivity : Activity() {
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && ::prefs.isInitialized && !isFinishing) {
+            GitHubUpdater.checkInBackground(this, prefs)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         applyTheme()
@@ -203,13 +210,6 @@ class LibraryActivity : Activity() {
             prefs.lastBookId?.let { id ->
                 db.getBook(id)?.let { openBook(it) }
             }
-        }
-    }
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus && ::prefs.isInitialized && !isFinishing) {
-            GitHubUpdater.checkInBackground(this, prefs)
         }
     }
 
