@@ -42,6 +42,8 @@ object GitHubUpdater {
         val notes: String,
         val apkUrl: String,
         val apkSizeBytes: Long,
+        val apkFileName: String = "",
+        val sha256SumsUrl: String? = null,
     )
 
     fun checkInBackground(activity: Activity, prefs: ReaderPreferences) {
@@ -136,21 +138,21 @@ object GitHubUpdater {
             val notes = json.optString("body", "").trim()
             val assets = json.optJSONArray("assets") ?: return null
             val apkAssets = mutableListOf<Triple<String, String, Long>>()
+            var sha256SumsUrl: String? = null
             for (i in 0 until assets.length()) {
                 val a = assets.optJSONObject(i) ?: continue
                 val assetName = a.optString("name", "")
                 val url = a.optString("browser_download_url", "")
                 if (assetName.endsWith(".apk", ignoreCase = true) && url.isNotBlank()) {
                     apkAssets.add(Triple(assetName, url, a.optLong("size", 0L)))
+                } else if (assetName.equals("SHA256SUMS", ignoreCase = true) && url.isNotBlank()) {
+                    sha256SumsUrl = url
                 }
             }
             if (apkAssets.isEmpty()) return null
             val supportedAbis = Build.SUPPORTED_ABIS ?: emptyArray()
             val chosen = selectBestApkAsset(apkAssets, supportedAbis) ?: return null
-            val apkUrl: String? = chosen.second
-            val apkSize = chosen.third
-            if (apkUrl == null) return null
-            return ReleaseInfo(tag, version, name, notes, apkUrl, apkSize)
+            return ReleaseInfo(tag, version, name, notes, chosen.second, chosen.third, chosen.first, sha256SumsUrl)
         } finally {
             conn.disconnect()
         }
@@ -257,8 +259,22 @@ object GitHubUpdater {
                         }
                     }
                 }
-                if (outFile.exists()) outFile.delete()
-                tmpFile.renameTo(outFile)
+                if (release.apkSizeBytes > 0L && tmpFile.length() != release.apkSizeBytes) {
+                    throw IllegalStateException("APK size mismatch: got ${tmpFile.length()}, expected ${release.apkSizeBytes}")
+                }
+                if (!release.sha256SumsUrl.isNullOrBlank() && release.apkFileName.isNotBlank()) {
+                    val manifestText = fetchTextWithRedirects(release.sha256SumsUrl)
+                    val expectedSha = parseSha256ForAsset(manifestText, release.apkFileName)
+                        ?: throw IllegalStateException("Missing SHA-256 entry for ${release.apkFileName} in SHA256SUMS")
+                    val actualSha = com.holos.reader.tts.VerifiedHttpDownloader.sha256Hex(tmpFile)
+                    if (!actualSha.equals(expectedSha, ignoreCase = true)) {
+                        throw IllegalStateException("APK SHA-256 mismatch: got $actualSha, expected $expectedSha")
+                    }
+                }
+                if (outFile.exists() && !outFile.delete()) {
+                    throw IllegalStateException("Failed to replace old staged APK")
+                }
+                check(tmpFile.renameTo(outFile)) { "Failed to promote verified APK" }
                 activity.runOnUiThread {
                     if (dlg.isShowing) dlg.dismiss()
                     launchInstaller(activity)
@@ -277,7 +293,49 @@ object GitHubUpdater {
         }
     }
 
-    private fun downloadWithRedirects(
+    internal fun parseSha256ForAsset(manifestText: String, fileName: String): String? {
+        for (raw in manifestText.lineSequence()) {
+            val line = raw.trim()
+            if (line.isEmpty()) continue
+            val parts = line.split(Regex("\s+"), limit = 2)
+            if (parts.size != 2) continue
+            val hash = parts[0].trim()
+            val name = parts[1].trim().removePrefix("*").substringAfterLast('/')
+            if (hash.length == 64 && hash.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' } && name == fileName) {
+                return hash.lowercase()
+            }
+        }
+        return null
+    }
+
+    private fun fetchTextWithRedirects(startUrl: String): String {
+        var currentUrl = startUrl
+        var redirects = 0
+        while (redirects < 6) {
+            val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                connectTimeout = 10_000
+                readTimeout = 15_000
+                setRequestProperty("User-Agent", "HolosReader-Android")
+            }
+            try {
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val loc = conn.getHeaderField("Location") ?: throw IllegalStateException("Missing redirect Location")
+                    currentUrl = loc
+                    redirects++
+                    continue
+                }
+                if (code !in 200..299) throw IllegalStateException("HTTP $code fetching checksums")
+                return conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            } finally {
+                conn.disconnect()
+            }
+        }
+        throw IllegalStateException("Too many redirects fetching checksums")
+    }
+
+    internal fun downloadWithRedirects(
         startUrl: String,
         dest: File,
         expectedBytes: Long,
@@ -292,41 +350,49 @@ object GitHubUpdater {
                 readTimeout = 30_000
                 setRequestProperty("User-Agent", "HolosReader-Android")
             }
-            val code = conn.responseCode
-            if (code in 300..399) {
-                val loc = conn.getHeaderField("Location") ?: throw IllegalStateException("Missing redirect Location")
-                conn.disconnect()
-                currentUrl = loc
-                redirects++
-                continue
-            }
-            if (code !in 200..299) {
-                conn.disconnect()
-                throw IllegalStateException("HTTP $code")
-            }
-            val total = conn.contentLengthLong.takeIf { it > 0 } ?: expectedBytes
-            var downloaded = 0L
-            var lastPct = -1
-            conn.inputStream.use { input ->
-                FileOutputStream(dest).use { output ->
-                    val buf = ByteArray(32 * 1024)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n <= 0) break
-                        output.write(buf, 0, n)
-                        downloaded += n
-                        if (total > 0) {
-                            val pct = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
-                            if (pct != lastPct) {
-                                lastPct = pct
-                                onProgress(pct)
+            try {
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val loc = conn.getHeaderField("Location") ?: throw IllegalStateException("Missing redirect Location")
+                    currentUrl = loc
+                    redirects++
+                    continue
+                }
+                if (code != HttpURLConnection.HTTP_OK) throw IllegalStateException("HTTP $code")
+                val headerLen = conn.contentLengthLong
+                if (expectedBytes > 0L && headerLen > 0L && headerLen != expectedBytes) {
+                    throw IllegalStateException("Content-Length $headerLen != expected $expectedBytes")
+                }
+                val total = headerLen.takeIf { it > 0L } ?: expectedBytes
+                var downloaded = 0L
+                var lastPct = -1
+                conn.inputStream.use { input ->
+                    FileOutputStream(dest).use { output ->
+                        val buf = ByteArray(32 * 1024)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n <= 0) break
+                            output.write(buf, 0, n)
+                            downloaded += n
+                            if (total > 0L) {
+                                val pct = ((downloaded * 100L) / total).toInt().coerceIn(0, 100)
+                                if (pct != lastPct) {
+                                    lastPct = pct
+                                    onProgress(pct)
+                                }
                             }
                         }
+                        output.fd.sync()
                     }
                 }
+                if (downloaded <= 0L) throw IllegalStateException("Empty APK download")
+                if (total > 0L && downloaded != total) {
+                    throw IllegalStateException("Truncated APK download: $downloaded / $total bytes")
+                }
+                return
+            } finally {
+                conn.disconnect()
             }
-            conn.disconnect()
-            return
         }
         throw IllegalStateException("Too many redirects")
     }

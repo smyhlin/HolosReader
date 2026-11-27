@@ -31,6 +31,12 @@ object OnnxAddonManager {
     const val VOICE_ENCODER_ONNX_URL =
         "https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/voice_encoder.onnx"
 
+    private val KNOWN_VERIFICATIONS: Map<String, Pair<Long, String>> = mapOf(
+        CONTEXTUAL_STRESS_FP16_ONNX_URL to (220507456L to "41d57395dd5ab2efa4db8640dd2046b8663164eedf9ceb782f5f0a4e01b0db1e"),
+        CONTEXTUAL_STRESS_INT8_ONNX_URL to (110908512L to "0487b6bccd7f129a8c36fabcf7b59d5a94017df9750b504cfc3b2af00d25a2c8"),
+        VOICE_ENCODER_ONNX_URL to (97359300L to "31c2cd3a8b9d7849b7fd9c485f28b469148a71db4ee01362d93e720f5a881fc1"),
+    )
+
     /** Recommends FP16 contextual stress on 6+ GB RAM devices with NNAPI/AUTO acceleration. */
     fun recommendFp16Stress(context: Context): Boolean {
         val hw = DeviceCapabilityScanner.scan(context)
@@ -155,60 +161,14 @@ object OnnxAddonManager {
         target: File,
         onBytes: (downloaded: Long, total: Long) -> Unit,
     ) {
-        val partial = File(target.path + ".part")
-        val existingBytes = if (partial.exists() && partial.length() > 0L) partial.length() else 0L
-        val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
-            instanceFollowRedirects = true
-            connectTimeout = 20_000
-            readTimeout = 60_000
-            setRequestProperty("User-Agent", USER_AGENT)
-            if (existingBytes > 0L) setRequestProperty("Range", "bytes=$existingBytes-")
-        }
-        try {
-            val code = conn.responseCode
-            if (code == 416 && existingBytes > 0L) {
-                conn.disconnect()
-                partial.delete()
-                downloadFile(urlStr, target, onBytes)
-                return
-            }
-            check(code in 200..299) { "HTTP $code downloading $urlStr" }
-
-            val contentRange = conn.getHeaderField("Content-Range")
-            val rangeMatches = contentRange != null && contentRange.startsWith("bytes $existingBytes-")
-            val resuming = (code == HttpURLConnection.HTTP_PARTIAL && existingBytes > 0L && rangeMatches)
-            val responseLen = conn.contentLengthLong
-            val expectedTotal = when {
-                resuming && responseLen > 0L -> existingBytes + responseLen
-                !resuming && responseLen > 0L -> responseLen
-                else -> -1L
-            }
-
-            var downloaded = if (resuming) existingBytes else 0L
-            val buf = ByteArray(1 shl 16)
-            conn.inputStream.use { input ->
-                FileOutputStream(partial, resuming).use { output ->
-                    while (true) {
-                        val read = input.read(buf)
-                        if (read <= 0) break
-                        output.write(buf, 0, read)
-                        downloaded += read
-                        onBytes(downloaded, expectedTotal)
-                    }
-                    output.fd.sync()
-                }
-            }
-            if (expectedTotal > 0L && downloaded != expectedTotal) {
-                throw IllegalStateException("Incomplete download ${target.name}: $downloaded / $expectedTotal bytes")
-            }
-            if (downloaded <= 0L) {
-                partial.delete()
-                throw IllegalStateException("Empty file ${target.name}")
-            }
-            if (target.exists()) target.delete()
-            check(partial.renameTo(target)) { "Failed to save ${target.name}" }
-        } finally {
-            conn.disconnect()
-        }
+        val known = KNOWN_VERIFICATIONS[urlStr]
+        VerifiedHttpDownloader.download(
+            urlStr = urlStr,
+            target = target,
+            userAgent = USER_AGENT,
+            expectedBytes = known?.first ?: -1L,
+            expectedSha256 = known?.second,
+            onBytes = onBytes,
+        )
     }
 }
