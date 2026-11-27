@@ -399,10 +399,8 @@ object EpubStreamingParser {
 
             when (tagName) {
                 "br" -> {
-                    if (inlineBuf.isNotEmpty() && inlineBuf[inlineBuf.length - 1] != '
-') {
-                        inlineBuf.append('
-')
+                    if (inlineBuf.isNotEmpty() && inlineBuf[inlineBuf.length - 1] != '\n') {
+                        inlineBuf.append('\n')
                     }
                     continue
                 }
