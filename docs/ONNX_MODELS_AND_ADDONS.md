@@ -77,3 +77,19 @@ gh release create onnx-addons-v1 \
 ```
 
 Once uploaded, wire the direct HTTPS URL into `OnnxAddonManager.kt` (`CONTEXTUAL_STRESS_ONNX_URL`) and flip `directDownloadAvailable = true` in `OnnxAddonSpec.kt` to turn **Import .onnx** into a 1-tap **Download** button inside the app.
+
+---
+
+## Live Pre-Built Release Assets (`onnx-addons-v1`)
+
+Pre-exported, numerically verified ONNX add-on binaries are published on the non-latest GitHub Release [`onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1) (`--latest=false`, so APK update checks against `/releases/latest` remain unaffected). All four optional ONNX add-ons are **1-tap auto-downloadable** from **Settings -> TTS -> Додаткові ONNX-модулі**:
+
+| Asset | Size | SHA-256 | Parity vs Upstream PyTorch |
+|---|---:|---|---|
+| [`uk_stress_contextual_fp16.onnx`](https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/uk_stress_contextual_fp16.onnx) | 220.5 MB | `41d57395dd5ab2efa4db8640dd2046b8663164eedf9ceb782f5f0a4e01b0db1e` | `max_abs_diff = 0.0064`, 10/10 top-1 Ukrainian homograph agreement (GPU/NNAPI) |
+| [`uk_stress_contextual_int8.onnx`](https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/uk_stress_contextual_int8.onnx) | 110.9 MB | `0487b6bccd7f129a8c36fabcf7b59d5a94017df9750b504cfc3b2af00d25a2c8` | 10/10 top-1 Ukrainian homograph agreement (CPU/XNNPACK) |
+| [`voice_encoder.onnx`](https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/voice_encoder.onnx) | 97.4 MB | `31c2cd3a8b9d7849b7fd9c485f28b469148a71db4ee01362d93e720f5a881fc1` | Cosine similarity `0.99962` vs `patriotyk/HolosTTS` `VoiceEncoder` (3.0s / 6.5s / 11.3s WAVs, exact 24 kHz log-mel frontend baked into ONNX) |
+| [`SHA256SUMS`](https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/SHA256SUMS) | 279 B | — | Verification manifest for all three ONNX assets |
+
+- **Contextual Stress picker in Settings:** Tapping **Контекстні наголоси (омографи) -> Завантажити** lets you pick **FP16 (~221 MB · GPU/NNAPI)** or **INT8 (~111 MB · CPU/XNNPACK)** (auto-recommending FP16 on 6+ GB RAM devices with `AUTO`/`NNAPI` acceleration) or import a custom local `.onnx`. `tokenizer.json` downloads automatically alongside the model.
+- **Voice Cloner in Settings:** Tapping **Клонування голосу на телефоні -> Завантажити** downloads `voice_encoder.onnx` (~97 MB) in one tap, enabling offline 5–15 s WAV voice cloning directly on-device.
