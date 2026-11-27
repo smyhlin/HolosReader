@@ -163,7 +163,6 @@ class LibraryActivity : Activity() {
         // Open EPUB directly if launched via "Open with" or "Share / Send a copy" (e.g. from Google Drive)
         handleIncomingIntent(intent)
         checkModelStatus()
-        GitHubUpdater.checkInBackground(this, prefs)
     }
 
     override fun onNewIntent(newIntent: Intent?) {
@@ -192,6 +191,13 @@ class LibraryActivity : Activity() {
             incoming.removeExtra(Intent.EXTRA_STREAM)
             incoming.clipData = null
             importSingleUri(uri)
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && ::prefs.isInitialized && !isFinishing) {
+            GitHubUpdater.checkInBackground(this, prefs)
         }
     }
 
