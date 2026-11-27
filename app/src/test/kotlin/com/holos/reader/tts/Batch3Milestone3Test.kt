@@ -161,4 +161,23 @@ class Batch3Milestone3Test {
         assertTrue(gate.onFocusDenied(11L))
         assertFalse(gate.awaitGrant(11L, cancel, timeoutMs = 1_000L))
     }
+    @Test
+    fun malformedBundleMetadataIsRepairableWithoutAStoredChecksum() {
+        val root = kotlin.io.path.createTempDirectory("holos-corrupt-meta").toFile()
+        try {
+            val manifest = File(root, "manifest.json").apply { writeText("broken") }
+            val expected = listOf(ModelIntegrityChecker.ExpectedFile(
+                manifest.name, manifest, "https://example.invalid/manifest.json",
+                validateContent = { it.readText() == "valid" },
+            ))
+            val before = ModelIntegrityChecker.diagnoseBundle(root, expected)
+            assertEquals(ModelIntegrityChecker.FileStatus.CORRUPT, before.status)
+            assertEquals(1, before.repairableCount)
+            val after = ModelIntegrityChecker.repairBundle(root, expected) { it.file.writeText("valid") }
+            assertEquals(ModelIntegrityChecker.FileStatus.VERIFIED, after.status)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
 }
