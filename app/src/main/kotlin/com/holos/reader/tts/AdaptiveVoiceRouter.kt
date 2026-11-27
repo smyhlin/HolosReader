@@ -93,23 +93,39 @@ object AdaptiveVoiceRouter {
         role: VoiceRole,
         prefs: ReaderPreferences,
         availableVoices: List<String>,
+    ): String? = resolveVoice(
+        role = role,
+        selectedVoice = prefs.selectedVoice,
+        adaptiveVoicesEnabled = prefs.adaptiveVoicesEnabled,
+        systemVoice = prefs.systemVoice,
+        dialogueVoice = prefs.dialogueVoice,
+        availableVoices = availableVoices,
+    )
+
+    fun resolveVoice(
+        role: VoiceRole,
+        selectedVoice: String?,
+        adaptiveVoicesEnabled: Boolean,
+        systemVoice: String?,
+        dialogueVoice: String?,
+        availableVoices: List<String>,
     ): String? {
         fun valid(v: String?): String? = v?.takeIf {
             it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in availableVoices
         }
 
-        val narrator = valid(prefs.selectedVoice) ?: availableVoices.firstOrNull()
-        if (!prefs.adaptiveVoicesEnabled || role == VoiceRole.NARRATOR) return narrator
+        val narrator = valid(selectedVoice) ?: availableVoices.firstOrNull()
+        if (!adaptiveVoicesEnabled || role == VoiceRole.NARRATOR) return narrator
 
         return when (role) {
             VoiceRole.NARRATOR -> narrator
-            VoiceRole.SYSTEM -> valid(prefs.systemVoice) ?: pickContrastingDefault(
+            VoiceRole.SYSTEM -> valid(systemVoice) ?: pickContrastingDefault(
                 narrator = narrator,
                 availableVoices = availableVoices,
                 preferredIfNarratorMale = listOf("Speaker_30", "Speaker_12", "Speaker_26"),
                 preferredIfNarratorFemale = listOf("Speaker_36", "Speaker_11", "Speaker_0"),
             )
-            VoiceRole.DIALOGUE -> valid(prefs.dialogueVoice) ?: pickContrastingDefault(
+            VoiceRole.DIALOGUE -> valid(dialogueVoice) ?: pickContrastingDefault(
                 narrator = narrator,
                 availableVoices = availableVoices,
                 preferredIfNarratorMale = listOf("Speaker_43", "Speaker_21", "Speaker_67"),

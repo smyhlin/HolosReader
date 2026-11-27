@@ -1528,7 +1528,8 @@ class AudioSheetController(
         val spokenSet = com.holos.reader.tts.NarrationPlan.spokenBlockIds(allBlocks).toHashSet()
         val blocks = allBlocks.filter { it.index in spokenSet }
         if (blocks.isEmpty()) return
-        val outFile = getChapterWavFile()
+        val renderBookId = callbacks.getCurrentBookId()
+        val renderChapterIdx = callbacks.getCurrentChapterIndex()
         offlineRenderCancel.set(false)
         offlineRendering.set(true)
         offlineSubTv.text = "Генерація офлайн-аудіо розділу (0/${blocks.size})…"
@@ -1552,7 +1553,17 @@ class AudioSheetController(
             val emotionClassifier = HolosEngineHolder.getEmotionClassifier(activity)
             val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
             val stressifier = HolosEngineHolder.getStressifier(activity)
-            val defaultVoice = prefs.selectedVoice?.takeIf {
+            val activeModelId = HolosEngineHolder.currentLoadedModelId()
+            val snapshot = TtsPlaybackController.resolveOfflineSnapshot(
+                context = activity,
+                prefs = prefs,
+                effectiveModelOverride = activeModelId,
+                flashSrActiveOverride = flashSr != null,
+                emotionActiveOverride = emotionClassifier != null,
+                contextualStressActiveOverride = prefs.contextualStressEnabled && OnnxAddonManager.isAddonReady(activity, OnnxAddonId.CONTEXTUAL_STRESS),
+            )
+            val outFile = TtsPlaybackController.offlineChapterFile(activity, renderBookId, renderChapterIdx, snapshot.recipe)
+            val defaultVoice = snapshot.selectedVoice?.takeIf {
                 it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
             } ?: engine.voices.firstOrNull()
             val tmp = File(outFile.path + ".part")
@@ -1573,20 +1584,27 @@ class AudioSheetController(
                     for ((i, b) in blocks.withIndex()) {
                         if (offlineRenderCancel.get()) break
                         val startSample = totalPcmBytes / 2L
-                        if (prefs.adaptiveVoicesEnabled) {
+                        if (snapshot.adaptiveVoicesEnabled) {
                             for (seg in AdaptiveVoiceRouter.segmentParagraph(b.text)) {
                                 if (offlineRenderCancel.get()) break
-                                val segVoice = AdaptiveVoiceRouter.resolveVoice(seg.role, prefs, engine.voices)
+                                val segVoice = AdaptiveVoiceRouter.resolveVoice(
+                                    role = seg.role,
+                                    selectedVoice = snapshot.selectedVoice,
+                                    adaptiveVoicesEnabled = snapshot.adaptiveVoicesEnabled,
+                                    systemVoice = snapshot.systemVoice,
+                                    dialogueVoice = snapshot.dialogueVoice,
+                                    availableVoices = engine.voices,
+                                )
                                 HolosSafeSynthesizer.synthesizeParagraphStreaming(
                                     engine = engine,
                                     stressifier = stressifier,
                                     rawParagraph = seg.text,
                                     voice = segVoice,
-                                    speed = prefs.speechSpeed,
+                                    speed = snapshot.speechSpeed,
                                     cancelled = offlineRenderCancel,
                                     customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
-                                    supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
-                                    supertonicSteps = prefs.supertonicSteps,
+                                    supertonicEnglishPronunciation = snapshot.supertonicEnglishPronunciation,
+                                    supertonicSteps = snapshot.supertonicSteps,
                                     flashSr = flashSr,
                                     emotionClassifier = emotionClassifier,
                                     onChunk = writeFloats,
@@ -1598,11 +1616,11 @@ class AudioSheetController(
                                 stressifier = stressifier,
                                 rawParagraph = b.text,
                                 voice = defaultVoice,
-                                speed = prefs.speechSpeed,
+                                speed = snapshot.speechSpeed,
                                 cancelled = offlineRenderCancel,
                                 customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
-                                supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
-                                supertonicSteps = prefs.supertonicSteps,
+                                supertonicEnglishPronunciation = snapshot.supertonicEnglishPronunciation,
+                                supertonicSteps = snapshot.supertonicSteps,
                                 flashSr = flashSr,
                                 emotionClassifier = emotionClassifier,
                                 onChunk = writeFloats,

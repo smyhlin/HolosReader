@@ -882,30 +882,75 @@ class TtsPlaybackController(context: Context) {
          * Builds a deterministic offline chapter WAV filename incorporating voice, speed,
          * adaptive mode, and user stress overrides timestamp so stale renders are never played.
          */
-        fun offlineChapterFile(context: Context, bookId: String, chapterIndex: Int, prefs: ReaderPreferences): File {
-            val stressFile = HolosEngineHolder.getUserStressFile(context)
-            val customFp = prefs.selectedVoice?.takeIf { it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) }?.let { v ->
-                val f = File(HolosEngineHolder.getCustomVoicesDir(context), "${v.removePrefix(CustomVoiceLoader.CUSTOM_PREFIX)}.bin")
-                if (f.isFile) "${f.length()}:${f.lastModified()}" else "missing"
-            }.orEmpty()
-            val recipe = AudioCacheRecipe(
+        fun addonRevisionFingerprint(context: Context, addonId: OnnxAddonId): String {
+            if (!OnnxAddonManager.isAddonReady(context, addonId)) return ""
+            val dir = OnnxAddonManager.getAddonDir(context, addonId)
+            return OnnxAddonCatalog.byId(addonId).requiredFiles.joinToString(",") { rel ->
+                val f = File(dir, rel)
+                "${rel}:${f.length()}:${f.lastModified()}"
+            }
+        }
+
+        fun resolveOfflineSnapshot(
+            context: Context,
+            prefs: ReaderPreferences,
+            effectiveModelOverride: TtsModelId? = null,
+            flashSrActiveOverride: Boolean? = null,
+            emotionActiveOverride: Boolean? = null,
+            contextualStressActiveOverride: Boolean? = null,
+        ): AudioCacheRecipe.ResolvedSynthesisSnapshot {
+            val appCtx = context.applicationContext
+            val requestedModel = prefs.selectedTtsModelId
+            val effectiveModel = effectiveModelOverride
+                ?: if (HolosModelManager.isModelReady(appCtx, requestedModel)) requestedModel
+                else HolosModelManager.downloadedModels(appCtx).firstOrNull() ?: requestedModel
+
+            val isHolosFamily = effectiveModel != TtsModelId.SUPERTONIC_V2_MULTILINGUAL
+            val flashSrActive = flashSrActiveOverride
+                ?: (isHolosFamily && prefs.flashSrEnabled && OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.FLASH_SR))
+            val emotionActive = emotionActiveOverride
+                ?: (prefs.emotionPacingEnabled && OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.UK_EMOTION))
+            val contextualActive = contextualStressActiveOverride
+                ?: (prefs.contextualStressEnabled && OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.CONTEXTUAL_STRESS))
+
+            val stressFile = HolosEngineHolder.getUserStressFile(appCtx)
+            val customVoicesDir = HolosEngineHolder.getCustomVoicesDir(appCtx)
+            val voiceFp: (String?) -> String = { v ->
+                if (v != null && v.startsWith(CustomVoiceLoader.CUSTOM_PREFIX)) {
+                    val f = File(customVoicesDir, "${v.removePrefix(CustomVoiceLoader.CUSTOM_PREFIX)}.bin")
+                    if (f.isFile) "${f.length()}:${f.lastModified()}" else "missing"
+                } else ""
+            }
+            return AudioCacheRecipe.resolve(
                 parserVersion = com.holos.reader.epub.EpubStreamingParser.PARSER_VERSION,
-                modelId = prefs.selectedTtsModelId.id,
-                selectedVoice = prefs.selectedVoice ?: "default",
-                customVoiceFingerprint = customFp,
+                requestedModelId = requestedModel.id,
+                effectiveModelId = effectiveModel.id,
+                selectedVoice = prefs.selectedVoice,
                 adaptiveVoicesEnabled = prefs.adaptiveVoicesEnabled,
-                systemVoice = prefs.systemVoice ?: "",
-                dialogueVoice = prefs.dialogueVoice ?: "",
+                systemVoice = prefs.systemVoice,
+                dialogueVoice = prefs.dialogueVoice,
+                voiceFingerprintProvider = voiceFp,
                 speechSpeed = prefs.speechSpeed,
                 supertonicSteps = prefs.supertonicSteps,
                 supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
-                flashSrEnabled = prefs.flashSrEnabled,
-                emotionPacingEnabled = prefs.emotionPacingEnabled,
-                contextualStressEnabled = prefs.contextualStressEnabled,
+                flashSrActive = flashSrActive,
+                flashSrRevision = if (flashSrActive) addonRevisionFingerprint(appCtx, OnnxAddonId.FLASH_SR) else "",
+                emotionActive = emotionActive,
+                emotionRevision = if (emotionActive) addonRevisionFingerprint(appCtx, OnnxAddonId.UK_EMOTION) else "",
+                contextualStressActive = contextualActive,
+                contextualStressRevision = if (contextualActive) addonRevisionFingerprint(appCtx, OnnxAddonId.CONTEXTUAL_STRESS) else "",
                 stressOverridesMtime = stressFile.lastModified(),
                 stressOverridesSize = stressFile.length(),
             )
+        }
+
+        fun offlineChapterFile(context: Context, bookId: String, chapterIndex: Int, recipe: AudioCacheRecipe): File {
             return File(offlineDir(context), "${bookId}_ch${chapterIndex}_${recipe.cacheKeyHex()}.wav")
+        }
+
+        fun offlineChapterFile(context: Context, bookId: String, chapterIndex: Int, prefs: ReaderPreferences): File {
+            val snapshot = resolveOfflineSnapshot(context, prefs)
+            return offlineChapterFile(context, bookId, chapterIndex, snapshot.recipe)
         }
 
         fun writeOfflineIndex(idxFile: File, entries: List<OfflineBlockIndex>) {

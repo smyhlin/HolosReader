@@ -191,8 +191,12 @@ object EpubStreamingParser {
         val inlineSpans = ArrayList<InlineSpan>(8)
         val spanStack = ArrayDeque<Pair<SpanStyle, Int>>()
 
-        var inTr = false
-        val trCells = ArrayList<String>(8)
+        data class TableRowState(
+            val cells: MutableList<String> = ArrayList(8),
+            var inCell: Boolean = false,
+            val cellParts: MutableList<String> = ArrayList(4),
+        )
+        val tableRowStack = ArrayDeque<TableRowState>()
         var skipUntilCloseTag: String? = null
 
         fun currentBlockType(): BlockType {
@@ -249,8 +253,13 @@ object EpubStreamingParser {
                     val e = (sp.end - leadTrim).coerceIn(0, trimmed.length)
                     if (e > s) InlineSpan(s, e, sp.style) else null
                 }
-                if (inTr) {
-                    trCells.add(trimmed)
+                val activeRow = tableRowStack.lastOrNull()
+                if (activeRow != null) {
+                    if (activeRow.inCell) {
+                        activeRow.cellParts.add(trimmed)
+                    } else {
+                        activeRow.cells.add(trimmed)
+                    }
                 } else {
                     val bType = forceType ?: currentBlockType()
                     val finalText = if (bType == BlockType.LIST_ITEM) "• $trimmed" else trimmed
@@ -267,13 +276,33 @@ object EpubStreamingParser {
             }
         }
 
-        fun flushTableRow() {
+        fun finishCurrentCell(row: TableRowState) {
+            if (!row.inCell) return
             flushInlineText()
-            if (trCells.isNotEmpty()) {
-                emitBlock(BlockType.TABLE_ROW, trCells.joinToString("  |  "))
-                trCells.clear()
+            row.cells.add(row.cellParts.joinToString("\n"))
+            row.cellParts.clear()
+            row.inCell = false
+        }
+
+        fun emitPendingTableRowFragment(row: TableRowState) {
+            flushInlineText()
+            if (row.inCell && row.cellParts.isNotEmpty()) {
+                row.cells.add(row.cellParts.joinToString("\n"))
+                row.cellParts.clear()
             }
-            inTr = false
+            if (row.cells.any { it.isNotEmpty() }) {
+                emitBlock(BlockType.TABLE_ROW, row.cells.joinToString("  |  "))
+                row.cells.clear()
+            }
+        }
+
+        fun flushTableRow() {
+            val row = tableRowStack.lastOrNull() ?: return
+            finishCurrentCell(row)
+            if (row.cells.any { it.isNotEmpty() }) {
+                emitBlock(BlockType.TABLE_ROW, row.cells.joinToString("  |  "))
+            }
+            tableRowStack.removeLast()
         }
 
         fun appendDecodedText(segment: String) {
@@ -396,32 +425,40 @@ object EpubStreamingParser {
                 continue
             }
 
+            val elementAnchors = ArrayList<String>(2)
             if (!isClose && attrs.isNotEmpty()) {
                 fastAttr(attrs, "id")?.let { decodeEntities(it).trim() }
                     ?.takeIf { it.isNotEmpty() }
-                    ?.let { pendingAnchors.add(it) }
+                    ?.let { elementAnchors.add(it) }
                 if (tagName == "a") {
                     fastAttr(attrs, "name")?.let { decodeEntities(it).trim() }
                         ?.takeIf { it.isNotEmpty() }
-                        ?.let { pendingAnchors.add(it) }
+                        ?.let { elementAnchors.add(it) }
                 }
             }
 
             when (tagName) {
                 "br" -> {
+                    if (elementAnchors.isNotEmpty()) pendingAnchors.addAll(elementAnchors)
                     if (inlineBuf.isNotEmpty() && inlineBuf[inlineBuf.length - 1] != '\n') {
                         inlineBuf.append('\n')
                     }
                     continue
                 }
                 "hr" -> {
-                    if (inTr) flushTableRow() else flushInlineText()
+                    if (tableRowStack.isNotEmpty()) emitPendingTableRowFragment(tableRowStack.last()) else flushInlineText()
+                    if (elementAnchors.isNotEmpty()) pendingAnchors.addAll(elementAnchors)
                     emitBlock(BlockType.HR, "")
                     continue
                 }
                 "img", "image" -> {
                     if (!isClose) {
-                        flushInlineText()
+                        if (tableRowStack.isNotEmpty()) {
+                            emitPendingTableRowFragment(tableRowStack.last())
+                        } else {
+                            flushInlineText()
+                        }
+                        if (elementAnchors.isNotEmpty()) pendingAnchors.addAll(elementAnchors)
                         extractImageBlock(attrs, chapterDir, blocks.size)?.let { imgBlk ->
                             emitBlock(BlockType.IMAGE, imgBlk.text, emptyList(), imgBlk.imageEntryPath)
                         }
@@ -430,16 +467,36 @@ object EpubStreamingParser {
                 }
                 "tr" -> {
                     if (!isClose) {
-                        flushInlineText()
-                        inTr = true
-                        trCells.clear()
+                        if (tableRowStack.isNotEmpty()) {
+                            emitPendingTableRowFragment(tableRowStack.last())
+                        } else {
+                            flushInlineText()
+                        }
+                        if (elementAnchors.isNotEmpty()) pendingAnchors.addAll(elementAnchors)
+                        tableRowStack.addLast(TableRowState())
                     } else {
                         flushTableRow()
                     }
                     continue
                 }
                 "td", "th" -> {
-                    flushInlineText()
+                    val row = tableRowStack.lastOrNull()
+                    if (!isClose) {
+                        if (row != null) {
+                            if (row.inCell) finishCurrentCell(row) else flushInlineText()
+                            if (elementAnchors.isNotEmpty()) pendingAnchors.addAll(elementAnchors)
+                            row.inCell = true
+                        } else {
+                            flushInlineText()
+                            if (elementAnchors.isNotEmpty()) pendingAnchors.addAll(elementAnchors)
+                        }
+                    } else {
+                        if (row != null) {
+                            finishCurrentCell(row)
+                        } else {
+                            flushInlineText()
+                        }
+                    }
                     continue
                 }
             }
@@ -447,12 +504,20 @@ object EpubStreamingParser {
             val blockType = mapBlockTag(tagName, attrs)
             if (blockType != null) {
                 if (!isClose) {
-                    flushInlineText()
+                    if (tagName == "table" && tableRowStack.isNotEmpty()) {
+                        emitPendingTableRowFragment(tableRowStack.last())
+                    } else {
+                        flushInlineText()
+                    }
+                    if (elementAnchors.isNotEmpty()) pendingAnchors.addAll(elementAnchors)
                     if (!selfClose) {
                         blockStack.add(tagName to blockType)
                     }
                 } else {
                     flushInlineText()
+                    if (tagName == "table" && tableRowStack.isNotEmpty()) {
+                        flushTableRow()
+                    }
                     val matchIdx = blockStack.indexOfLast { it.first == tagName }
                     if (matchIdx >= 0) {
                         while (blockStack.size > matchIdx) {
@@ -462,6 +527,8 @@ object EpubStreamingParser {
                 }
                 continue
             }
+
+            if (elementAnchors.isNotEmpty()) pendingAnchors.addAll(elementAnchors)
 
             val inlineStyle = mapInlineStyle(tagName)
             if (inlineStyle != null && !selfClose) {
@@ -479,7 +546,8 @@ object EpubStreamingParser {
             }
         }
 
-        if (inTr) flushTableRow() else flushInlineText()
+        while (tableRowStack.isNotEmpty()) flushTableRow()
+        flushInlineText()
 
         if (pendingAnchors.isNotEmpty() && blocks.isNotEmpty()) {
             bindAnchorsTo(blocks.lastIndex)

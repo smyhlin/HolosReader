@@ -333,6 +333,8 @@ object HolosEngineHolder {
      * generation across the entire synthesis operation (#15). Callers MUST close the lease in
      * `finally` (e.g. `.use { lease -> ... }`).
      */
+    fun currentLoadedModelId(): TtsModelId? = synchronized(engineLock) { loadedModelId }
+
     fun acquireEngineLease(context: Context): EngineLeasePool.Lease<HolosTtsEngine>? {
         val appCtx = context.applicationContext
         val prefs = ReaderPreferences(appCtx)

@@ -104,10 +104,11 @@ object OfflineAudioCache {
         val entries = parseStrictIndex(idxFile, totalSamples) ?: return null
         if (entries.isEmpty() || entries.size != manifest.blockCount) return null
 
-        if (expectedSpeakableBlockIds != null && expectedSpeakableBlockIds.isNotEmpty()) {
-            val covered = entries.mapTo(HashSet(entries.size)) { it.blockIndex }
-            for (expectedId in expectedSpeakableBlockIds) {
-                if (expectedId !in covered) return null
+        if (expectedSpeakableBlockIds != null) {
+            if (expectedSpeakableBlockIds.isEmpty()) return null
+            if (entries.size != expectedSpeakableBlockIds.size) return null
+            for (i in entries.indices) {
+                if (entries[i].blockIndex != expectedSpeakableBlockIds[i]) return null
             }
         }
 
@@ -181,11 +182,13 @@ object OfflineAudioCache {
                 val b = parts[0].toIntOrNull() ?: return null
                 val st = parts[1].toLongOrNull() ?: return null
                 val sp = parts[2].toLongOrNull() ?: return null
-                if (b <= prevBlock) return null
-                if (st < prevEndSample || sp <= 0L || st + sp > totalSamples) return null
+                if (b < 0 || b <= prevBlock) return null
+                if (st < prevEndSample || st < 0L || st >= totalSamples) return null
+                if (sp <= 0L || sp > totalSamples - st) return null
+                val endSample = st + sp
                 result.add(BlockEntry(b, st, sp))
                 prevBlock = b
-                prevEndSample = st + sp
+                prevEndSample = endSample
             }
             result
         } catch (_: Exception) {
