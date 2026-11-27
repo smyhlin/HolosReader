@@ -114,10 +114,15 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var moreSettingsTv: TextView
     private lateinit var bottomSunBtn: ImageView
     private lateinit var bottomFontBtn: TextView
-    private val livePrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ ->
+    private val livePrefsListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         runOnUiThread {
             if (::frameRoot.isInitialized && !isFinishing && !isDestroyed) {
                 applyTheme()
+                if (key == "font_sp" || key == null) {
+                    bookPageMapGeneration++
+                    pageMapHandler.removeCallbacks(rebuildPageMap)
+                    pageMapHandler.postDelayed(rebuildPageMap, 150L)
+                }
             }
         }
     }
@@ -146,6 +151,15 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private val chapterLoadGen = AtomicLong(0L)
     private var chapterStartPages: IntArray = intArrayOf(0, 1)
     private var totalBookPages: Int = 1
+    private var bookPageMapGeneration = 0L
+    private val pageMapHandler = Handler(Looper.getMainLooper())
+    private val rebuildPageMap = Runnable {
+        val loadedBook = book
+        val session = epubSession
+        if (loadedBook != null && session != null && !isFinishing && !isDestroyed) {
+            computeBookPageMap(loadedBook, session)
+        }
+    }
     private var currentChapterPage: Int = 1
     private var currentChapterTotalPages: Int = 1
     private var pendingScrollFraction: Float? = null
@@ -240,6 +254,9 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
         buildUi()
         applyTheme()
+        val chapterCount = loaded.chapterCount.coerceAtLeast(1)
+        chapterStartPages = IntArray(chapterCount + 1) { it }
+        totalBookPages = chapterCount
         computeBookPageMap(loaded, epubSession!!)
         loadChapter(chapterIndex, scrollToBlock = restoredBlock, autoPlay = false)
     }
@@ -317,6 +334,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         applicationContext.getSharedPreferences("holos_reader_prefs", Context.MODE_PRIVATE)
             .unregisterOnSharedPreferenceChangeListener(livePrefsListener)
         autoScrollHandler.removeCallbacksAndMessages(null)
+        pageMapHandler.removeCallbacks(rebuildPageMap)
         saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
         if (::controller.isInitialized) {
             controller.close()
@@ -677,27 +695,30 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     private fun computeBookPageMap(b: BookRecord, session: EpubSession) {
-        val count = b.chapterCount.coerceAtLeast(1)
-        val fallback = IntArray(count + 1) { it }
-        chapterStartPages = fallback
-        totalBookPages = count
+        val generation = ++bookPageMapGeneration
+        val fontSize = prefs.fontSizeSp
         bgExecutor.execute {
             val hrefs = db.getAllSpineHrefs(b.id)
-            if (hrefs.isEmpty()) return@execute
-            val bytesPerPage = (3200.0 * (19.0 / prefs.fontSizeSp.toDouble())).toLong().coerceIn(1400L, 6000L)
+            if (hrefs.isEmpty() || hrefs.size != b.chapterCount) return@execute
+            // A chapter-byte estimate using font size, independent of viewport layout.
+            val bytesPerPage = (3200.0 * (19.0 / fontSize.toDouble())).toLong().coerceIn(1400L, 6000L)
             val starts = IntArray(hrefs.size + 1)
             var acc = 0
-            session.borrowZip { z ->
+            val computed = session.borrowZip { z ->
                 for (i in hrefs.indices) {
                     starts[i] = acc
                     val sz = z.getEntry(hrefs[i])?.size?.coerceAtLeast(400L) ?: 3200L
                     val pages = ((sz + bytesPerPage - 1L) / bytesPerPage).toInt().coerceAtLeast(1)
                     acc += pages
                 }
+                true
             }
+            if (computed != true) return@execute
             starts[hrefs.size] = acc.coerceAtLeast(1)
             runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (isFinishing || isDestroyed || epubSession !== session || generation != bookPageMapGeneration) {
+                    return@runOnUiThread
+                }
                 chapterStartPages = starts
                 totalBookPages = starts.last().coerceAtLeast(1)
                 updatePageFooter(blocksListView.firstVisiblePosition, blocksListView.childCount.coerceAtLeast(4))
@@ -1343,9 +1364,13 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private fun showImageZoomDialog(entryPath: String) {
         val session = epubSession ?: return
         val maxW = resources.displayMetrics.widthPixels
+        val chapterGeneration = chapterLoadGen.get()
         bgExecutor.execute {
             val bmp = session.loadImage(entryPath, maxW) ?: return@execute
             runOnUiThread {
+                if (isFinishing || isDestroyed || epubSession !== session || chapterGeneration != chapterLoadGen.get()) {
+                    return@runOnUiThread
+                }
                 val iv = ImageView(this).apply {
                     adjustViewBounds = true
                     scaleType = ImageView.ScaleType.FIT_CENTER
