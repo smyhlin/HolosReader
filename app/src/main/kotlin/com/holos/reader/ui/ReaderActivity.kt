@@ -108,11 +108,16 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private fun commitBlocksRelayout() {
         autoScrollHandler.removeCallbacks(blocksRelayoutRunnable)
         if (::blocksAdapter.isInitialized) blocksAdapter.notifyDataSetChanged()
+        if (::prefs.isInitialized && prefs.hapticFeedback && ::blocksListView.isInitialized) {
+            blocksListView.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+        }
     }
     private var autoScrolling = false
     private val sessionTracker = com.holos.reader.tts.ReadingSessionTracker()
     @Volatile
     private var contentCommitted = false
+    private var pulseBlockIndex: Int = -1
+    private var pulseUntilMs: Long = 0L
     private var viewportBlockIndex: Int = 0
     private var suppressViewportScroll = false
     private lateinit var lightThemeBar: LinearLayout
@@ -148,6 +153,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private var chapterLoadPending = false
     private lateinit var chapterPullChip: TextView
     private lateinit var bottomDock: LinearLayout
+    private lateinit var warmTintView: View
     private var chapterTitle: String = ""
     private var currentBlocks: List<ReaderBlock> = emptyList()
     private var chapterTimeline = com.holos.reader.tts.ChapterTimeline(emptyList())
@@ -170,7 +176,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var topOverlayBar: LinearLayout
     private lateinit var topBookmarkBtn: ImageView
     private lateinit var subtleHeaderTv: TextView
-    private lateinit var blocksListView: ListView
+    private lateinit var blocksListView: ChapterEdgeListView
     private lateinit var blocksAdapter: BlocksAdapter
     private lateinit var footerCounterTv: TextView
     private lateinit var chapterProgressBar: ProgressBar
@@ -467,6 +473,14 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         bottomDock.addView(bottomIconBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         frameRoot.addView(readerCanvas, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        warmTintView = View(this).apply {
+            setBackgroundColor(0x28FFB35A)
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            visibility = View.GONE
+        }
+        frameRoot.addView(warmTintView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         frameRoot.addView(bottomDock, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
 
         // Expandable Lyrics-Style Audio Bottom Sheet
@@ -643,6 +657,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val sidePad = d(prefs.sideMarginDp)
         blocksListView.setPadding(sidePad, d(4), sidePad, d(130))
         blocksListView.isVerticalScrollBarEnabled = !prefs.hideScrollbar
+        if (::blocksListView.isInitialized) blocksListView.hapticsEnabled = prefs.hapticFeedback
+        if (::warmTintView.isInitialized) {
+            warmTintView.visibility = if (prefs.warmNightTint) View.VISIBLE else View.GONE
+        }
         subtleHeaderTv.visibility = if (prefs.showHeader) View.VISIBLE else View.GONE
         footerCounterTv.visibility = if (prefs.showFooter) View.VISIBLE else View.GONE
         footerCounterTv.alpha = if (prefs.footerTapHidden) 0f else 1f
@@ -742,6 +760,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         targetFraction: Float? = null,
         targetFragment: String? = null,
         targetExcerpt: String? = null,
+        playbackDelayMs: Long = 0,
     ) {
         val b = book ?: return
         val session = epubSession ?: return
@@ -792,6 +811,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 nextLinearChapterIndex = nextLinear
                 previousLinearChapterIndex = previousLinear
                 if (::audioSheet.isInitialized) audioSheet.onChapterCommitted(chapterTimeline)
+                val openingFresh = !contentCommitted
                 if (!contentCommitted) {
                     contentCommitted = true
                 }
@@ -815,6 +835,26 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     else -> scrollToBlock
                 }.coerceIn(0, (blocks.size - 1).coerceAtLeast(0))
 
+                if (openingFresh && !autoPlay && prefs.continuePulse && b.lastReadAtMs > 0L &&
+                    System.currentTimeMillis() - b.lastReadAtMs >= 6L * 60L * 60L * 1000L
+                ) {
+                    pulseBlockIndex = resolvedBlock
+                    pulseUntilMs = SystemClock.elapsedRealtime() + 3_000L
+                    autoScrollHandler.postDelayed({
+                        pulseBlockIndex = -1
+                        pulseUntilMs = 0L
+                        if (::blocksListView.isInitialized) {
+                            for (i in 0 until blocksListView.childCount) {
+                                val child = blocksListView.getChildAt(i) ?: continue
+                                if (child.tag == "holos_pulse") {
+                                    child.tag = null
+                                    child.background = null
+                                }
+                            }
+                        }
+                    }, 3_000L)
+                }
+
                 viewportBlockIndex = resolvedBlock
                 activeBlockIndex = resolvedBlock
                 suppressViewportScroll = true
@@ -832,7 +872,18 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 }
                 if (autoPlay && blocks.isNotEmpty()) {
                     val speakStart = (resolvedBlock until blocks.size).firstOrNull { blocks[it].isSpeakable } ?: resolvedBlock
-                    startPlaybackAt(speakStart)
+                    val delay = if (prefs.chapterPauseEnabled) playbackDelayMs else 0L
+                    if (delay > 0L) {
+                        if (prefs.chapterToneEnabled) playChapterTone()
+                        val scheduledGen = loadGen
+                        blocksListView.postDelayed({
+                            if (chapterLoadGen.get() != scheduledGen || isFinishing || isDestroyed) return@postDelayed
+                            if (controller.isPlaying) return@postDelayed
+                            startPlaybackAt(speakStart)
+                        }, delay)
+                    } else {
+                        startPlaybackAt(speakStart)
+                    }
                 }
             }
         }
@@ -1162,7 +1213,12 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             saveProgress(activeBlockIndex.coerceAtLeast(0), com.holos.reader.tts.ProgressEvent.AUDIO_CHAPTER_COMPLETE)
             val nextLinear = nextLinearChapterIndex.takeIf { !stopForSleepTimer && prefs.autoAdvanceChapter }
             if (nextLinear != null) {
-                loadChapter(nextLinear, scrollToBlock = 0, autoPlay = true)
+                loadChapter(
+                    nextLinear,
+                    scrollToBlock = 0,
+                    autoPlay = true,
+                    playbackDelayMs = if (prefs.chapterPauseEnabled) 800L else 0L,
+                )
             } else {
                 ReaderAudioService.stop(this)
                 miniPlayBtn.setImageResource(R.drawable.ic_play)
@@ -1176,6 +1232,22 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             ReaderAudioService.stop(this)
             miniPlayBtn.setImageResource(R.drawable.ic_play)
             Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    override fun onLongResumeRewind() {
+        runOnUiThread {
+            if (isFinishing || isDestroyed || currentBlocks.isEmpty()) return@runOnUiThread
+            Toast.makeText(
+                this,
+                AppStrings.t(
+                    this,
+                    "Повторюю абзац, щоб згадати контекст",
+                    "Replaying this paragraph",
+                ),
+                Toast.LENGTH_SHORT,
+            ).show()
+            startPlaybackAt(activeBlockIndex.coerceAtLeast(0))
         }
     }
 
@@ -1258,6 +1330,14 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             db.addBookmark(b.id, chapterIndex, idx, excerpt)
             updateBookmarkIcon()
             Toast.makeText(this, "Закладку додано ($chapterTitle)", Toast.LENGTH_SHORT).show()
+        }
+        if (prefs.hapticFeedback && ::topBookmarkBtn.isInitialized) {
+            val constant = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.view.HapticFeedbackConstants.CONFIRM
+            } else {
+                android.view.HapticFeedbackConstants.CONTEXT_CLICK
+            }
+            topBookmarkBtn.performHapticFeedback(constant)
         }
     }
 
@@ -1479,6 +1559,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 tv.setTextColor(p.mutedText)
                 tv.setPadding(0, d(12), 0, d(12))
                 tv.background = null
+                paintContinuePulse(tv, position, keepBackground = false)
                 tv.setOnClickListener { toggleChromeVisibility() }
                 return tv
             }
@@ -1489,6 +1570,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             tv.setTextColor(if (block.type == BlockType.CAPTION || block.type == BlockType.FOOTNOTE) p.secondaryText else p.primaryText)
             tv.gravity = if (block.type == BlockType.HEADING_1 || block.type == BlockType.CAPTION) Gravity.CENTER_HORIZONTAL else Gravity.START
             tv.background = if (block.type == BlockType.TABLE_ROW) UiTheme.rounded(p.cardBg, d(8).toFloat()) else null
+            paintContinuePulse(tv, position, keepBackground = block.type == BlockType.TABLE_ROW)
 
             when (block.type) {
                 BlockType.HEADING_1 -> {
@@ -1924,6 +2006,35 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         refreshQuickPanelsUi()
     }
 
+    private fun playChapterTone() {
+        val tone = android.media.ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 12)
+        try {
+            tone.startTone(android.media.ToneGenerator.TONE_PROP_ACK, 80)
+        } catch (_: RuntimeException) {
+            tone.release()
+            return
+        }
+        autoScrollHandler.postDelayed({
+            try {
+                tone.release()
+            } catch (_: RuntimeException) {
+            }
+        }, 200L)
+    }
+
+    private fun paintContinuePulse(tv: TextView, position: Int, keepBackground: Boolean) {
+        val show = position == pulseBlockIndex &&
+            SystemClock.elapsedRealtime() < pulseUntilMs &&
+            !keepBackground
+        if (show) {
+            tv.setBackgroundColor(0x33E8C872)
+            tv.tag = "holos_pulse"
+        } else if (tv.tag == "holos_pulse") {
+            tv.tag = null
+            if (!keepBackground) tv.background = null
+        }
+    }
+
     private fun updatePageFooter(firstVisibleItem: Int, visibleItemCount: Int) {
         if (!::footerCounterTv.isInitialized) return
         val totalBlocks = currentBlocks.size.coerceAtLeast(1)
@@ -1931,7 +2042,26 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         currentChapterTotalPages = ((totalBlocks + pageSize - 1) / pageSize).coerceAtLeast(1)
         currentChapterPage = ((firstVisibleItem / pageSize) + 1).coerceIn(1, currentChapterTotalPages)
         val globalPage = currentGlobalPageIndex()
-        footerCounterTv.text = "$globalPage / $totalBookPages"
+        var footer = "$globalPage / $totalBookPages"
+        if (prefs.showChapterTimeLeft && currentBlocks.isNotEmpty()) {
+            val from = firstVisibleItem.coerceIn(0, currentBlocks.lastIndex)
+            var chars = 0
+            for (i in from..currentBlocks.lastIndex) {
+                val block = currentBlocks[i]
+                if (block.isSpeakable) chars += block.text.length
+            }
+            if (chars > 0) {
+                val minutes = (chars / 5.0) / (160.0 * prefs.speechSpeed.toDouble().coerceIn(0.5, 2.5))
+                val timeBit = if (minutes < 1.0) {
+                    AppStrings.t(this, "<1 хв", "<1 min")
+                } else {
+                    val n = minutes.roundToInt().coerceAtLeast(1)
+                    AppStrings.t(this, "~$n хв", "~$n min")
+                }
+                footer = "$footer · $timeBit"
+            }
+        }
+        footerCounterTv.text = footer
         if (::bookScrubberBar.isInitialized && bookScrubberBar.visibility == View.VISIBLE) {
             scrubberCounterTv.text = "$globalPage / $totalBookPages"
             bookScrubberView.setPosition(globalPage - 1, totalBookPages)

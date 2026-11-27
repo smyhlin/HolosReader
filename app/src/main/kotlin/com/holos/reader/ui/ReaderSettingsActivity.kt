@@ -587,6 +587,95 @@ class ReaderSettingsActivity : Activity() {
             ),
         )))
 
+        host.addView(sectionLabel(tr("Прослуховування", "Listening")))
+        host.addView(groupedCard(listOf(
+            toggleRow(
+                label = tr("Затихання перед сном", "Sleep-timer fade"),
+                subtitle = tr(
+                    "Останні 15 секунд таймера гучність озвучення спадає до тиші",
+                    "The last 15 seconds of the sleep timer fade the narration out",
+                ),
+                initial = prefs.sleepFadeEnabled,
+                onChanged = { prefs.sleepFadeEnabled = it },
+            ),
+            toggleRow(
+                label = tr("М’який старт і пауза", "Soft play and pause"),
+                subtitle = tr(
+                    "Коротке наростання гучності, щоб не клацало",
+                    "A short volume ramp so play and pause do not click",
+                ),
+                initial = prefs.audioEdgeFadeEnabled,
+                onChanged = { prefs.audioEdgeFadeEnabled = it },
+            ),
+            toggleRow(
+                label = tr("Повтор абзацу після довгої паузи", "Replay paragraph after a long pause"),
+                subtitle = tr(
+                    "Якщо пауза довша за 2 хвилини, абзац починається спочатку",
+                    "A pause longer than 2 minutes replays the current paragraph",
+                ),
+                initial = prefs.smartResumeEnabled,
+                onChanged = { prefs.smartResumeEnabled = it },
+            ),
+            toggleRow(
+                label = tr("Пауза між розділами", "Pause between chapters"),
+                subtitle = tr(
+                    "Близько 0,8 с тиші перед автопереходом",
+                    "About 0.8s of quiet before the next chapter starts",
+                ),
+                initial = prefs.chapterPauseEnabled,
+                onChanged = { prefs.chapterPauseEnabled = it },
+            ),
+            toggleRow(
+                label = tr("Тихий сигнал нового розділу", "Quiet chapter chime"),
+                subtitle = tr(
+                    "Короткий тихий тон. Вимкнено за замовчуванням",
+                    "A short quiet tone. Off by default",
+                ),
+                initial = prefs.chapterToneEnabled,
+                onChanged = { prefs.chapterToneEnabled = it },
+            ),
+        )))
+
+        host.addView(sectionLabel(tr("Затишок", "Comfort")))
+        host.addView(groupedCard(listOf(
+            toggleRow(
+                label = tr("Легка вібрація", "Gentle haptics"),
+                subtitle = tr(
+                    "Закладка, край розділу і відпускання повзунка",
+                    "Bookmark, chapter edge and slider release",
+                ),
+                initial = prefs.hapticFeedback,
+                onChanged = { prefs.hapticFeedback = it },
+            ),
+            toggleRow(
+                label = tr("Скільки ще читати", "Time left in chapter"),
+                subtitle = tr(
+                    "Оцінка хвилин у нижньому лічильнику",
+                    "A minute estimate in the footer",
+                ),
+                initial = prefs.showChapterTimeLeft,
+                onChanged = { prefs.showChapterTimeLeft = it },
+            ),
+            toggleRow(
+                label = tr("Теплий нічний відтінок", "Warm night tint"),
+                subtitle = tr(
+                    "Легкий бурштиновий шар поверх тексту. Вимкнено за замовчуванням",
+                    "A light amber wash over the text. Off by default",
+                ),
+                initial = prefs.warmNightTint,
+                onChanged = { prefs.warmNightTint = it },
+            ),
+            toggleRow(
+                label = tr("Підсвітити, де зупинились", "Pulse where you left off"),
+                subtitle = tr(
+                    "Якщо книгу не відкривали кілька годин, абзац м’яко підсвічується",
+                    "If the book was closed for hours, the paragraph glows briefly",
+                ),
+                initial = prefs.continuePulse,
+                onChanged = { prefs.continuePulse = it },
+            ),
+        )))
+
         host.addView(sectionLabel(tr("Пристрій", "Device")))
         host.addView(groupedCard(listOf(
             toggleRow(

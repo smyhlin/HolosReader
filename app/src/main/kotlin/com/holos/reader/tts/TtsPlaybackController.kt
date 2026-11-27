@@ -39,6 +39,8 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
         fun onActiveWordChanged(blockIndex: Int, wordStart: Int, wordEnd: Int) {}
         fun onChapterFinished(stopForSleepTimer: Boolean = false)
         fun onError(message: String)
+        /** Pause lasted long enough that the current paragraph should be spoken again. */
+        fun onLongResumeRewind() {}
     }
 
     data class OfflineBlockIndex(
@@ -65,6 +67,13 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
     @Volatile
     private var activeCancel: AtomicBoolean? = null
     private val pausedFlag = AtomicBoolean(false)
+    private val pauseLock = Any()
+    @Volatile private var pausedAtElapsedMs = 0L
+    @Volatile private var edgeFrom = 1f
+    @Volatile private var edgeTo = 1f
+    @Volatile private var edgeGain = 1f
+    @Volatile private var edgeStartedAt = 0L
+    @Volatile private var lastAppliedGain = -1f
     private val playingFlag = AtomicBoolean(false)
     private val sleepTracker = SleepDeadlineTracker()
     private val sleepAtChapterEnd = AtomicBoolean(false)
@@ -128,6 +137,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
             activeCancel?.set(true)
             playingFlag.set(false)
             pausedFlag.set(false)
+            signalPauseWaiters()
             listener?.onPlaybackStateChanged(
                 false,
                 false,
@@ -175,6 +185,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
         sessionCancel.set(true)
         playingFlag.set(false)
         pausedFlag.set(false)
+        signalPauseWaiters()
         synchronized(trackLock) {
             try {
                 currentTrack?.pause()
@@ -204,6 +215,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
         focusGate.beginSession(gen, requireFocusGrant)
         pausedFlag.set(false)
         playingFlag.set(true)
+        armPlaybackFadeIn()
         scheduleSleepDeadline(gen, sessionCancel)
 
         val startIdx = startBlockIndex.coerceIn(0, blocks.lastIndex)
@@ -652,6 +664,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                         }
                     }
                     if (playedFrames < 0L) break
+                    applyTrackVolume(track)
 
                     if (isTrackPlaying) {
                         while (true) {
@@ -710,10 +723,8 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                 val total = ap.samples.size
                 while (offset < total && isCurrent(gen, sessionCancel)) {
                     if (handleSleepExpiry(sessionCancel)) return false
-                    while (pausedFlag.get() && isCurrent(gen, sessionCancel)) {
-                        if (handleSleepExpiry(sessionCancel)) return false
-                        try { Thread.sleep(25) } catch (_: InterruptedException) { return false }
-                    }
+                    if (!awaitUnpaused(gen, sessionCancel)) return false
+                    applyTrackVolume(track)
                     if (!isCurrent(gen, sessionCancel)) return false
                     val w = try {
                         track.write(ap.samples, offset, total - offset, AudioTrack.WRITE_BLOCKING)
@@ -749,6 +760,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                     }
                     return
                 }
+                applyTrackVolume(track)
                 synchronized(trackLock) {
                     if (currentTrack === track && track.playState != AudioTrack.PLAYSTATE_PLAYING && !pausedFlag.get()) {
                         track.play()
@@ -780,12 +792,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
 
                     while (pausedFlag.get() && isCurrent(gen, sessionCancel)) {
                         if (handleSleepExpiry(sessionCancel)) break
-                        synchronized(trackLock) {
-                            if (currentTrack === track && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                                track.pause()
-                            }
-                        }
-                        Thread.sleep(40)
+                        if (!parkWhilePaused(track, gen, sessionCancel)) break
                     }
                     if (!isCurrent(gen, sessionCancel)) break
 
@@ -831,12 +838,10 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                                 chapterEndedNaturally = false
                                 break
                             }
-                            synchronized(trackLock) {
-                                if (currentTrack === track && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
-                                    track.pause()
-                                }
+                            if (!parkWhilePaused(track, gen, sessionCancel)) {
+                                chapterEndedNaturally = false
+                                break
                             }
-                            Thread.sleep(40)
                         }
                         if (!isCurrent(gen, sessionCancel)) break
                         ensurePlaying()
@@ -932,6 +937,103 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
     private fun isCurrent(gen: Long, sessionCancel: AtomicBoolean): Boolean =
         !sessionCancel.get() && sessionGen.get() == gen
 
+
+    private fun listeningPrefs() = ReaderPreferences(appContext)
+
+    private fun signalPauseWaiters() {
+        synchronized(pauseLock) { pauseLock.notifyAll() }
+    }
+
+    private fun shouldSmartRewind(): Boolean {
+        if (!listeningPrefs().smartResumeEnabled || pausedAtElapsedMs <= 0L) return false
+        return SystemClock.elapsedRealtime() - pausedAtElapsedMs >= PlaybackGain.SMART_RESUME_MS
+    }
+
+    private fun beginEdgeRamp(to: Float) {
+        val enabled = listeningPrefs().audioEdgeFadeEnabled
+        edgeFrom = if (enabled) edgeGain else to
+        edgeTo = to
+        edgeStartedAt = SystemClock.elapsedRealtime()
+        if (!enabled) edgeGain = to
+    }
+
+    private fun armPlaybackFadeIn() {
+        if (listeningPrefs().audioEdgeFadeEnabled) {
+            edgeGain = 0f
+            edgeFrom = 0f
+            edgeTo = 1f
+            edgeStartedAt = SystemClock.elapsedRealtime()
+        } else {
+            edgeGain = 1f
+            edgeFrom = 1f
+            edgeTo = 1f
+        }
+        lastAppliedGain = -1f
+    }
+
+    private fun sleepGain(): Float {
+        val prefs = listeningPrefs()
+        return PlaybackGain.sleepFade(
+            sleepTracker.hasActiveDeadline(),
+            sleepTracker.remainingMs(),
+            prefs.sleepFadeEnabled,
+        )
+    }
+
+    private fun applyTrackVolume(track: AudioTrack) {
+        val now = SystemClock.elapsedRealtime()
+        val edge = if (!listeningPrefs().audioEdgeFadeEnabled) edgeTo else PlaybackGain.edge(edgeFrom, edgeTo, now - edgeStartedAt)
+        edgeGain = edge
+        val gain = PlaybackGain.combined(edge, sleepGain())
+        val soften = listeningPrefs().audioEdgeFadeEnabled
+        synchronized(trackLock) {
+            if (currentTrack !== track) return
+            if (gain != lastAppliedGain) {
+                lastAppliedGain = gain
+                try { track.setVolume(gain) } catch (_: Exception) {}
+            }
+            if (soften && pausedFlag.get() && edgeGain <= 0.02f && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                try { track.pause() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    private fun awaitUnpaused(gen: Long, sessionCancel: AtomicBoolean): Boolean {
+        while (pausedFlag.get() && isCurrent(gen, sessionCancel)) {
+            if (handleSleepExpiry(sessionCancel)) return false
+            synchronized(pauseLock) {
+                if (pausedFlag.get() && isCurrent(gen, sessionCancel)) {
+                    try {
+                        pauseLock.wait(400)
+                    } catch (_: InterruptedException) {
+                        return false
+                    }
+                }
+            }
+        }
+        return isCurrent(gen, sessionCancel)
+    }
+
+    private fun parkWhilePaused(track: AudioTrack, gen: Long, sessionCancel: AtomicBoolean): Boolean {
+        if (!listeningPrefs().audioEdgeFadeEnabled) {
+            synchronized(trackLock) {
+                if (currentTrack === track && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                    try { track.pause() } catch (_: Exception) {}
+                }
+            }
+        }
+        synchronized(pauseLock) {
+            if (pausedFlag.get() && isCurrent(gen, sessionCancel)) {
+                try {
+                    pauseLock.wait(400)
+                } catch (_: InterruptedException) {
+                    return false
+                }
+            }
+        }
+        return isCurrent(gen, sessionCancel)
+    }
+
     fun resumeIfPaused(): Boolean {
         if (!playingFlag.get() || !pausedFlag.get()) return false
         return !togglePause()
@@ -946,12 +1048,41 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
             listener?.onPlaybackStateChanged(false, false, AppStrings.t(appContext, "Таймер сну завершено", "Sleep timer finished"))
             return true
         }
+        if (!nowPaused && shouldSmartRewind()) {
+            pausedAtElapsedMs = 0L
+            pausedFlag.set(false)
+            signalPauseWaiters()
+            activeCancel?.set(true)
+            synchronized(trackLock) {
+                try {
+                    currentTrack?.pause()
+                    currentTrack?.flush()
+                } catch (_: Exception) {}
+            }
+            listener?.onLongResumeRewind()
+            return false
+        }
         pausedFlag.set(nowPaused)
+        if (nowPaused) {
+            pausedAtElapsedMs = SystemClock.elapsedRealtime()
+            beginEdgeRamp(0f)
+        } else {
+            pausedAtElapsedMs = 0L
+            beginEdgeRamp(1f)
+        }
+        signalPauseWaiters()
+        val soften = listeningPrefs().audioEdgeFadeEnabled
         synchronized(trackLock) {
             try {
-                if (nowPaused) currentTrack?.pause() else currentTrack?.play()
+                val track = currentTrack
+                if (nowPaused) {
+                    if (!soften) track?.pause()
+                } else {
+                    track?.play()
+                }
             } catch (_: Exception) {}
         }
+        currentTrack?.let { applyTrackVolume(it) }
         if (nowPaused) {
             listener?.onPlaybackStateChanged(true, true, AppStrings.t(appContext, "Пауза", "Paused"))
         } else {
@@ -981,6 +1112,8 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
         activeCancel?.set(true)
         activeCancel = null
         pausedFlag.set(false)
+        pausedAtElapsedMs = 0L
+        signalPauseWaiters()
         synchronized(trackLock) {
             try {
                 currentTrack?.pause()
