@@ -161,4 +161,5 @@ class FlashSrOnnx @JvmOverloads constructor(
             return out
         }
 
-    }\n}\n
+    }
+}
