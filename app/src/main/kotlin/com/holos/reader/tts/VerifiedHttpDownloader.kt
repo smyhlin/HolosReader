@@ -148,7 +148,10 @@ object VerifiedHttpDownloader {
                 if (cancelled?.get() == true) throw InterruptedIOException("Download cancelled")
                 val effConcurrency = concurrency.coerceIn(1, 16)
                 val segFile = File(target.path + ".part.segs")
-                if (effConcurrency > 1) {
+                val metaFile = File(target.path + ".part.meta")
+                val hasLegacySeqPartial = File(target.path + ".part").exists() && metaFile.exists() && !segFile.exists()
+                val knownTooSmall = expectedBytes in 1L until minParallelBytes
+                if (effConcurrency > 1 && !knownTooSmall && !hasLegacySeqPartial) {
                     val probe = try {
                         probeRangeSupport(urlStr, userAgent, authHeader, cancelled)
                     } catch (e: InterruptedIOException) {
