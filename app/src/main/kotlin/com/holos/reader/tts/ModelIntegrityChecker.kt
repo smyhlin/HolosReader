@@ -179,7 +179,11 @@ object ModelIntegrityChecker {
                 continue
             }
 
-            val recorded = manifest[item.relPath]
+            // Older downloads wrote nested file entries next to the payload, keyed by basename.
+            val recorded = manifest[item.relPath] ?: f.parentFile
+                ?.takeIf { it != bundleDir && '/' in item.relPath }
+                ?.let { readManifest(it)[f.name] }
+                ?.takeIf { it.sourceUrl == item.sourceUrl }
             if (recorded != null) {
                 if (item.variant.isNotEmpty() && recorded.variant.isNotEmpty() && recorded.variant != item.variant) {
                     diagnostics.add(FileDiagnostic(item.relPath, f, item.sourceUrl, FileStatus.VARIANT_MISMATCH, "Installed variant '${recorded.variant}' != '${item.variant}'"))

@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -14,6 +15,31 @@ import java.util.concurrent.atomic.AtomicBoolean
 class Batch3Milestone3Test {
 
     // --- #46: Reading session seconds preserved across repeated state callbacks ---
+
+    @Test
+    fun nestedModelFilesUseTheirRecordedDownloadChecksum() {
+        val root = kotlin.io.path.createTempDirectory("holos-manifest").toFile()
+        try {
+            val file = File(root, "voice_styles/F1.json")
+            file.parentFile!!.mkdirs()
+            val original = "voice-style-A"
+            file.writeText(original)
+            val url = "https://example.invalid/voice_styles/F1.json"
+            val expected = listOf(ModelIntegrityChecker.ExpectedFile("voice_styles/F1.json", file, url))
+            ModelIntegrityChecker.recordVerifiedFile(file.parentFile!!, file.name, file, url)
+            assertEquals(ModelIntegrityChecker.FileStatus.VERIFIED, ModelIntegrityChecker.diagnoseBundle(root, expected).status)
+
+            file.writeText("voice-style-B")
+            assertEquals(ModelIntegrityChecker.FileStatus.CORRUPT, ModelIntegrityChecker.diagnoseBundle(root, expected).status)
+
+            file.writeText(original)
+            ModelIntegrityChecker.recordVerifiedFile(root, "voice_styles/F1.json", file, url)
+            ModelIntegrityChecker.manifestFile(file.parentFile!!).delete()
+            assertEquals(ModelIntegrityChecker.FileStatus.VERIFIED, ModelIntegrityChecker.diagnoseBundle(root, expected).status)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
 
     @Test
     fun `repeated onAudioPlayingChanged true callbacks never discard elapsed seconds (#46)`() {
