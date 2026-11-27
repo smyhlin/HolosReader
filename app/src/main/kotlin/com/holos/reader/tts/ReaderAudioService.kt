@@ -108,9 +108,13 @@ class ReaderAudioService : Service() {
                 override fun onPlay() {
                     val ctrl = activeController
                     if (ctrl != null && ctrl.isPlaying && ctrl.isPaused) {
-                        requestAudioFocus()
-                        ctrl.togglePause()
-                        acquireWakeLock()
+                        if (requestAudioFocus() == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                            ctrl.resumeIfPaused()
+                            acquireWakeLock()
+                        } else {
+                            ctrl.pauseIfPlaying()
+                            releaseWakeLock()
+                        }
                         updateMediaSessionState()
                         updateNotification(currentTitle, currentSubtitle)
                     }
@@ -157,10 +161,19 @@ class ReaderAudioService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_TOGGLE_PAUSE -> {
-                val nowPaused = activeController?.togglePause() == true
-                if (nowPaused) releaseWakeLock() else {
-                    requestAudioFocus()
-                    acquireWakeLock()
+                val ctrl = activeController
+                if (ctrl != null && ctrl.isPlaying) {
+                    if (ctrl.isPaused) {
+                        if (requestAudioFocus() == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                            ctrl.resumeIfPaused()
+                            acquireWakeLock()
+                        } else {
+                            releaseWakeLock()
+                        }
+                    } else {
+                        ctrl.pauseIfPlaying()
+                        releaseWakeLock()
+                    }
                 }
                 updateMediaSessionState()
                 updateNotification(currentTitle, currentSubtitle)
@@ -203,20 +216,29 @@ class ReaderAudioService : Service() {
                 if (intent?.hasExtra(EXTRA_DUR_MS) == true) currentDurationMs = intent.getLongExtra(EXTRA_DUR_MS, 0L)
                 if (intent?.hasExtra(EXTRA_SPEED) == true) currentSpeed = intent.getFloatExtra(EXTRA_SPEED, 1.0f)
 
-                requestAudioFocus()
-                acquireWakeLock()
                 updateMediaSessionMetadata(currentTitle, currentSubtitle)
-                updateMediaSessionState()
                 val notif = buildNotification(currentTitle, currentSubtitle)
+                var fgOk = false
                 try {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
                     } else {
                         startForeground(NOTIF_ID, notif)
                     }
+                    fgOk = true
                 } catch (e: Exception) {
                     Log.w(TAG, "startForeground failed", e)
                     stopSelf()
+                }
+                if (fgOk) {
+                    if (requestAudioFocus() == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                        acquireWakeLock()
+                    } else {
+                        activeController?.pauseIfPlaying()
+                        releaseWakeLock()
+                    }
+                    updateMediaSessionState()
+                    updateNotification(currentTitle, currentSubtitle)
                 }
             }
         }
@@ -241,9 +263,9 @@ class ReaderAudioService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun requestAudioFocus() {
-        val am = audioManager ?: return
-        try {
+    private fun requestAudioFocus(): Int {
+        val am = audioManager ?: return AudioManager.AUDIOFOCUS_REQUEST_FAILED
+        return try {
             if (focusRequest == null) {
                 focusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                     .setAudioAttributes(
@@ -255,9 +277,10 @@ class ReaderAudioService : Service() {
                     .setOnAudioFocusChangeListener(focusChangeListener)
                     .build()
             }
-            focusRequest?.let { am.requestAudioFocus(it) }
+            focusRequest?.let { am.requestAudioFocus(it) } ?: AudioManager.AUDIOFOCUS_REQUEST_FAILED
         } catch (e: Exception) {
             Log.w(TAG, "AudioFocus request failed", e)
+            AudioManager.AUDIOFOCUS_REQUEST_FAILED
         }
     }
 

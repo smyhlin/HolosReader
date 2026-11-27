@@ -96,7 +96,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var tocSheet: TocSheetController
     private val autoScrollHandler = Handler(Looper.getMainLooper())
     private var autoScrolling = false
-    private var sessionStartElapsedMs = 0L
+    private val sessionTracker = com.holos.reader.tts.ReadingSessionTracker()
     @Volatile
     private var contentCommitted = false
     private var viewportBlockIndex: Int = 0
@@ -226,7 +226,6 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         db.getCoverFile(loaded)?.let { cf ->
             coverBitmap = BitmapFactory.decodeFile(cf.absolutePath)
         }
-        sessionStartElapsedMs = 0L
         contentCommitted = false
         val restoredCh = savedInstanceState?.getInt(STATE_CHAPTER_IDX, loaded.lastChapterIndex) ?: loaded.lastChapterIndex
         val restoredBlock = savedInstanceState?.getInt(STATE_BLOCK_IDX, loaded.lastBlockIndex) ?: loaded.lastBlockIndex
@@ -240,9 +239,21 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     override fun onResume() {
         super.onResume()
+        sessionTracker.onForegroundChanged(true)
         if (::frameRoot.isInitialized) {
             applyTheme()
         }
+    }
+
+    override fun onPause() {
+        saveProgress(event = com.holos.reader.tts.ProgressEvent.CONSUMED_READING)
+        sessionTracker.onForegroundChanged(false)
+        super.onPause()
+    }
+
+    override fun onStop() {
+        saveProgress(event = com.holos.reader.tts.ProgressEvent.CONSUMED_READING)
+        super.onStop()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -703,7 +714,6 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 currentBlocks = blocks
                 if (!contentCommitted) {
                     contentCommitted = true
-                    sessionStartElapsedMs = SystemClock.elapsedRealtime()
                 }
 
                 subtleHeaderTv.text = chapterTitle
@@ -732,7 +742,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 }
                 blocksListView.post { suppressViewportScroll = false }
                 updatePageFooter(resolvedBlock, blocksListView.childCount.coerceAtLeast(1))
-                saveProgress(resolvedBlock)
+                saveProgress(resolvedBlock, com.holos.reader.tts.ProgressEvent.NAVIGATION)
                 updateBookmarkIcon()
                 refreshBookScrubberUi()
                 if (audioSheet.isVisible()) {
@@ -777,7 +787,13 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         if (controller.isPlaying) {
             controller.togglePause()
         } else {
-            startPlaybackAt(activeBlockIndex.coerceAtLeast(0))
+            val target = com.holos.reader.tts.ReadingProgressPolicy.resolveIdlePlayBlock(
+                blocks = currentBlocks,
+                viewportBlockIndex = viewportBlockIndex,
+                activeBlockIndex = activeBlockIndex,
+                isResumingPaused = false,
+            )
+            startPlaybackAt(target)
         }
     }
 
@@ -801,24 +817,27 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         loadChapter(targetIndex, scrollToBlock = 0, autoPlay = autoPlay)
     }
 
-    private fun saveProgress(blockIdx: Int = currentAnchorBlock()) {
+    private fun saveProgress(
+        blockIdx: Int = currentAnchorBlock(),
+        event: com.holos.reader.tts.ProgressEvent = com.holos.reader.tts.ProgressEvent.CONSUMED_READING,
+    ) {
         val b = book ?: return
         if (!contentCommitted) return
-        val nowElapsed = SystemClock.elapsedRealtime()
-        val deltaSec = if (sessionStartElapsedMs > 0L) {
-            ((nowElapsed - sessionStartElapsedMs) / 1000L).coerceIn(0L, 1800L)
-        } else 0L
-        sessionStartElapsedMs = nowElapsed
-        val reachedEnd = b.chapterCount > 0 &&
-            chapterIndex >= b.chapterCount - 1 &&
-            currentBlocks.isNotEmpty() &&
-            blockIdx >= currentBlocks.lastIndex
-        db.updateProgress(b.id, chapterIndex, blockIdx, addSeconds = deltaSec, reachedEnd = reachedEnd)
+        val deltaSec = sessionTracker.flushSeconds()
+        val reachedEnd = com.holos.reader.tts.ReadingProgressPolicy.shouldMarkFinished(
+            event = event,
+            chapterIndex = chapterIndex,
+            chapterCount = b.chapterCount,
+            blockIndex = blockIdx,
+            lastBlockIndex = currentBlocks.lastIndex,
+        )
+        db.updateProgress(b.id, chapterIndex, blockIdx, addSeconds = deltaSec, reachedEnd = reachedEnd, event = event)
     }
 
     // --- TtsPlaybackController.Listener ---
 
     override fun onPlaybackStateChanged(isPlaying: Boolean, isPaused: Boolean, statusText: String) {
+        sessionTracker.onAudioPlayingChanged(isPlaying && !isPaused)
         runOnUiThread {
             miniPlayBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
             if (audioSheet.isVisible()) {
@@ -991,6 +1010,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     override fun onChapterFinished() {
         runOnUiThread {
+            saveProgress(activeBlockIndex.coerceAtLeast(0), com.holos.reader.tts.ProgressEvent.AUDIO_CHAPTER_COMPLETE)
             val total = book?.chapterCount ?: 0
             if (prefs.autoAdvanceChapter && chapterIndex < total - 1) {
                 loadChapter(chapterIndex + 1, scrollToBlock = 0, autoPlay = true)

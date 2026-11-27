@@ -67,7 +67,7 @@ class TtsPlaybackController(context: Context) {
     private var activeCancel: AtomicBoolean? = null
     private val pausedFlag = AtomicBoolean(false)
     private val playingFlag = AtomicBoolean(false)
-    private val sleepDeadlineMs = AtomicLong(0L)
+    private val sleepTracker = SleepDeadlineTracker()
     private val sleepAtChapterEnd = AtomicBoolean(false)
     private val activeBlock = AtomicInteger(-1)
     private val sessionGen = AtomicLong(0L)
@@ -114,14 +114,21 @@ class TtsPlaybackController(context: Context) {
 
     fun setSleepTimerMinutes(minutes: Int) {
         sleepAtChapterEnd.set(false)
-        sleepDeadlineMs.set(
-            if (minutes <= 0) 0L else SystemClock.elapsedRealtime() + minutes * 60_000L
-        )
+        sleepTracker.setMinutes(minutes)
     }
 
     fun setSleepAtChapterEnd(enabled: Boolean) {
-        sleepDeadlineMs.set(0L)
+        sleepTracker.clear()
         sleepAtChapterEnd.set(enabled)
+    }
+
+    private fun handleSleepExpiry(sessionCancel: AtomicBoolean): Boolean {
+        if (!sleepTracker.consumeIfExpired()) return false
+        sessionCancel.set(true)
+        playingFlag.set(false)
+        pausedFlag.set(false)
+        listener?.onPlaybackStateChanged(false, false, AppStrings.t(appContext, "Таймер сну завершено", "Sleep timer finished"))
+        return true
     }
 
     fun startFrom(
@@ -642,19 +649,10 @@ class TtsPlaybackController(context: Context) {
 
             try {
                 while (isCurrent(gen, sessionCancel)) {
-                    val deadline = sleepDeadlineMs.get()
-                    if (deadline > 0L && SystemClock.elapsedRealtime() >= deadline) {
-                        sleepDeadlineMs.set(0L)
-                        sessionCancel.set(true)
-                        listener?.onPlaybackStateChanged(
-                            false,
-                            false,
-                            AppStrings.t(appContext, "Таймер сну завершено", "Sleep timer finished"),
-                        )
-                        break
-                    }
+                    if (handleSleepExpiry(sessionCancel)) break
 
                     while (pausedFlag.get() && isCurrent(gen, sessionCancel)) {
+                        if (handleSleepExpiry(sessionCancel)) break
                         synchronized(trackLock) {
                             if (currentTrack === track && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
                                 track.pause()
@@ -697,7 +695,15 @@ class TtsPlaybackController(context: Context) {
                     var stalledMs = 0
                     val targetEnd = (totalFramesWritten - (sampleRate / 25)).coerceAtLeast(0L)
                     while (isCurrent(gen, sessionCancel)) {
+                        if (handleSleepExpiry(sessionCancel)) {
+                            chapterEndedNaturally = false
+                            break
+                        }
                         while (pausedFlag.get() && isCurrent(gen, sessionCancel)) {
+                            if (handleSleepExpiry(sessionCancel)) {
+                                chapterEndedNaturally = false
+                                break
+                            }
                             synchronized(trackLock) {
                                 if (currentTrack === track && track.playState == AudioTrack.PLAYSTATE_PLAYING) {
                                     track.pause()
@@ -796,9 +802,20 @@ class TtsPlaybackController(context: Context) {
     private fun isCurrent(gen: Long, sessionCancel: AtomicBoolean): Boolean =
         !sessionCancel.get() && sessionGen.get() == gen
 
+    fun resumeIfPaused(): Boolean {
+        if (!playingFlag.get() || !pausedFlag.get()) return false
+        return !togglePause()
+    }
+
     fun togglePause(): Boolean {
         if (!playingFlag.get()) return false
         val nowPaused = !pausedFlag.get()
+        if (!nowPaused && sleepTracker.consumeIfExpired()) {
+            activeCancel?.set(true)
+            stop()
+            listener?.onPlaybackStateChanged(false, false, AppStrings.t(appContext, "Таймер сну завершено", "Sleep timer finished"))
+            return true
+        }
         pausedFlag.set(nowPaused)
         synchronized(trackLock) {
             try {

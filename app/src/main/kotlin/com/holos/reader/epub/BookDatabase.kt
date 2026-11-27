@@ -585,6 +585,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         blockIndex: Int,
         addSeconds: Long = 0L,
         reachedEnd: Boolean = false,
+        event: com.holos.reader.tts.ProgressEvent = com.holos.reader.tts.ProgressEvent.CONSUMED_READING,
     ) {
         val db = writableDatabase
         db.beginTransaction()
@@ -617,11 +618,13 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 "UPDATE books SET last_chapter=?, last_block=?, status=?, reading_time_sec = reading_time_sec + ?, last_read_at=? WHERE id=?",
                 arrayOf<Any>(chapterIndex, blockIndex, newStatus.code, safeAddSec, now, bookId),
             )
-            val pagesDelta = when {
-                chapterIndex > prevChap -> (chapterIndex - prevChap).coerceAtMost(20).toLong()
-                chapterIndex == prevChap && blockIndex > prevBlock && (blockIndex - prevBlock) >= 6 -> 1L
-                else -> 0L
-            }
+            val pagesDelta = com.holos.reader.tts.ReadingProgressPolicy.computePagesDelta(
+                event = event,
+                prevChapter = prevChap,
+                prevBlock = prevBlock,
+                newChapter = chapterIndex,
+                newBlock = blockIndex,
+            )
             if (safeAddSec > 0L || pagesDelta > 0L) {
                 val dayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(now))
                 upsertReadingActivity(db, dayKey, safeAddSec, pagesDelta)

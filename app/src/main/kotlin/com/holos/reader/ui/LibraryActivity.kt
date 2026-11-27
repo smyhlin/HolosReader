@@ -63,6 +63,7 @@ class LibraryActivity : Activity() {
     private val selectedIds = LinkedHashSet<String>()
     private var currentBooks: List<BookRecord> = emptyList()
     private var autoOpenedOnce: Boolean = false
+    private var externalOpenPending: Boolean = false
     private val coverCache = object : LruCache<String, Bitmap>(8 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
     }
@@ -104,7 +105,7 @@ class LibraryActivity : Activity() {
             return
         }
         target.setImageDrawable(null)
-        bgExecutor.execute {
+        worker.execute {
             val bmp = loadCoverCached(path, maxW, maxH)
             if (bmp != null && target.tag == key && !isFinishing && !isDestroyed) {
                 runOnUiThread {
@@ -169,6 +170,8 @@ class LibraryActivity : Activity() {
             else -> incoming.data ?: incoming.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
         }
         if (uri != null) {
+            externalOpenPending = true
+            autoOpenedOnce = true
             incoming.data = null
             incoming.removeExtra(Intent.EXTRA_STREAM)
             incoming.clipData = null
@@ -180,7 +183,7 @@ class LibraryActivity : Activity() {
         super.onResume()
         applyTheme()
         refreshBooks()
-        if (!autoOpenedOnce && prefs.openLastBookOnStart && intent?.data == null) {
+        if (!autoOpenedOnce && !externalOpenPending && prefs.openLastBookOnStart && intent?.data == null && intent?.action != Intent.ACTION_SEND) {
             autoOpenedOnce = true
             prefs.lastBookId?.let { id ->
                 db.getBook(id)?.let { openBook(it) }
