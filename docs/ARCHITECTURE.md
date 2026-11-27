@@ -47,4 +47,4 @@ HolosReader is a zero-AndroidX (`android.useAndroidX=false`), offline-first Andr
 
 ### GitHub Actions Workflows
 - **[`.github/workflows/build-apk.yml`](../.github/workflows/build-apk.yml):** Triggered on pushes/PRs to `dev` and `main`. Validates Python tool syntax, runs all JVM unit tests, runs strict Android Lint, builds Debug APK, and runs a Release R8 + ABI-split smoke build.
-- **[`.github/workflows/release.yml`](../.github/workflows/release.yml):** Triggered on pushes to `main`. Auto-bumps `versionName` (`5.1.<run_number>`) and `versionCode`, builds signed ABI-split + universal APKs, generates `SHA256SUMS`, and publishes a GitHub Release for in-app updates.
+- **[`.github/workflows/release.yml`](../.github/workflows/release.yml):** Triggered on pushes to `main`. Auto-bumps `versionName` (`5.2.<run_number>`) and `versionCode`, builds signed ABI-split + universal APKs, generates `SHA256SUMS`, and publishes a GitHub Release for in-app updates.

@@ -389,11 +389,12 @@ object UiTheme {
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(p.primaryText)
         })
+        val installedVersion = com.holos.reader.update.GitHubUpdater.installedVersionName(activity)
         col.addView(TextView(activity).apply {
             text = if (en) {
-                "Version 5.1.0 · Offline EPUB 3 Reader & Ukrainian ONNX Neural TTS"
+                "Version $installedVersion · Offline EPUB Reader & Ukrainian Neural TTS"
             } else {
-                "Версія 5.1.0 · Офлайн EPUB 3 читалка та українська ONNX-озвучка"
+                "Версія $installedVersion · Офлайн EPUB-читалка та українська нейромережева озвучка"
             }
             textSize = 13f
             setTextColor(p.secondaryText)

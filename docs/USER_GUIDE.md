@@ -1,5 +1,7 @@
 # HolosReader — User Guide
 
+> **Language / Мова:** **English** | [Українська](USER_GUIDE.uk.md)
+
 Welcome to **HolosReader**! This guide walks through every reading, listening, and library feature in plain language so you can get the most out of your books and offline audiobooks.
 
 ---

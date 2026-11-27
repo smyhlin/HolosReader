@@ -164,9 +164,9 @@ object ModelSelectorDialog {
 
         val noteTv = TextView(activity).apply {
             text = if (en) {
-                "You can switch between TTS models anytime in Settings → TTS."
+                "Downloads run in the background notification shade. You can switch or add models anytime in Settings → TTS."
             } else {
-                "Ви можете змінити модель озвучення будь-коли в Налаштуваннях → TTS."
+                "Завантаження триває у фоні в панелі сповіщень. Змінити або додати модель можна будь-коли в Налаштуваннях → TTS."
             }
             textSize = 11.5f
             setTextColor(pal.mutedText)

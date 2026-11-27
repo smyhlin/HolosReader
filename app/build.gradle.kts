@@ -13,8 +13,8 @@ android {
         applicationId = "com.holos.reader"
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "5.1.0"
+        versionCode = 7
+        versionName = "5.2.0"
     }
 
     val keystorePath = System.getenv("KEYSTORE_FILE")

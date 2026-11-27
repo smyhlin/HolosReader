@@ -1,5 +1,7 @@
 # HolosReader — Frequently Asked Questions & Troubleshooting
 
+> **Language / Мова:** **English** | [Українська](FAQ.uk.md)
+
 ### Which TTS model should I pick for my phone?
 On first launch (and in **Settings → TTS**), HolosReader marks the best match for your device with **`★ Recommended`**:
 - **HolosTTS FP32 (Studio, ~760 MB):** Best overall Ukrainian voice quality and custom voice cloning; recommended for **6+ GB RAM** devices.

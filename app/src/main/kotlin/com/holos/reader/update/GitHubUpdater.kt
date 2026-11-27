@@ -454,9 +454,9 @@ object GitHubUpdater {
 
     fun installedVersionName(activity: Activity): String = try {
         val pi = activity.packageManager.getPackageInfo(activity.packageName, 0)
-        pi.versionName ?: "5.1.0"
+        pi.versionName ?: "5.2.0"
     } catch (_: Exception) {
-        "5.1.0"
+        "5.2.0"
     }
 
     fun compareVersions(remote: String, local: String): Int {
