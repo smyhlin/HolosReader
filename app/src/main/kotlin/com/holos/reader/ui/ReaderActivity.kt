@@ -1722,8 +1722,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     }?.substringBeforeLast('.') ?: "ClonedVoice"
                     val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalArgumentException("Не вдалося прочитати файл голосу")
-                    val vec = CustomVoiceLoader.parseVoiceBytes(bytes)
-                    val savedFile = CustomVoiceLoader.saveCustomVoice(HolosEngineHolder.getCustomVoicesDir(this), name, vec)
+                    val savedFile = CustomVoiceLoader.importCustomVoice(
+                        HolosEngineHolder.getCustomVoicesDir(this),
+                        name,
+                        bytes,
+                    )
                     prefs.selectedVoice = CustomVoiceLoader.canonicalVoiceId(savedFile)
                     runOnUiThread {
                         Toast.makeText(this, "Голос «$name» імпортовано!", Toast.LENGTH_LONG).show()

@@ -19,7 +19,12 @@ object CustomVoiceLoader {
     const val VOICE_DIM = 256
     private const val EXPECTED_BYTES = VOICE_DIM * 4 // 1024 bytes
     private const val MAX_ENTRY_BYTES = 1024 * 1024  // 1 MiB safety cap against ZIP bombs
+    private const val MAX_NPY_HEADER_BYTES = 65536
     const val CUSTOM_PREFIX = "custom:"
+
+    private val NPY_DESCRIPTOR_FIELD = Regex("""['"]descr['"]\s*:\s*['"]([^'"]+)['"]""")
+    private val NPY_FORTRAN_FIELD = Regex("""['"]fortran_order['"]\s*:\s*(True|False)\b""")
+    private val NPY_SHAPE_FIELD = Regex("""['"]shape['"]\s*:\s*\(([^)]*)\)""")
 
     /**
      * Parses raw bytes from a `.pt` (PyTorch ZIP), `.npy` (NumPy float32), or raw `.bin` (1024B)
@@ -49,24 +54,74 @@ object CustomVoiceLoader {
             throw IllegalArgumentException("У .pt архіві не знайдено тензор data/0 (256 float32)")
         }
 
-        // 3. NumPy .npy float32 array (magic "\x93NUMPY")
-        if (bytes.size > 12 && bytes[0] == 0x93.toByte() && String(bytes, 1, 5, Charsets.US_ASCII) == "NUMPY") {
-            val bb = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-            val major = bytes[6].toInt() and 0xFF
-            require(major == 1 || major == 2) { "Непідтримувана версія .npy ($major)" }
-            val headerStart = if (major == 1) 10 else 12
-            val headerLen = if (major == 1) bb.getShort(8).toInt() and 0xFFFF else bb.getInt(8)
-            require(headerLen in 1..65536 && headerStart + headerLen <= bytes.size) {
-                "Некоректний заголовок .npy ($headerLen)"
-            }
-            val dataStart = headerStart + headerLen
-            require(bytes.size - dataStart >= EXPECTED_BYTES) {
-                "Файл .npy занадто малий для вектора з $VOICE_DIM float32"
-            }
-            return readFloatsLE(bytes, dataStart)
+        // 3. NumPy .npy array (magic "\x93NUMPY")
+        if (bytes.size >= 6 && bytes[0] == 0x93.toByte() && String(bytes, 1, 5, Charsets.US_ASCII) == "NUMPY") {
+            return parseNpy(bytes)
         }
 
         throw IllegalArgumentException("Непідтримуваний формат голосу. Підтримуються .pt (з HF Space), .npy та .bin")
+    }
+
+    fun importCustomVoice(dir: File, name: String, bytes: ByteArray): File {
+        val vector = parseVoiceBytes(bytes)
+        return saveCustomVoice(dir, name, vector)
+    }
+
+    private fun parseNpy(bytes: ByteArray): FloatArray {
+        require(bytes.size >= 8) { "Некоректний заголовок .npy" }
+        val major = bytes[6].toInt() and 0xFF
+        val minor = bytes[7].toInt() and 0xFF
+        require((major == 1 || major == 2) && minor == 0) {
+            "Непідтримувана версія .npy ($major.$minor); підтримуються версії 1.0 та 2.0"
+        }
+
+        val headerStart = if (major == 1) 10 else 12
+        require(bytes.size >= headerStart) { "Некоректний заголовок .npy" }
+        val littleEndian = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        val headerLength = if (major == 1) {
+            littleEndian.getShort(8).toInt() and 0xFFFF
+        } else {
+            littleEndian.getInt(8)
+        }
+        require(headerLength in 1..MAX_NPY_HEADER_BYTES && headerLength <= bytes.size - headerStart) {
+            "Некоректний заголовок .npy ($headerLength байт)"
+        }
+
+        val dataStart = headerStart + headerLength
+        val header = String(bytes, headerStart, headerLength, Charsets.US_ASCII)
+        require(header.lastOrNull() == '\n') { "Некоректний заголовок .npy: відсутній завершальний символ нового рядка" }
+
+        val descriptor = requiredNpyHeaderValue(NPY_DESCRIPTOR_FIELD, "descr", header)
+        val byteOrder = when (descriptor) {
+            "<f4" -> ByteOrder.LITTLE_ENDIAN
+            ">f4" -> ByteOrder.BIG_ENDIAN
+            "=f4" -> ByteOrder.nativeOrder()
+            else -> throw IllegalArgumentException(
+                "Непідтримуваний тип .npy ($descriptor); підтримується лише float32 (f4)",
+            )
+        }
+
+        val fortranOrder = requiredNpyHeaderValue(NPY_FORTRAN_FIELD, "fortran_order", header)
+        require(fortranOrder == "True" || fortranOrder == "False") {
+            "Некоректне поле fortran_order у заголовку .npy"
+        }
+
+        val shape = requiredNpyHeaderValue(NPY_SHAPE_FIELD, "shape", header)
+        val dimensions = shape.split(',').map(String::trim)
+        require(dimensions.size == 2 && dimensions[0].toIntOrNull() == VOICE_DIM && dimensions[1].isEmpty()) {
+            "Підтримується лише одновимірний вектор .npy форми ($VOICE_DIM,)"
+        }
+        require(bytes.size - dataStart == EXPECTED_BYTES) {
+            "Некоректний розмір даних .npy: очікується рівно $EXPECTED_BYTES байт для $VOICE_DIM float32"
+        }
+
+        return readFloats(bytes, dataStart, byteOrder)
+    }
+
+    private fun requiredNpyHeaderValue(pattern: Regex, field: String, header: String): String {
+        val matches = pattern.findAll(header).toList()
+        require(matches.size == 1) { "Некоректний заголовок .npy: очікується одне поле '$field'" }
+        return matches.single().groupValues[1]
     }
 
     fun canonicalVoiceId(savedFile: File): String = CUSTOM_PREFIX + savedFile.nameWithoutExtension
@@ -138,7 +193,11 @@ object CustomVoiceLoader {
     }
 
     private fun readFloatsLE(bytes: ByteArray, offset: Int): FloatArray {
-        val bb = ByteBuffer.wrap(bytes, offset, EXPECTED_BYTES).order(ByteOrder.LITTLE_ENDIAN)
+        return readFloats(bytes, offset, ByteOrder.LITTLE_ENDIAN)
+    }
+
+    private fun readFloats(bytes: ByteArray, offset: Int, order: ByteOrder): FloatArray {
+        val bb = ByteBuffer.wrap(bytes, offset, EXPECTED_BYTES).order(order)
         val vec = FloatArray(VOICE_DIM) { bb.float }
         require(vec.all { it.isFinite() }) { "Вектор голосу містить NaN або Inf" }
         return vec
