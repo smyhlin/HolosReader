@@ -354,7 +354,7 @@ class AudioSheetController(
         scrubber.progress = idx
 
         if (!offlineRendering.get()) {
-            val cached = getChapterWavFile().exists()
+            val cached = OfflineAudioCache.validate(getChapterWavFile(), blocks.filter { it.isSpeakable }.map { it.index }) != null
             offlineSubTv.text = if (cached) "Розділ збережено локально (0% CPU)" else "Зберегти аудіо розділу локально"
             offlineBadgeTv.text = if (cached) "Готово" else "Офлайн ›"
             offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
@@ -1364,7 +1364,7 @@ class AudioSheetController(
             if (previewGen.get() != myGen) return@execute
             previewCancel.set(false)
             try {
-                val engine = HolosEngineHolder.getEngine(activity) ?: run {
+                val lease = HolosEngineHolder.acquireEngineLease(activity) ?: run {
                     activity.runOnUiThread {
                         if (previewGen.get() == myGen) {
                             previewingVoice = null
@@ -1374,8 +1374,12 @@ class AudioSheetController(
                     }
                     return@execute
                 }
+                lease.use { activeLease ->
+                val engine = activeLease.engine
                 val stressifier = HolosEngineHolder.getStressifier(activity)
-                val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(activity) else null
+                lease.use { activeLease ->
+            val engine = activeLease.engine
+            val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(activity) else null
                 val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
                 val minBuf = AudioTrack.getMinBufferSize(
                     outputRate,
@@ -1460,7 +1464,8 @@ class AudioSheetController(
                     } catch (_: Exception) {}
                 } finally {
                     if (activePreviewTrack === track) activePreviewTrack = null
-                    try { track.release() } catch (_: Exception) {}
+                    try { track.release() }
+                } catch (_: Exception) {}
                 }
             } catch (t: Throwable) {
                 activity.runOnUiThread {
@@ -1498,8 +1503,8 @@ class AudioSheetController(
 
         previewWorker.execute {
             try {
-            val engine = HolosEngineHolder.getEngine(activity)
-            if (engine == null) {
+            val lease = HolosEngineHolder.acquireEngineLease(activity)
+            if (lease == null) {
                 activity.runOnUiThread {
                     offlineSubTv.text = AppStrings.t(activity, "Спочатку завантажте модель TTS", "Download a TTS model first")
                     offlineBadgeTv.text = AppStrings.t(activity, "Офлайн ›", "Offline ›")
@@ -1544,6 +1549,14 @@ class AudioSheetController(
                                     speed = prefs.speechSpeed,
                                     cancelled = offlineRenderCancel,
                                     customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
+                                supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                                supertonicSteps = prefs.supertonicSteps,
+                                flashSr = flashSr,
+                                emotionClassifier = emotionClassifier,
+                                    supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                                    supertonicSteps = prefs.supertonicSteps,
+                                    flashSr = flashSr,
+                                    emotionClassifier = emotionClassifier,
                                     onChunk = writeFloats,
                                 )
                             }
@@ -1575,21 +1588,14 @@ class AudioSheetController(
                     raf.write(buildWavHeader(totalPcmBytes.toInt(), outputRate))
                     raf.fd.sync()
                 }
-                val tmpIdx = File(outFile.path + ".idx.part")
-                val finalIdx = File(outFile.path + ".idx")
                 if (!offlineRenderCancel.get() && totalPcmBytes > 0L) {
-                    TtsPlaybackController.writeOfflineIndex(tmpIdx, blockIndices)
-                    if (outFile.exists()) outFile.delete()
-                    if (finalIdx.exists()) finalIdx.delete()
-                    val wavOk = tmp.renameTo(outFile)
-                    val idxOk = wavOk && tmpIdx.renameTo(finalIdx)
-                    if (!idxOk) {
-                        tmp.delete()
-                        tmpIdx.delete()
-                        outFile.delete()
-                        finalIdx.delete()
-                        throw IllegalStateException("Atomic offline WAV/index publish failed")
-                    }
+                    OfflineAudioCache.publishAtomically(
+                        tmpWav = tmp,
+                        entries = blockIndices.map { OfflineAudioCache.BlockEntry(it.blockIndex, it.startSample, it.speechSamples) },
+                        sampleRate = outputRate,
+                        dataBytes = totalPcmBytes,
+                        targetWav = outFile,
+                    )
                     activity.runOnUiThread {
                         offlineSubTv.text = "Розділ збережено локально (0% CPU)"
                         offlineBadgeTv.text = "Готово"
@@ -1611,6 +1617,7 @@ class AudioSheetController(
                     offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
                 }
             }
+                        }
             } finally {
                 offlineRendering.set(false)
             }

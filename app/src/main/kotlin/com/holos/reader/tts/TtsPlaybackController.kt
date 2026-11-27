@@ -149,31 +149,16 @@ class TtsPlaybackController(context: Context) {
             val prefs = ReaderPreferences(appContext)
             val speed = prefs.speechSpeed
 
-            // Check if a valid pre-rendered offline WAV + .idx exists for this exact chapter & voice config
-            val idxFile = offlineWavFile?.let { File(it.path + ".idx") }
-            val offlineIndex = if (offlineWavFile != null && offlineWavFile.exists() && offlineWavFile.length() > 44L && idxFile != null && idxFile.exists()) {
-                readOfflineIndex(idxFile)
-            } else null
-
-            val useOfflineWav = offlineWavFile != null && !offlineIndex.isNullOrEmpty() &&
-                offlineIndex.any { it.blockIndex >= startIdx }
-
-            if (useOfflineWav) {
-                startOfflineWavPipeline(
-                    gen = gen,
-                    sessionCancel = sessionCancel,
-                    blocks = blocks,
-                    startIdx = startIdx,
-                    speed = speed,
-                    wavFile = offlineWavFile!!,
-                    index = offlineIndex!!,
-                )
+            val speakableIds = blocks.filter { it.isSpeakable }.map { it.index }
+            val validatedOffline = offlineWavFile?.let { OfflineAudioCache.validate(it, speakableIds) }
+            if (validatedOffline != null && validatedOffline.entries.any { it.blockIndex >= startIdx }) {
+                startOfflineWavPipeline(gen, sessionCancel, blocks, startIdx, speed, validatedOffline)
                 return@Thread
             }
 
             // Live ONNX streaming pipeline
-            val engine = try {
-                HolosEngineHolder.getEngine(appContext)
+            val engineLease = try {
+                HolosEngineHolder.acquireEngineLease(appContext)
             } catch (t: Throwable) {
                 if (isCurrent(gen, sessionCancel)) {
                     playingFlag.set(false)
@@ -184,7 +169,11 @@ class TtsPlaybackController(context: Context) {
                 }
                 return@Thread
             }
-            if (!isCurrent(gen, sessionCancel)) return@Thread
+            if (!isCurrent(gen, sessionCancel)) {
+                engineLease?.close()
+                return@Thread
+            }
+            val engine = engineLease?.engine
             if (engine == null) {
                 playingFlag.set(false)
                 listener?.onError(
@@ -207,9 +196,13 @@ class TtsPlaybackController(context: Context) {
                             (t.message ?: t.javaClass.simpleName)
                     )
                 }
+                engineLease.close()
                 return@Thread
             }
-            if (!isCurrent(gen, sessionCancel)) return@Thread
+            if (!isCurrent(gen, sessionCancel)) {
+                engineLease.close()
+                return@Thread
+            }
 
             val customDir = HolosEngineHolder.getCustomVoicesDir(appContext)
             val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(appContext) else null
@@ -342,6 +335,8 @@ class TtsPlaybackController(context: Context) {
                                 (t.message ?: t.javaClass.simpleName)
                         )
                     }
+                } finally {
+                    engineLease.close()
                 }
             }, "HolosProducer")
 
@@ -372,10 +367,11 @@ class TtsPlaybackController(context: Context) {
         blocks: List<ReaderBlock>,
         startIdx: Int,
         speed: Float,
-        wavFile: File,
-        index: List<OfflineBlockIndex>,
+        validated: OfflineAudioCache.ValidatedChapter,
     ) {
-        val sampleRate = readWavSampleRate(wavFile)
+        val wavFile = validated.wavFile
+        val index = validated.entries
+        val sampleRate = validated.sampleRate
         val queue = LinkedBlockingQueue<Packet>(48)
         val blockSpeechFrames = ConcurrentHashMap<Int, Long>()
         for (entry in index) {
@@ -407,7 +403,9 @@ class TtsPlaybackController(context: Context) {
                         while (remaining > 0L && isCurrent(gen, sessionCancel)) {
                             val toReadSamples = minOf(remaining, (bufBytes.size / 2).toLong()).toInt()
                             val nBytes = raf.read(bufBytes, 0, toReadSamples * 2)
-                            if (nBytes <= 0) break
+                            if (nBytes <= 0 || (nBytes and 1) != 0) {
+                                throw java.io.EOFException("Premature EOF in offline WAV at block ${entry.blockIndex}")
+                            }
                             val actualSamples = nBytes / 2
                             val floats = FloatArray(actualSamples)
                             var bi = 0
@@ -856,17 +854,29 @@ class TtsPlaybackController(context: Context) {
          * adaptive mode, and user stress overrides timestamp so stale renders are never played.
          */
         fun offlineChapterFile(context: Context, bookId: String, chapterIndex: Int, prefs: ReaderPreferences): File {
-            val overridesMtime = HolosEngineHolder.getUserStressFile(context).lastModified()
-            val configSig = buildString {
-                append(prefs.selectedVoice ?: "default").append('|')
-                append(prefs.adaptiveVoicesEnabled).append('|')
-                append(prefs.systemVoice ?: "").append('|')
-                append(prefs.dialogueVoice ?: "").append('|')
-                append(String.format("%.2f", prefs.speechSpeed)).append('|')
-                append(overridesMtime)
-            }
-            val hash = configSig.hashCode().toUInt().toString(16)
-            return File(offlineDir(context), "${bookId}_ch${chapterIndex}_$hash.wav")
+            val stressFile = HolosEngineHolder.getUserStressFile(context)
+            val customFp = prefs.selectedVoice?.takeIf { it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) }?.let { v ->
+                val f = File(HolosEngineHolder.getCustomVoicesDir(context), "${v.removePrefix(CustomVoiceLoader.CUSTOM_PREFIX)}.bin")
+                if (f.isFile) "${f.length()}:${f.lastModified()}" else "missing"
+            }.orEmpty()
+            val recipe = AudioCacheRecipe(
+                parserVersion = com.holos.reader.epub.EpubStreamingParser.PARSER_VERSION,
+                modelId = prefs.selectedTtsModelId.id,
+                selectedVoice = prefs.selectedVoice ?: "default",
+                customVoiceFingerprint = customFp,
+                adaptiveVoicesEnabled = prefs.adaptiveVoicesEnabled,
+                systemVoice = prefs.systemVoice ?: "",
+                dialogueVoice = prefs.dialogueVoice ?: "",
+                speechSpeed = prefs.speechSpeed,
+                supertonicSteps = prefs.supertonicSteps,
+                supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                flashSrEnabled = prefs.flashSrEnabled,
+                emotionPacingEnabled = prefs.emotionPacingEnabled,
+                contextualStressEnabled = prefs.contextualStressEnabled,
+                stressOverridesMtime = stressFile.lastModified(),
+                stressOverridesSize = stressFile.length(),
+            )
+            return File(offlineDir(context), "${bookId}_ch${chapterIndex}_${recipe.cacheKeyHex()}.wav")
         }
 
         fun writeOfflineIndex(idxFile: File, entries: List<OfflineBlockIndex>) {

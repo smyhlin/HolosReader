@@ -73,41 +73,43 @@ class HolosTtsService : TextToSpeechService() {
             callback.done()
             return
         }
-        val engine = try { HolosEngineHolder.getEngine(this) } catch (_: Exception) { null }
-        if (engine == null) {
+        val lease = try { HolosEngineHolder.acquireEngineLease(this) } catch (_: Exception) { null }
+        if (lease == null) {
             callback.error(TextToSpeech.ERROR_NOT_INSTALLED_YET)
             callback.done()
             return
         }
-        val stressifier = HolosEngineHolder.getStressifier(this)
-        val prefs = ReaderPreferences(this)
-        val voice = request.voiceName?.takeIf { it in engine.voices }
-            ?: serviceVoice?.takeIf { it in engine.voices }
-            ?: prefs.selectedVoice?.takeIf { it in engine.voices }
-            ?: engine.voices.firstOrNull()
-        // Use caller's speechRate directly without double-multiplying by app's internal speed
-        val rate = ((request.speechRate.takeIf { it > 0 } ?: 100) / 100f).coerceIn(0.5f, 2.5f)
+        lease.use { activeLease ->
+            val engine = activeLease.engine
+            val stressifier = HolosEngineHolder.getStressifier(this)
+            val prefs = ReaderPreferences(this)
+            val voice = request.voiceName?.takeIf { it in engine.voices }
+                ?: serviceVoice?.takeIf { it in engine.voices }
+                ?: prefs.selectedVoice?.takeIf { it in engine.voices }
+                ?: engine.voices.firstOrNull()
+            val rate = ((request.speechRate.takeIf { it > 0 } ?: 100) / 100f).coerceIn(0.5f, 2.5f)
 
-        if (callback.start(engine.sampleRate, AudioFormat.ENCODING_PCM_16BIT, 1) != TextToSpeech.SUCCESS) return
-        synchronized(synthLock) {
-            try {
-                HolosSafeSynthesizer.synthesizeParagraphStreaming(
-                    engine = engine,
-                    stressifier = stressifier,
-                    rawParagraph = raw,
-                    voice = voice,
-                    speed = rate,
-                    cancelled = stopFlag,
-                    supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
-                    supertonicSteps = prefs.supertonicSteps,
-                ) { floats ->
-                    writePcm16(floats, callback)
+            if (callback.start(engine.sampleRate, AudioFormat.ENCODING_PCM_16BIT, 1) != TextToSpeech.SUCCESS) return
+            synchronized(synthLock) {
+                try {
+                    HolosSafeSynthesizer.synthesizeParagraphStreaming(
+                        engine = engine,
+                        stressifier = stressifier,
+                        rawParagraph = raw,
+                        voice = voice,
+                        speed = rate,
+                        cancelled = stopFlag,
+                        supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                        supertonicSteps = prefs.supertonicSteps,
+                    ) { floats ->
+                        writePcm16(floats, callback)
+                    }
+                    callback.done()
+                } catch (e: Exception) {
+                    Log.e("HolosTtsService", "Synthesis failed", e)
+                    callback.error()
+                    callback.done()
                 }
-                callback.done()
-            } catch (e: Exception) {
-                Log.e("HolosTtsService", "Synthesis failed", e)
-                callback.error()
-                callback.done()
             }
         }
     }

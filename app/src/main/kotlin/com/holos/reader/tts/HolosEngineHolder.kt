@@ -45,6 +45,16 @@ object HolosEngineHolder {
     private val stressLock = Any()
     private val overridesLock = Any()
 
+    private val enginePool = EngineLeasePool<HolosTtsEngine> { retired ->
+        Thread({
+            try {
+                retired.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing retired TTS engine", e)
+            }
+        }, "HolosEngineRetire").start()
+    }
+
     @Volatile
     private var engine: HolosTtsEngine? = null
     @Volatile
@@ -231,22 +241,13 @@ object HolosEngineHolder {
 
     fun resetEngine() {
         synchronized(engineLock) {
-            val old = engine
             engine = null
             loadedThreads = -1
             loadedAccelPref = null
             loadedModelId = null
             loadedRequestedModel = null
-            if (old != null) {
-                Thread({
-                    try {
-                        old.close()
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Error closing retired TTS engine", e)
-                    }
-                }, "HolosEngineRetire").start()
-            }
         }
+        enginePool.retireCurrent()
     }
 
     fun getStressStatusSummary(context: Context): String {
@@ -327,50 +328,39 @@ object HolosEngineHolder {
         }
     }
 
-    fun getEngine(context: Context): HolosTtsEngine? {
+    /**
+     * Acquires a reference-counted [EngineLeasePool.Lease] pinning the active [HolosTtsEngine]
+     * generation across the entire synthesis operation (#15). Callers MUST close the lease in
+     * `finally` (e.g. `.use { lease -> ... }`).
+     */
+    fun acquireEngineLease(context: Context): EngineLeasePool.Lease<HolosTtsEngine>? {
         val appCtx = context.applicationContext
         val prefs = ReaderPreferences(appCtx)
         val wantThreads = prefs.cpuThreads
         val wantAccel = prefs.onnxAccelerator
         val wantModel = prefs.selectedTtsModelId
+        val effectiveModel = if (HolosModelManager.isModelReady(appCtx, wantModel)) wantModel
+        else HolosModelManager.downloadedModels(appCtx).firstOrNull() ?: return null
+        val leaseKey = "${effectiveModel.id}|$wantAccel|$wantThreads"
 
-        engine?.let { existing ->
-            if (loadedThreads == wantThreads && loadedAccelPref == wantAccel && (loadedModelId == wantModel || loadedRequestedModel == wantModel)) {
-                return existing
-            }
-        }
-
-        synchronized(engineLock) {
-            engine?.let { existing ->
-                if (loadedThreads == wantThreads && loadedAccelPref == wantAccel && (loadedModelId == wantModel || loadedRequestedModel == wantModel)) {
-                    return existing
-                }
-                try {
-                    existing.close()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error closing stale HolosOnnx engine", e)
-                }
-                engine = null
-            }
-
-            val effectiveModel = if (HolosModelManager.isModelReady(appCtx, wantModel)) wantModel else HolosModelManager.downloadedModels(appCtx).firstOrNull() ?: return null
+        return enginePool.acquire(leaseKey) {
             val bundleDir = HolosModelManager.getBundleDir(appCtx, effectiveModel)
-
             val candidates: List<String> = when (wantAccel) {
                 EP_NNAPI -> listOf(EP_NNAPI, EP_XNNPACK, EP_CPU)
                 EP_XNNPACK -> listOf(EP_XNNPACK, EP_CPU)
                 EP_CPU -> listOf(EP_CPU)
-                else -> listOf(EP_NNAPI, EP_XNNPACK, EP_CPU) // AUTO
+                else -> listOf(EP_NNAPI, EP_XNNPACK, EP_CPU)
             }
-
             for (ep in candidates) {
                 val created = tryCreateEngine(effectiveModel, bundleDir, wantThreads, ep)
                 if (created != null) {
-                    engine = created
-                    loadedThreads = wantThreads
-                    loadedAccelPref = wantAccel
-                    loadedModelId = effectiveModel
-                    loadedRequestedModel = wantModel
+                    synchronized(engineLock) {
+                        engine = created
+                        loadedThreads = wantThreads
+                        loadedAccelPref = wantAccel
+                        loadedModelId = effectiveModel
+                        loadedRequestedModel = wantModel
+                    }
                     activeAccelerator = when {
                         ep == EP_NNAPI -> "NNAPI (GPU/NPU)"
                         ep == EP_XNNPACK && wantAccel == EP_NNAPI -> "XNNPACK (NNAPI fallback)"
@@ -380,11 +370,18 @@ object HolosEngineHolder {
                         else -> "CPU ($wantThreads th)"
                     }
                     Log.i(TAG, "Loaded HolosOnnx with EP=$activeAccelerator (pref=$wantAccel, threads=$wantThreads)")
-                    return created
+                    return@acquire created
                 }
             }
-            return null
+            null
         }
+    }
+
+    fun getEngine(context: Context): HolosTtsEngine? {
+        val lease = acquireEngineLease(context) ?: return null
+        val eng = lease.engine
+        lease.close()
+        return eng
     }
 
     private fun tryCreateEngine(modelId: TtsModelId, bundleDir: File, threads: Int, ep: String): HolosTtsEngine? {

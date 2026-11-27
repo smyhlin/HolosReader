@@ -198,7 +198,9 @@ class StressEditorActivity : Activity() {
                     previewOut.text = "Нормалізація: $norm\n\nНаголоси: $stressed\n\nIPA: $ipa"
                 }
 
-                val engine = try { HolosEngineHolder.getEngine(this) } catch (_: Exception) { null } ?: return@execute
+                val lease = try { HolosEngineHolder.acquireEngineLease(this) } catch (_: Exception) { null } ?: return@execute
+                lease.use { activeLease ->
+                val engine = activeLease.engine
                 val prefs = ReaderPreferences(this)
                 val voice = prefs.selectedVoice?.takeIf {
                     it.startsWith(com.holos.reader.tts.CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
@@ -284,7 +286,8 @@ class StressEditorActivity : Activity() {
                         }
                     } catch (_: Exception) {}
                 } finally {
-                    try { track.release() } catch (_: Exception) {}
+                    try { track.release() }
+                } catch (_: Exception) {}
                 }
             } catch (t: Throwable) {
                 runOnUiThread {

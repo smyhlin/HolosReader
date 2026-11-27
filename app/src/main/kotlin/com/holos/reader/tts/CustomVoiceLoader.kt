@@ -69,15 +69,29 @@ object CustomVoiceLoader {
         throw IllegalArgumentException("Непідтримуваний формат голосу. Підтримуються .pt (з HF Space), .npy та .bin")
     }
 
+    fun canonicalVoiceId(savedFile: File): String = CUSTOM_PREFIX + savedFile.nameWithoutExtension
+
     fun saveCustomVoice(dir: File, name: String, vector: FloatArray): File {
         require(vector.size == VOICE_DIM && vector.all { it.isFinite() }) { "Некоректний вектор голосу" }
         dir.mkdirs()
-        val safeName = name.replace(Regex("[^\\p{L}\\p{N}_\\- ]"), "").trim().ifEmpty { "ClonedVoice" }
-        val outFile = resolveSafeChild(dir, "$safeName.bin")
+        val baseName = name.replace(Regex("[^\\p{L}\\p{N}_\\- ]"), "").trim().ifEmpty { "ClonedVoice" }
+        var candidate = resolveSafeChild(dir, "$baseName.bin")
+        var suffix = 2
+        while (candidate.exists()) {
+            candidate = resolveSafeChild(dir, "${baseName}_$suffix.bin")
+            suffix++
+        }
         val bb = ByteBuffer.allocate(EXPECTED_BYTES).order(ByteOrder.LITTLE_ENDIAN)
         for (v in vector) bb.putFloat(v)
-        outFile.writeBytes(bb.array())
-        return outFile
+        val tmp = resolveSafeChild(dir, "${candidate.name}.tmp")
+        try {
+            tmp.writeBytes(bb.array())
+            check(tmp.renameTo(candidate)) { "Не вдалося атомарно зберегти файл голосу" }
+        } catch (t: Throwable) {
+            tmp.delete()
+            throw t
+        }
+        return candidate
     }
 
     fun listCustomVoices(dir: File): List<String> {

@@ -1703,8 +1703,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
                         ?: throw IllegalArgumentException("Не вдалося прочитати файл голосу")
                     val vec = CustomVoiceLoader.parseVoiceBytes(bytes)
-                    CustomVoiceLoader.saveCustomVoice(HolosEngineHolder.getCustomVoicesDir(this), name, vec)
-                    prefs.selectedVoice = CustomVoiceLoader.CUSTOM_PREFIX + name
+                    val savedFile = CustomVoiceLoader.saveCustomVoice(HolosEngineHolder.getCustomVoicesDir(this), name, vec)
+                    prefs.selectedVoice = CustomVoiceLoader.canonicalVoiceId(savedFile)
                     runOnUiThread {
                         Toast.makeText(this, "Голос «$name» імпортовано!", Toast.LENGTH_LONG).show()
                         audioSheet.applyPalette()
