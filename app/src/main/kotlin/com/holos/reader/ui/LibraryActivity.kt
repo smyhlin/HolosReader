@@ -1291,7 +1291,7 @@ class LibraryActivity : Activity() {
             add("")
             addAll(result.failureDetails)
             val omitted = result.failed - result.failureDetails.size
-            if (omitted > 0) add(AppStrings.t(this, "І ще помилок: $omitted", "Additional failures: $omitted"))
+            if (omitted > 0) add(AppStrings.t(this@LibraryActivity, "І ще помилок: $omitted", "Additional failures: $omitted"))
         }.joinToString("\n")
         UiTheme.showThemedDialog(
             UiTheme.dialogBuilder(this, prefs.theme)
