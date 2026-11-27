@@ -905,11 +905,11 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     companion object {
-        private val importIndexLock = Any()
         private const val DB_NAME = "holos_reader.db"
         private const val DB_VERSION = 5
         private const val MAX_IMPORT_BYTES = 512L * 1024L * 1024L
         const val CURRENT_PARSER_VERSION = 3
+        private val importIndexLock = Any()
 
         fun buildSingleChapterEpub(outFile: File, title: String, bodyText: String) {
             fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
