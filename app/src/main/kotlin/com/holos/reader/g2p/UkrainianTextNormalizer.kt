@@ -357,6 +357,9 @@ object UkrainianTextNormalizer {
         text = RE_CURR_PREFIX.replace(text) { m -> currencyToWords(m.groupValues[2], m.groupValues[1]) }
         text = RE_CURR_SUFFIX.replace(text) { m -> currencyToWords(m.groupValues[1], m.groupValues[2]) }
 
+        // #37: normalize Unicode minus (U+2212) before digits so signed values & temperatures speak 'мінус'
+        text = Regex("\u2212(?=\\d)").replace(text, "-")
+
         // 9. Degrees, percentages, permille
         text = RE_DEG_C.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Цельсія" }
         text = RE_DEG_F.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Фаренгейта" }
@@ -390,7 +393,7 @@ object UkrainianTextNormalizer {
             if (a != null && b != null) "${numberToWords(a)} — ${numberToWords(b)}" else m.value
         }
         // Strip English-style thousands commas (10,000 -> 10000) before decimal handling
-        text = Regex("(?<!\\d)(\\d{1,3}(?:,\\d{3})+)(?!\\d)").replace(text) { m -> m.groupValues[1].replace(",", "") }
+        text = Regex("(?<!\\d)([1-9]\\d{0,2}(?:,\\d{3})+)(?!\\d)").replace(text) { m -> m.groupValues[1].replace(",", "") }
         text = RE_DECIMAL.replace(text) { m -> decimalToWords("${m.groupValues[1]},${m.groupValues[2]}") }
         text = RE_INT.replace(text) { m ->
             val rawNum = m.value
@@ -579,10 +582,15 @@ object UkrainianTextNormalizer {
         val wholeWords = numberToWords(whole, feminine = true)
         val fracWords = numberToWords(frac, feminine = true)
         val wholeLabel = if (whole % 10 == 1L && whole % 100 != 11L) "ціла" else "цілих"
+        val sg = frac % 10 == 1L && frac % 100 != 11L
         val fracUnit = when (parts[1].length) {
-            1 -> if (frac % 10 == 1L && frac % 100 != 11L) "десята" else "десятих"
-            2 -> if (frac % 10 == 1L && frac % 100 != 11L) "сота" else "сотих"
-            else -> if (frac % 10 == 1L && frac % 100 != 11L) "тисячна" else "тисячних"
+            1 -> if (sg) "десята" else "десятих"
+            2 -> if (sg) "сота" else "сотих"
+            3 -> if (sg) "тисячна" else "тисячних"
+            4 -> if (sg) "десятитисячна" else "десятитисячних"
+            5 -> if (sg) "стотисячна" else "стотисячних"
+            6 -> if (sg) "мільйонна" else "мільйонних"
+            else -> return "$wholeWords кома ${parts[1].map { digitToWord(it) }.joinToString(" ")}"
         }
         return "$wholeWords $wholeLabel $fracWords $fracUnit"
     }

@@ -39,15 +39,35 @@ class HolosTtsService : TextToSpeechService() {
         return if (HolosModelManager.hasAnyModelReady(this)) avail else TextToSpeech.LANG_MISSING_DATA
     }
 
+    internal fun resolveAdvertisedVoiceNames(): List<String> {
+        val loaded = HolosEngineHolder.peekVoicesOrEmpty()
+        if (loaded.isNotEmpty()) return loaded
+        val prefs = ReaderPreferences(this)
+        val effectiveModel = if (HolosModelManager.isModelReady(this, prefs.selectedTtsModelId)) {
+            prefs.selectedTtsModelId
+        } else {
+            HolosModelManager.downloadedModels(this).firstOrNull() ?: prefs.selectedTtsModelId
+        }
+        return HolosVoiceCatalog.defaultVoicesFor(effectiveModel).ifEmpty { listOf("default") }
+    }
+
+    override fun onGetDefaultVoiceNameFor(lang: String?, country: String?, variant: String?): String? {
+        if (onIsLanguageAvailable(lang, country, variant) == TextToSpeech.LANG_NOT_SUPPORTED) return null
+        val names = resolveAdvertisedVoiceNames()
+        val preferred = ReaderPreferences(this).selectedVoice
+        return preferred?.takeIf { it in names } ?: names.firstOrNull()
+    }
+
     override fun onGetVoices(): List<Voice> {
         val locale = Locale("uk", "UA")
-        val names = HolosEngineHolder.peekVoicesOrEmpty().ifEmpty { HolosVoiceCatalog.defaultVoicesFor(ReaderPreferences(this).selectedTtsModelId) }.ifEmpty { listOf("default") }
-        return names.map { Voice(it, locale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_NORMAL, false, emptySet()) }
+        return resolveAdvertisedVoiceNames().map {
+            Voice(it, locale, Voice.QUALITY_VERY_HIGH, Voice.LATENCY_NORMAL, false, emptySet())
+        }
     }
 
     override fun onIsValidVoiceName(voiceName: String?): Int {
         if (voiceName.isNullOrBlank()) return TextToSpeech.ERROR
-        if (voiceName == "default" || voiceName in HolosVoiceCatalog.allKnownVoiceIds() || voiceName in HolosEngineHolder.peekVoicesOrEmpty()) {
+        if (voiceName == "default" || voiceName in resolveAdvertisedVoiceNames() || voiceName in HolosVoiceCatalog.allKnownVoiceIds()) {
             return TextToSpeech.SUCCESS
         }
         return TextToSpeech.ERROR

@@ -59,9 +59,22 @@ object CustomVoiceLoader {
             require(headerLen in 1..65536 && headerStart + headerLen <= bytes.size) {
                 "Некоректний заголовок .npy ($headerLen)"
             }
+            val headerStr = String(bytes, headerStart, headerLen, Charsets.ISO_8859_1)
+            val descr = Regex("""'descr'\s*:\s*'([^']+)'""").find(headerStr)?.groupValues?.get(1)
+                ?: throw IllegalArgumentException("Некоректний заголовок .npy: відсутнє поле descr")
+            require(descr == "<f4" || descr == "=f4" || descr == "f4") {
+                "Непідтримуваний тип .npy ($descr): очікується little-endian float32 (<f4)"
+            }
+            val shapeRaw = Regex("""'shape'\s*:\s*\(([^)]*)\)""").find(headerStr)?.groupValues?.get(1)
+                ?: throw IllegalArgumentException("Некоректний заголовок .npy: відсутнє поле shape")
+            val dims = shapeRaw.split(',').mapNotNull { it.trim().takeIf { s -> s.isNotEmpty() }?.toLongOrNull() }
+            val totalElems = if (dims.isEmpty()) 0L else dims.fold(1L) { acc, d -> acc * d }
+            require(totalElems == VOICE_DIM.toLong()) {
+                "Некоректний розмір .npy ($shapeRaw): очікується рівно $VOICE_DIM елементів float32"
+            }
             val dataStart = headerStart + headerLen
-            require(bytes.size - dataStart >= EXPECTED_BYTES) {
-                "Файл .npy занадто малий для вектора з $VOICE_DIM float32"
+            require(bytes.size - dataStart == EXPECTED_BYTES) {
+                "Некоректна довжина даних .npy (${bytes.size - dataStart} Б): очікується рівно $EXPECTED_BYTES Б"
             }
             return readFloatsLE(bytes, dataStart)
         }
