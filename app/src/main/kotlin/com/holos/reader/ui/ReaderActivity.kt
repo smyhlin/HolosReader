@@ -313,7 +313,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         autoScrollHandler.removeCallbacksAndMessages(null)
         if (book != null && contentCommitted) saveProgress()
         if (::controller.isInitialized) {
-            controller.stop()
+            controller.close()
             if (ReaderAudioService.activeController === controller) {
                 ReaderAudioService.activeController = null
                 ReaderAudioService.onSkipNextAction = null

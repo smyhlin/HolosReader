@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicLong
  * - Supports real pre-rendered offline chapter WAV playback (zero ONNX CPU usage) with `.idx` sync.
  * - Supports true A–B block loop ([setAbLoop] / [clearAbLoop]).
  */
-class TtsPlaybackController(context: Context) {
+class TtsPlaybackController(context: Context) : AutoCloseable {
 
     interface Listener {
         fun onPlaybackStateChanged(isPlaying: Boolean, isPaused: Boolean, statusText: String)
@@ -939,6 +939,12 @@ class TtsPlaybackController(context: Context) {
         if (playingFlag.get() && !pausedFlag.get()) {
             togglePause()
         }
+    }
+
+    override fun close() {
+        listener = null
+        stop()
+        sleepScheduler.shutdownNow()
     }
 
     /** Non-blocking stop: signals cancellation and interrupts worker threads without stalling the UI thread. */
