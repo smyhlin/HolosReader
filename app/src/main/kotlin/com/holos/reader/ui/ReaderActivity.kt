@@ -130,6 +130,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private var chapterIndex: Int = 0
     private var currentChapterIsLinear = true
     private var nextLinearChapterIndex: Int? = null
+    private var previousLinearChapterIndex: Int? = null
+    private var chapterLoadPending = false
+    private lateinit var chapterPullChip: TextView
+    private lateinit var bottomDock: LinearLayout
     private var chapterTitle: String = ""
     private var currentBlocks: List<ReaderBlock> = emptyList()
     private var chapterTimeline = com.holos.reader.tts.ChapterTimeline(emptyList())
@@ -355,7 +359,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         }
 
         blocksAdapter = BlocksAdapter()
-        blocksListView = ListView(this).apply {
+        blocksListView = ChapterEdgeListView(this).apply {
+            hasChapter = { edgeChapter(it) != null }
+            showPull = ::showChapterPull
+            navigate = { direction -> edgeChapter(direction)?.let { navigateWithHistory(it) } }
             divider = null
             dividerHeight = 0
             isVerticalScrollBarEnabled = true
@@ -396,12 +403,23 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             progress = 0
             visibility = View.GONE
         }
-        readerCanvas.addView(blocksListView, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        chapterPullChip = TextView(this).apply {
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(d(16), d(8), d(16), d(8))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            visibility = View.GONE
+        }
+        val chapterPullArea = FrameLayout(this).apply {
+            addView(blocksListView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(chapterPullChip, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
+        }
+        readerCanvas.addView(chapterPullArea, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         readerCanvas.addView(footerCounterTv, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         readerCanvas.addView(chapterProgressBar, LinearLayout.LayoutParams(MATCH_PARENT, d(3)))
 
         // Floating Pill Mini-Player + Bottom Icon Bar docked at bottom
-        val bottomDock = LinearLayout(this).apply {
+        bottomDock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
@@ -717,16 +735,25 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val targetTitle = db.getChapterTitle(b.id, targetChapter, b.chapterCount)
 
         controller.stop()
+        chapterLoadPending = true
         val loadGen = chapterLoadGen.incrementAndGet()
         bgExecutor.execute {
-            val parsedChapter = session.borrowZip { z ->
-                EpubStreamingParser.parseChapterWithAnchors(z, spineItem)
+            val (parsedChapter, nextLinear, previousLinear) = try {
+                val parsed = session.borrowZip { z ->
+                    EpubStreamingParser.parseChapterWithAnchors(z, spineItem)
+                }
+                val next = parsed?.let { db.findNextLinearChapter(b.id, targetChapter, +1) }
+                val previous = parsed?.let { db.findNextLinearChapter(b.id, targetChapter, -1) }
+                Triple(parsed, next, previous)
+            } catch (error: Exception) {
+                android.util.Log.w("ReaderActivity", "Failed to load chapter $targetChapter", error)
+                Triple(null, null, null)
             }
             val blocks = parsedChapter?.blocks
             val anchorMap = parsedChapter?.anchorToBlock ?: emptyMap()
-            val nextLinear = if (parsedChapter == null) null else db.findNextLinearChapter(b.id, targetChapter, +1)
             runOnUiThread {
                 if (chapterLoadGen.get() != loadGen || isFinishing || isDestroyed) return@runOnUiThread
+                chapterLoadPending = false
                 if (blocks == null) {
                     Toast.makeText(
                         this,
@@ -746,6 +773,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 chapterTimeline = com.holos.reader.tts.ChapterTimeline(blocks)
                 currentChapterIsLinear = spineItem.linear
                 nextLinearChapterIndex = nextLinear
+                previousLinearChapterIndex = previousLinear
                 if (::audioSheet.isInitialized) audioSheet.onChapterCommitted(chapterTimeline)
                 if (!contentCommitted) {
                     contentCommitted = true
@@ -863,6 +891,59 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             target = next
         }
         startPlaybackAt(target)
+    }
+
+    private fun edgeChapter(direction: Int): Int? {
+        if (!contentCommitted || chapterLoadPending) return null
+        return if (direction < 0) previousLinearChapterIndex else nextLinearChapterIndex
+    }
+
+    private fun showChapterPull(direction: Int, progress: Float) {
+        val chip = chapterPullChip
+        chip.animate().cancel()
+        val offset = if (direction < 0) -d(46).toFloat() else d(46).toFloat()
+        if (progress <= 0f) {
+            if (chip.visibility == View.VISIBLE) {
+                chip.animate().alpha(0f).translationY(offset).setDuration(145L).withEndAction {
+                    chip.visibility = View.GONE
+                }.start()
+            }
+            return
+        }
+        val gravity = Gravity.CENTER_HORIZONTAL or if (direction < 0) Gravity.TOP else Gravity.BOTTOM
+        val margin = if (direction < 0) d(8) else {
+            val progressHeight = if (chapterProgressBar.visibility == View.VISIBLE) chapterProgressBar.height else 0
+            (bottomDock.height - footerCounterTv.height - progressHeight).coerceAtLeast(0) + d(8)
+        }
+        val lp = chip.layoutParams as FrameLayout.LayoutParams
+        val changedEdge = lp.gravity != gravity
+        val bottomMargin = if (direction > 0) margin else 0
+        val topMargin = if (direction < 0) margin else 0
+        if (changedEdge || lp.bottomMargin != bottomMargin || lp.topMargin != topMargin) {
+            lp.gravity = gravity
+            lp.bottomMargin = bottomMargin
+            lp.topMargin = topMargin
+            chip.layoutParams = lp
+        }
+        val armed = progress >= 1f
+        if (changedEdge || chip.isActivated != armed || chip.visibility != View.VISIBLE) {
+            val palette = UiTheme.palette(prefs.theme)
+            chip.isActivated = armed
+            chip.text = if (direction < 0) {
+                AppStrings.t(this, "↑ Попередній розділ", "↑ Previous chapter")
+            } else {
+                AppStrings.t(this, "↓ Наступний розділ", "↓ Next chapter")
+            }
+            chip.background = UiTheme.rounded(
+                if (armed) palette.accentBlue else palette.cardBg,
+                d(20).toFloat(),
+            )
+            chip.setTextColor(if (armed) android.graphics.Color.WHITE else palette.primaryText)
+        }
+        val reveal = progress.coerceIn(0f, 1f)
+        chip.alpha = reveal
+        chip.translationY = offset * (1f - reveal)
+        chip.visibility = View.VISIBLE
     }
 
     private fun jumpChapter(targetIndex: Int, autoPlay: Boolean) {
