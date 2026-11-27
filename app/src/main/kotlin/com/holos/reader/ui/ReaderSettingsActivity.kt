@@ -798,14 +798,14 @@ class ReaderSettingsActivity : Activity() {
             addonRows.add(
                 actionRow(
                     label = OnnxAddonCatalog.CONTEXTUAL_STRESS.title(en),
-                    subtitle = OnnxAddonCatalog.CONTEXTUAL_STRESS.summary(en),
-                    trailing = tr("Імпорт .onnx ›", "Import .onnx ›"),
-                    onClick = { launchAddonFilePicker(REQ_IMPORT_STRESS_ONNX, "*/*") },
+                    subtitle = "${OnnxAddonCatalog.CONTEXTUAL_STRESS.summary(en)} (${OnnxAddonCatalog.CONTEXTUAL_STRESS.sizeLabel(en)})",
+                    trailing = tr("Завантажити ›", "Download ›"),
+                    onClick = { showContextualStressDownloadPicker() },
                 )
             )
         }
 
-        // 4. On-Device Voice Cloner (voice_encoder.onnx)
+        // 4. On-Device Voice Cloner (voice_encoder.onnx, ~97 MB direct download)
         val voiceEncReady = OnnxAddonManager.isAddonReady(this, OnnxAddonId.VOICE_ENCODER)
         if (voiceEncReady) {
             addonRows.add(
@@ -823,9 +823,9 @@ class ReaderSettingsActivity : Activity() {
             addonRows.add(
                 actionRow(
                     label = OnnxAddonCatalog.VOICE_ENCODER.title(en),
-                    subtitle = OnnxAddonCatalog.VOICE_ENCODER.summary(en),
-                    trailing = tr("Імпорт .onnx ›", "Import .onnx ›"),
-                    onClick = { launchAddonFilePicker(REQ_IMPORT_VOICE_ENCODER_ONNX, "*/*") },
+                    subtitle = "${OnnxAddonCatalog.VOICE_ENCODER.summary(en)} (${OnnxAddonCatalog.VOICE_ENCODER.sizeLabel(en)})",
+                    trailing = tr("Завантажити ›", "Download ›"),
+                    onClick = { downloadAddonFromSettings(OnnxAddonId.VOICE_ENCODER) },
                 )
             )
         }
@@ -960,7 +960,29 @@ class ReaderSettingsActivity : Activity() {
         }
     }
 
-    private fun downloadAddonFromSettings(addonId: OnnxAddonId) {
+    private fun showContextualStressDownloadPicker() {
+        val recFp16 = OnnxAddonManager.recommendFp16Stress(this)
+        val fp16Tag = if (recFp16) tr(" ★ Рекомендовано", " ★ Recommended") else ""
+        val int8Tag = if (!recFp16) tr(" ★ Рекомендовано", " ★ Recommended") else ""
+        val items = arrayOf(
+            tr("FP16 (~221 МБ · GPU / NNAPI)$fp16Tag", "FP16 (~221 MB · GPU / NNAPI)$fp16Tag"),
+            tr("INT8 (~111 МБ · CPU / XNNPACK)$int8Tag", "INT8 (~111 MB · CPU / XNNPACK)$int8Tag"),
+            tr("Імпортувати власний .onnx…", "Import local .onnx…"),
+        )
+        val builder = UiTheme.dialogBuilder(this, prefs.theme)
+            .setTitle(tr("Контекстні наголоси (омографи)", "Contextual Stress (Homographs)"))
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> downloadAddonFromSettings(OnnxAddonId.CONTEXTUAL_STRESS, preferFp16 = true)
+                    1 -> downloadAddonFromSettings(OnnxAddonId.CONTEXTUAL_STRESS, preferFp16 = false)
+                    2 -> launchAddonFilePicker(REQ_IMPORT_STRESS_ONNX, "*/*")
+                }
+            }
+            .setNegativeButton(tr("Скасувати", "Cancel"), null)
+        UiTheme.showThemedDialog(builder, prefs.theme)
+    }
+
+    private fun downloadAddonFromSettings(addonId: OnnxAddonId, preferFp16: Boolean = false) {
         val en = AppStrings.isEnglish(this)
         val spec = OnnxAddonCatalog.byId(addonId)
         val msgTv = TextView(this).apply {
@@ -977,11 +999,12 @@ class ReaderSettingsActivity : Activity() {
 
         Thread {
             try {
-                OnnxAddonManager.downloadAddon(this, addonId) { msg, pct ->
+                OnnxAddonManager.downloadAddon(this, addonId, preferFp16 = preferFp16) { msg, pct ->
                     runOnUiThread { msgTv.text = "$msg ($pct%)" }
                 }
                 if (addonId == OnnxAddonId.FLASH_SR) prefs.flashSrEnabled = true
                 if (addonId == OnnxAddonId.UK_EMOTION) prefs.emotionPacingEnabled = true
+                if (addonId == OnnxAddonId.CONTEXTUAL_STRESS) prefs.contextualStressEnabled = true
                 HolosEngineHolder.resetAddons()
                 runOnUiThread {
                     dlg.dismiss()

@@ -24,6 +24,19 @@ object OnnxAddonManager {
     const val UK_EMOTION_ONNX_URL = "https://huggingface.co/speed-brain-ai/speedbrain-emotion-uk-onnx/resolve/main/model_quantized.onnx"
     const val UK_EMOTION_TOKENIZER_URL = "https://huggingface.co/speed-brain-ai/speedbrain-emotion-uk-onnx/resolve/main/tokenizer.json"
     const val CONTEXTUAL_STRESS_TOKENIZER_URL = "https://huggingface.co/aloudreader/uk-stress-token-classifier/resolve/main/tokenizer.json"
+    const val CONTEXTUAL_STRESS_FP16_ONNX_URL =
+        "https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/uk_stress_contextual_fp16.onnx"
+    const val CONTEXTUAL_STRESS_INT8_ONNX_URL =
+        "https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/uk_stress_contextual_int8.onnx"
+    const val VOICE_ENCODER_ONNX_URL =
+        "https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/voice_encoder.onnx"
+
+    /** Recommends FP16 contextual stress on 6+ GB RAM devices with NNAPI/AUTO acceleration. */
+    fun recommendFp16Stress(context: Context): Boolean {
+        val hw = DeviceCapabilityScanner.scan(context)
+        val accel = ReaderPreferences(context).onnxAccelerator.uppercase(Locale.US)
+        return hw.totalRamMb >= 6000L && (accel == "AUTO" || accel == "NNAPI")
+    }
 
     fun getAddonDir(context: Context, addonId: OnnxAddonId): File {
         val base = context.applicationContext.getExternalFilesDir(null) ?: context.applicationContext.filesDir
@@ -86,6 +99,7 @@ object OnnxAddonManager {
     fun downloadAddon(
         context: Context,
         addonId: OnnxAddonId,
+        preferFp16: Boolean = false,
         onProgress: (message: String, percent: Int) -> Unit,
     ): File {
         val en = AppStrings.isEnglish(context)
@@ -98,9 +112,14 @@ object OnnxAddonManager {
                 UK_EMOTION_TOKENIZER_URL to File(dir, "tokenizer.json"),
                 UK_EMOTION_ONNX_URL to File(dir, "model_quantized.onnx"),
             )
-            OnnxAddonId.CONTEXTUAL_STRESS, OnnxAddonId.VOICE_ENCODER -> {
-                throw IllegalStateException("This add-on must be imported from a local .onnx file")
-            }
+            OnnxAddonId.CONTEXTUAL_STRESS -> listOf(
+                CONTEXTUAL_STRESS_TOKENIZER_URL to File(dir, "tokenizer.json"),
+                (if (preferFp16) CONTEXTUAL_STRESS_FP16_ONNX_URL else CONTEXTUAL_STRESS_INT8_ONNX_URL) to
+                    File(dir, "uk_stress_contextual.onnx"),
+            )
+            OnnxAddonId.VOICE_ENCODER -> listOf(
+                VOICE_ENCODER_ONNX_URL to File(dir, "voice_encoder.onnx"),
+            )
         }
 
         val totalCount = items.size
