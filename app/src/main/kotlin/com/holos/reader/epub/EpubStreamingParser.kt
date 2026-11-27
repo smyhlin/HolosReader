@@ -347,12 +347,12 @@ object EpubStreamingParser {
             }
 
             var gt = lt + 1
-            var quote = ' '
+            var quote = '\u0000'
             while (gt < len) {
                 val c = body[gt]
-                if (quote != ' ') {
-                    if (c == quote) quote = ' '
-                } else if (c == '"' || c == ''') {
+                if (quote != '\u0000') {
+                    if (c == quote) quote = '\u0000'
+                } else if (c == '"' || c == '\'') {
                     quote = c
                 } else if (c == '>') {
                     break

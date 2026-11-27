@@ -1378,9 +1378,7 @@ class AudioSheetController(
                 lease.use { activeLease ->
                 val engine = activeLease.engine
                 val stressifier = HolosEngineHolder.getStressifier(activity)
-                lease.use { activeLease ->
-            val engine = activeLease.engine
-            val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(activity) else null
+                val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(activity) else null
                 val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
                 val minBuf = AudioTrack.getMinBufferSize(
                     outputRate,
@@ -1513,6 +1511,8 @@ class AudioSheetController(
                 }
                 return@execute
             }
+            lease.use { activeLease ->
+            val engine = activeLease.engine
             val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(activity) else null
             val emotionClassifier = HolosEngineHolder.getEmotionClassifier(activity)
             val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
