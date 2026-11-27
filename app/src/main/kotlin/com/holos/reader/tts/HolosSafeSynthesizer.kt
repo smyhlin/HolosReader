@@ -7,6 +7,7 @@ import com.holos.reader.g2p.UkrainianTextNormalizer
 import com.holos.tts.HolosOnnx
 import com.holos.tts.FlashSrOnnx
 import com.holos.tts.SupertonicOnnx
+import com.holos.tts.UkrainianEmotion
 import com.holos.tts.UkrainianEmotionOnnx
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -34,9 +35,10 @@ object HolosSafeSynthesizer {
         supertonicSteps: Int = 5,
         flashSr: FlashSrOnnx? = null,
         emotionClassifier: UkrainianEmotionOnnx? = null,
+        readyEmotion: UkrainianEmotion? = null,
         onChunk: (FloatArray) -> Unit,
     ) {
-        val emotion = try {
+        val emotion = readyEmotion ?: try {
             emotionClassifier?.classify(rawParagraph)
         } catch (_: Throwable) {
             null

@@ -145,9 +145,9 @@ object HolosEngineHolder {
     private fun <T> tryCreateAddon(
         prefs: ReaderPreferences,
         label: String,
+        threads: Int = prefs.cpuThreads,
         factory: (OrtSession.SessionOptions) -> T,
     ): T? {
-        val threads = prefs.cpuThreads
         val wantAccel = prefs.onnxAccelerator
         val candidates: List<String> = when (wantAccel) {
             EP_NNAPI -> listOf(EP_NNAPI, EP_XNNPACK, EP_CPU)
@@ -199,10 +199,10 @@ object HolosEngineHolder {
         }
         val dir = OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.UK_EMOTION)
         val modelFile = File(dir, "model_quantized.onnx")
-        val key = "emo|${prefs.onnxAccelerator}|${prefs.cpuThreads}|${modelFile.length()}|${modelFile.lastModified()}"
+        val key = "emo|${prefs.onnxAccelerator}|1|${modelFile.length()}|${modelFile.lastModified()}"
         return emotionPool.acquire(key) {
             try {
-                tryCreateAddon(prefs, "Emotion") { opts -> UkrainianEmotionOnnx(dir, options = opts, closeOptionsOnClose = true) }
+                tryCreateAddon(prefs, "Emotion", threads = 1) { opts -> UkrainianEmotionOnnx(dir, options = opts, closeOptionsOnClose = true) }
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to load UkrainianEmotionOnnx", t)
                 null
