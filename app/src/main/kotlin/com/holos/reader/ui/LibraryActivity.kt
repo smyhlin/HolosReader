@@ -1250,22 +1250,9 @@ class LibraryActivity : Activity() {
             Toast.LENGTH_SHORT,
         ).show()
         worker.execute {
-            var ok = 0
-            for (uri in uris) {
-                try {
-                    db.importFromUri(uri, queryDisplayName(uri))
-                    ok++
-                } catch (_: Exception) {
-                }
-            }
-            runOnUiThread {
-                refreshBooks()
-                Toast.makeText(
-                    this,
-                    AppStrings.t(this, "Імпортовано книг: $ok", "Imported $ok books"),
-                    Toast.LENGTH_LONG,
-                ).show()
-            }
+            val result = BookDatabase.BatchImportResult()
+            for (uri in uris) db.importBatchFile(uri, queryDisplayName(uri), result)
+            runOnUiThread { showBatchImportResult(result) }
         }
     }
 
@@ -1288,12 +1275,37 @@ class LibraryActivity : Activity() {
     private fun importDirectoryUri(treeUri: Uri) {
         Toast.makeText(this, "Пакетний імпорт EPUB із папки…", Toast.LENGTH_SHORT).show()
         worker.execute {
-            val count = db.importFromDirectoryTree(treeUri)
-            runOnUiThread {
-                Toast.makeText(this, "Імпортовано книг: $count", Toast.LENGTH_LONG).show()
-                refreshBooks()
-            }
+            val result = db.importFromDirectoryTree(treeUri)
+            runOnUiThread { showBatchImportResult(result) }
         }
+    }
+
+    private fun showBatchImportResult(result: BookDatabase.BatchImportResult) {
+        if (isFinishing || isDestroyed) return
+        refreshBooks()
+        val summary = AppStrings.t(
+            this,
+            "Додано: ${result.added}. Відновлено: ${result.reattached}. Вже в бібліотеці: ${result.duplicates}. Помилок: ${result.failed}",
+            "Added: ${result.added}. Restored: ${result.reattached}. Already in library: ${result.duplicates}. Failed: ${result.failed}",
+        )
+        if (result.failed == 0) {
+            Toast.makeText(this, summary, Toast.LENGTH_LONG).show()
+            return
+        }
+        val details = buildList {
+            add(summary)
+            add("")
+            addAll(result.failureDetails)
+            val omitted = result.failed - result.failureDetails.size
+            if (omitted > 0) add(AppStrings.t(this@LibraryActivity, "І ще помилок: $omitted", "Additional failures: $omitted"))
+        }.joinToString("\n")
+        UiTheme.showThemedDialog(
+            UiTheme.dialogBuilder(this, prefs.theme)
+                .setTitle(AppStrings.t(this, "Результат імпорту EPUB", "EPUB import results"))
+                .setMessage(details)
+                .setPositiveButton(android.R.string.ok, null),
+            prefs.theme,
+        )
     }
 
     private fun queryDisplayName(uri: Uri): String? = try {
