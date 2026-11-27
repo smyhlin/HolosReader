@@ -23,6 +23,7 @@ import android.widget.Toast
 import com.holos.reader.R
 import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.HolosModelManager
+import com.holos.reader.tts.ModelDownloadService
 import com.holos.reader.tts.TtsModelCatalog
 import com.holos.reader.tts.OnnxAddonCatalog
 import com.holos.reader.tts.OnnxAddonId
@@ -66,6 +67,21 @@ class ReaderSettingsActivity : Activity() {
     private lateinit var rootCol: LinearLayout
     private lateinit var contentHost: LinearLayout
 
+    private lateinit var downloadStrip: TextView
+    private var downloadPopup: android.app.AlertDialog? = null
+    private var downloadPopupText: TextView? = null
+    private var lastDownloadStatus: ModelDownloadService.Status? = null
+    private val downloadObserver: (ModelDownloadService.Status?) -> Unit = { status ->
+        val previous = lastDownloadStatus
+        lastDownloadStatus = status
+        if (status != null && !status.running && !status.failed && status != previous && activeTabIndex == 4) {
+            val offset = rootScroll.scrollY
+            rebuildFullUi()
+            rootScroll.post { rootScroll.scrollTo(0, offset) }
+        }
+        renderDownloadStatus(status)
+    }
+
     private val dp get() = resources.displayMetrics.density
     private fun d(v: Int): Int = (v * dp).toInt()
     private val p get() = UiTheme.palette(prefs.theme)
@@ -88,6 +104,27 @@ class ReaderSettingsActivity : Activity() {
                 setPadding(32, 64, 32, 32)
             }
             setContentView(tv)
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (::downloadStrip.isInitialized) ModelDownloadService.observe(downloadObserver)
+    }
+
+    override fun onStop() {
+        ModelDownloadService.removeObserver(downloadObserver)
+        downloadPopup?.dismiss()
+        super.onStop()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val nextTab = intent.getIntExtra(EXTRA_TAB_INDEX, activeTabIndex).coerceIn(0, tabs.lastIndex)
+        if (activeTabIndex != nextTab) {
+            activeTabIndex = nextTab
+            rebuildFullUi()
         }
     }
 
@@ -235,6 +272,16 @@ class ReaderSettingsActivity : Activity() {
             })
         }
         rootCol.addView(tabBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(16) })
+
+        downloadStrip = TextView(this).apply {
+            textSize = 13f
+            setTextColor(pal.primaryText)
+            setPadding(d(12), d(9), d(12), d(9))
+            background = UiTheme.rounded(pal.cardBg, d(12).toFloat())
+            setOnClickListener { showDownloadDetails() }
+        }
+        rootCol.addView(downloadStrip, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = d(10) })
+        renderDownloadStatus(ModelDownloadService.status)
 
         contentHost = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         rootCol.addView(contentHost, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
@@ -625,9 +672,9 @@ class ReaderSettingsActivity : Activity() {
                 trailing = tr("Змінити ›", "Change ›"),
                 onClick = {
                     ModelSelectorDialog.show(this, prefs, isFirstLaunch = false) { chosenId ->
-                        prefs.selectedTtsModelId = chosenId
-                        HolosEngineHolder.resetEngine()
                         if (HolosModelManager.isModelReady(this, chosenId)) {
+                            prefs.selectedTtsModelId = chosenId
+                            HolosEngineHolder.resetEngine()
                             val chosenSpec = TtsModelCatalog.byId(chosenId)
                             Toast.makeText(
                                 this,
@@ -640,6 +687,14 @@ class ReaderSettingsActivity : Activity() {
                         }
                     }
                 },
+            )
+        )
+        modelRows.add(
+            toggleRow(
+                label = tr("Попапи завантаження", "Download pop-ups"),
+                subtitle = tr("Прогрес завжди доступний у налаштуваннях", "Progress is always available in settings"),
+                initial = prefs.showModelDownloadPopup,
+                onChanged = { prefs.showModelDownloadPopup = it },
             )
         )
         if (activeModelId == TtsModelId.SUPERTONIC_3) {
@@ -1077,8 +1132,10 @@ class ReaderSettingsActivity : Activity() {
                     b.setPositiveButton(tr("Відновити пошкоджені", "Repair Broken")) { _, _ ->
                         Thread({
                             try {
-                                for (m in repairableModels) HolosModelManager.repairModel(this, m)
-                                for (a in repairableAddons) OnnxAddonManager.repairAddon(this, a)
+                                ModelDownloadService.withFileAccess {
+                                    for (m in repairableModels) HolosModelManager.repairModel(this, m)
+                                    for (a in repairableAddons) OnnxAddonManager.repairAddon(this, a)
+                                }
                                 HolosEngineHolder.resetEngine()
                                 HolosEngineHolder.resetAddons()
                                 runOnUiThread {
@@ -1099,49 +1156,41 @@ class ReaderSettingsActivity : Activity() {
     }
 
     private fun downloadModelFromSettings(modelId: TtsModelId) {
-        val en = AppStrings.isEnglish(this)
-        val spec = TtsModelCatalog.byId(modelId)
-        val msgTv = TextView(this).apply {
-            text = tr("Підготовка завантаження…", "Preparing download…")
-            textSize = 13.5f
+        if (ModelDownloadService.startModel(this, modelId)) {
+            prefs.selectedTtsModelId = modelId
+            if (prefs.showModelDownloadPopup) showDownloadDetails()
+        }
+    }
+
+    private fun renderDownloadStatus(status: ModelDownloadService.Status?) {
+        downloadStrip.visibility = if (status == null) View.GONE else View.VISIBLE
+        if (status == null) return
+        val detail = status.percent?.let { "${status.message} · $it%" } ?: status.message
+        downloadStrip.text = "${status.title}\n$detail"
+        downloadPopupText?.text = detail
+    }
+
+    private fun showDownloadDetails() {
+        val status = ModelDownloadService.status ?: return
+        if (downloadPopup?.isShowing == true) return
+        val details = TextView(this).apply {
             setTextColor(p.primaryText)
             setPadding(d(20), d(14), d(20), d(10))
         }
-        val dlgBuilder = UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle(spec.displayName(en))
-            .setView(msgTv)
-            .setCancelable(false)
-        val dlg = UiTheme.showThemedDialog(dlgBuilder, prefs.theme)
-
-        Thread {
-            try {
-                HolosModelManager.downloadBundle(this, modelId) { msg, pct ->
-                    runOnUiThread { msgTv.text = "$msg ($pct%)" }
-                }
-                prefs.selectedTtsModelId = modelId
-                HolosEngineHolder.resetEngine()
-                HolosEngineHolder.getEngine(this)
-                runOnUiThread {
-                    dlg.dismiss()
-                    Toast.makeText(
-                        this,
-                        tr("${spec.displayName(false)} готова!", "${spec.displayName(true)} is ready!"),
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                    rebuildFullUi()
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    dlg.dismiss()
-                    Toast.makeText(
-                        this,
-                        tr("Помилка завантаження: ", "Download failed: ") + (e.message ?: e.javaClass.simpleName),
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    rebuildFullUi()
-                }
+        downloadPopupText = details
+        downloadPopup = UiTheme.showThemedDialog(
+            UiTheme.dialogBuilder(this, prefs.theme)
+                .setTitle(status.title)
+                .setView(details)
+                .setNegativeButton(tr("Приховати", "Hide"), null),
+            prefs.theme,
+        ).apply {
+            setOnDismissListener {
+                downloadPopup = null
+                downloadPopupText = null
             }
-        }.start()
+        }
+        renderDownloadStatus(status)
     }
 
     private fun launchAddonFilePicker(requestCode: Int, mimeType: String) {
@@ -1187,46 +1236,9 @@ class ReaderSettingsActivity : Activity() {
     }
 
     private fun downloadAddonFromSettings(addonId: OnnxAddonId, preferFp16: Boolean = false) {
-        val en = AppStrings.isEnglish(this)
-        val spec = OnnxAddonCatalog.byId(addonId)
-        val msgTv = TextView(this).apply {
-            text = tr("Підготовка завантаження…", "Preparing download…")
-            textSize = 13.5f
-            setTextColor(p.primaryText)
-            setPadding(d(20), d(14), d(20), d(10))
+        if (ModelDownloadService.startAddon(this, addonId, preferFp16) && prefs.showModelDownloadPopup) {
+            showDownloadDetails()
         }
-        val dlgBuilder = UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle(spec.title(en))
-            .setView(msgTv)
-            .setCancelable(false)
-        val dlg = UiTheme.showThemedDialog(dlgBuilder, prefs.theme)
-
-        Thread {
-            try {
-                OnnxAddonManager.downloadAddon(this, addonId, preferFp16 = preferFp16) { msg, pct ->
-                    runOnUiThread { msgTv.text = "$msg ($pct%)" }
-                }
-                if (addonId == OnnxAddonId.FLASH_SR) prefs.flashSrEnabled = true
-                if (addonId == OnnxAddonId.UK_EMOTION) prefs.emotionPacingEnabled = true
-                if (addonId == OnnxAddonId.CONTEXTUAL_STRESS) prefs.contextualStressEnabled = true
-                HolosEngineHolder.resetAddons()
-                runOnUiThread {
-                    dlg.dismiss()
-                    Toast.makeText(this, tr("${spec.title(false)} готовий!", "${spec.title(true)} ready!"), Toast.LENGTH_SHORT).show()
-                    rebuildFullUi()
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    dlg.dismiss()
-                    Toast.makeText(
-                        this,
-                        tr("Помилка завантаження: ", "Download failed: ") + (e.message ?: e.javaClass.simpleName),
-                        Toast.LENGTH_LONG,
-                    ).show()
-                    rebuildFullUi()
-                }
-            }
-        }.start()
     }
 
     private fun importAddonFromUri(addonId: OnnxAddonId, uri: android.net.Uri) {
@@ -1246,8 +1258,10 @@ class ReaderSettingsActivity : Activity() {
 
         Thread {
             try {
-                OnnxAddonManager.importOnnxFile(this, addonId, uri) { msg, pct ->
-                    runOnUiThread { msgTv.text = "$msg ($pct%)" }
+                ModelDownloadService.withFileAccess {
+                    OnnxAddonManager.importOnnxFile(this, addonId, uri) { msg, pct ->
+                        runOnUiThread { msgTv.text = "$msg ($pct%)" }
+                    }
                 }
                 if (addonId == OnnxAddonId.CONTEXTUAL_STRESS) prefs.contextualStressEnabled = true
                 HolosEngineHolder.resetAddons()

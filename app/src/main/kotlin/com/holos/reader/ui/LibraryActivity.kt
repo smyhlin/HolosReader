@@ -42,6 +42,7 @@ import com.holos.reader.epub.BookRecord
 import com.holos.reader.epub.ReadingStatus
 import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.HolosModelManager
+import com.holos.reader.tts.ModelDownloadService
 import com.holos.reader.tts.TtsModelCatalog
 import com.holos.reader.tts.TtsModelId
 import com.holos.reader.tts.ReaderPreferences
@@ -205,6 +206,29 @@ class LibraryActivity : Activity() {
                 db.getBook(id)?.let { openBook(it) }
             }
         }
+    }
+
+    private val modelDownloadObserver: (ModelDownloadService.Status?) -> Unit = { status ->
+        if (status?.isModel == true) {
+            modelProgress.visibility = if (status.running) View.VISIBLE else View.GONE
+            modelProgress.isIndeterminate = status.running && status.percent == null
+            modelProgress.progress = status.percent ?: 0
+            downloadModelBtn.isEnabled = !status.running
+            downloadModelBtn.alpha = if (status.running) 0.55f else 1f
+            downloadModelBtn.text = AppStrings.t(this, "Обрати та завантажити модель TTS", "Choose & Download TTS Model")
+            modelStatusTv.text = if (status.running) "${status.title} · ${status.message}" else status.message
+            modelBanner.visibility = if (status.running || status.failed) View.VISIBLE else View.GONE
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ModelDownloadService.observe(modelDownloadObserver)
+    }
+
+    override fun onStop() {
+        ModelDownloadService.removeObserver(modelDownloadObserver)
+        super.onStop()
     }
 
     override fun onDestroy() {
@@ -1046,9 +1070,9 @@ class LibraryActivity : Activity() {
 
     private fun openModelSelector(isFirstLaunch: Boolean) {
         ModelSelectorDialog.show(this, prefs, isFirstLaunch = isFirstLaunch) { chosenId ->
-            prefs.selectedTtsModelId = chosenId
-            HolosEngineHolder.resetEngine()
             if (HolosModelManager.isModelReady(this, chosenId)) {
+                prefs.selectedTtsModelId = chosenId
+                HolosEngineHolder.resetEngine()
                 modelBanner.visibility = View.GONE
                 val spec = TtsModelCatalog.byId(chosenId)
                 Toast.makeText(
@@ -1070,6 +1094,7 @@ class LibraryActivity : Activity() {
                 HolosEngineHolder.getStressifier(this)
                 val ready = HolosModelManager.hasAnyModelReady(this)
                 runOnUiThread {
+                    if (isFinishing || isDestroyed || ModelDownloadService.status?.isModel == true) return@runOnUiThread
                     if (ready) {
                         modelBanner.visibility = View.GONE
                     } else {
@@ -1092,42 +1117,9 @@ class LibraryActivity : Activity() {
         }
     }
 
-    private fun downloadModel(modelId: TtsModelId = prefs.selectedTtsModelId) {
-        val en = AppStrings.isEnglish(this)
-        val spec = TtsModelCatalog.byId(modelId)
-        downloadModelBtn.isEnabled = false
-        downloadModelBtn.text = if (en) "Downloading ${spec.displayName(true)}…" else "Завантаження ${spec.displayName(false)}…"
-        downloadModelBtn.alpha = 0.55f
-        modelProgress.progress = 0
-        modelProgress.visibility = View.VISIBLE
-        worker.execute {
-            try {
-                HolosModelManager.downloadBundle(this, modelId) { msg, pct ->
-                    runOnUiThread {
-                        modelStatusTv.text = msg
-                        modelProgress.progress = pct
-                    }
-                }
-                prefs.selectedTtsModelId = modelId
-                HolosEngineHolder.resetEngine()
-                HolosEngineHolder.getEngine(this)
-                runOnUiThread {
-                    modelProgress.visibility = View.GONE
-                    modelBanner.visibility = View.GONE
-                    downloadModelBtn.isEnabled = true
-                    downloadModelBtn.alpha = 1f
-                    downloadModelBtn.text = AppStrings.t(this@LibraryActivity, "Обрати та завантажити модель TTS", "Choose & Download TTS Model")
-                    Toast.makeText(this, if (en) "${spec.displayName(true)} ready!" else "${spec.displayName(false)} готова!", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    modelProgress.visibility = View.GONE
-                    downloadModelBtn.isEnabled = true
-                    downloadModelBtn.alpha = 1f
-                    downloadModelBtn.text = AppStrings.t(this@LibraryActivity, "Повторити завантаження ${spec.displayName(false)}", "Retry downloading ${spec.displayName(true)}")
-                    modelStatusTv.text = (if (en) "Error: " else "Помилка: ") + (e.message ?: e.javaClass.simpleName)
-                }
-            }
+    private fun downloadModel(modelId: TtsModelId) {
+        if (ModelDownloadService.startModel(this, modelId)) {
+            prefs.selectedTtsModelId = modelId
         }
     }
 

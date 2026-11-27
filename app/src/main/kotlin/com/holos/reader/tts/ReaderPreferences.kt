@@ -57,6 +57,14 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getBoolean("addon_contextual_stress_enabled", false)
         set(v) = prefs.edit().putBoolean("addon_contextual_stress_enabled", v).apply()
 
+    var showModelDownloadPopup: Boolean
+        get() = prefs.getBoolean("show_model_download_popup", false)
+        set(value) = prefs.edit().putBoolean("show_model_download_popup", value).apply()
+
+    var modelDownloadNotificationPermissionAsked: Boolean
+        get() = prefs.getBoolean("model_download_notification_permission_asked", false)
+        set(value) = prefs.edit().putBoolean("model_download_notification_permission_asked", value).apply()
+
     var firstLaunchModelPromptShown: Boolean
         get() = prefs.getBoolean("first_launch_model_prompt_shown", false)
         set(v) = prefs.edit().putBoolean("first_launch_model_prompt_shown", v).apply()
