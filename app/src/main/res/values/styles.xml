@@ -1,13 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+    <style name="AppTheme.Base" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">#161618</item>
         <item name="android:colorBackground">#161618</item>
         <item name="android:statusBarColor">#161618</item>
         <item name="android:navigationBarColor">#161618</item>
         <item name="android:colorAccent">#5E9BFF</item>
-        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
     </style>
+
+    <style name="AppTheme" parent="AppTheme.Base" />
 
     <style name="AppTheme.TranslucentSheet" parent="AppTheme">
         <item name="android:windowIsTranslucent">true</item>
