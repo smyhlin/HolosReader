@@ -1,12 +1,16 @@
 package com.holos.reader.tts
 
 import com.holos.reader.epub.ReaderBlock
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * Pure-Kotlin monotonic reading session state machine (#19).
+ * Pure-Kotlin monotonic reading session state machine (#19, #46).
  * Counts time ONLY while the reader is in the foreground OR audio is actively playing (unpaused).
- * Background idle/paused time is never counted, and sub-second remainders are preserved across
- * rapid saves without double-counting.
+ * Accumulates elapsed time internally across repeated identical callbacks and state transitions
+ * so no seconds are ever discarded before persistence drains them via [flushSeconds].
  */
 class ReadingSessionTracker(
     private val clockMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
@@ -15,41 +19,85 @@ class ReadingSessionTracker(
     private var foreground: Boolean = false
     private var audioPlaying: Boolean = false
     private var activeSinceMs: Long = -1L
-    private var remainderMs: Long = 0L
+    private var accruedMs: Long = 0L
 
     val isAccountingActive: Boolean
         get() = foreground || audioPlaying
 
+    /** Updates foreground state without discarding accrued time (Activity persistence drains via [flushSeconds]). */
+    @Synchronized
+    fun setForeground(isForeground: Boolean) {
+        if (foreground == isForeground) return
+        val now = clockMs()
+        accrueLocked(now)
+        foreground = isForeground
+        updateAnchorLocked(now)
+    }
+
+    /** Updates audio playing state without discarding accrued time (Activity persistence drains via [flushSeconds]). */
+    @Synchronized
+    fun setAudioPlaying(isPlayingUnpaused: Boolean) {
+        if (audioPlaying == isPlayingUnpaused) return
+        val now = clockMs()
+        accrueLocked(now)
+        audioPlaying = isPlayingUnpaused
+        updateAnchorLocked(now)
+    }
+
+    /**
+     * Transition helper: ignores identical no-op transitions (preserving accrued time for [flushSeconds]),
+     * and returns newly completed whole seconds only when accounting stops (active -> inactive).
+     */
     @Synchronized
     fun onForegroundChanged(isForeground: Boolean): Long {
-        val flushed = flushSecondsLocked(clockMs())
+        if (foreground == isForeground) return 0L
+        val now = clockMs()
+        val wasActive = isAccountingActive
+        accrueLocked(now)
         foreground = isForeground
-        updateAnchorLocked(clockMs())
-        return flushed
+        updateAnchorLocked(now)
+        return if (wasActive && !isAccountingActive) drainAccruedLocked() else 0L
     }
 
     @Synchronized
     fun onAudioPlayingChanged(isPlayingUnpaused: Boolean): Long {
-        val flushed = flushSecondsLocked(clockMs())
+        if (audioPlaying == isPlayingUnpaused) return 0L
+        val now = clockMs()
+        val wasActive = isAccountingActive
+        accrueLocked(now)
         audioPlaying = isPlayingUnpaused
-        updateAnchorLocked(clockMs())
-        return flushed
+        updateAnchorLocked(now)
+        return if (wasActive && !isAccountingActive) drainAccruedLocked() else 0L
     }
 
     @Synchronized
-    fun flushSeconds(): Long = flushSecondsLocked(clockMs())
+    fun flushSeconds(): Long {
+        val now = clockMs()
+        accrueLocked(now)
+        return drainAccruedLocked()
+    }
 
-    private fun flushSecondsLocked(nowMs: Long): Long {
-        if (!isAccountingActive || activeSinceMs < 0L) {
-            activeSinceMs = if (isAccountingActive) nowMs else -1L
-            return 0L
+    private fun accrueLocked(nowMs: Long) {
+        if (!isAccountingActive) return
+        if (activeSinceMs < 0L) {
+            activeSinceMs = nowMs
+            return
         }
         val deltaMs = (nowMs - activeSinceMs).coerceAtLeast(0L)
         activeSinceMs = nowMs
-        val totalMs = remainderMs + deltaMs
-        val sec = (totalMs / 1000L).coerceIn(0L, maxSingleFlushSec)
-        remainderMs = if (totalMs / 1000L > maxSingleFlushSec) 0L else (totalMs % 1000L)
-        return sec
+        accruedMs += deltaMs
+    }
+
+    private fun drainAccruedLocked(): Long {
+        val rawSec = accruedMs / 1000L
+        if (rawSec <= 0L) return 0L
+        return if (rawSec > maxSingleFlushSec) {
+            accruedMs = 0L
+            maxSingleFlushSec
+        } else {
+            accruedMs %= 1000L
+            rawSec
+        }
     }
 
     private fun updateAnchorLocked(nowMs: Long) {
@@ -59,21 +107,16 @@ class ReadingSessionTracker(
 
 enum class ProgressEvent {
     NAVIGATION,
+    CHECKPOINT,
     CONSUMED_READING,
     AUDIO_CHAPTER_COMPLETE,
 }
 
 /**
- * Pure-Kotlin reading progress, completion, and play-anchor policies (#16, #18).
+ * Pure-Kotlin reading progress, completion, and play-anchor policies (#16, #18, #50, #51).
  */
 object ReadingProgressPolicy {
 
-    /**
-     * Resolves the block index to start TTS playback from (#16):
-     * - Resuming a paused session preserves [activeBlockIndex].
-     * - Starting from idle uses the visible [viewportBlockIndex] (advancing to the nearest
-     *   speakable block so tapping Play after manual scrolling starts where the user is reading).
-     */
     fun resolveIdlePlayBlock(
         blocks: List<ReaderBlock>,
         viewportBlockIndex: Int,
@@ -93,11 +136,10 @@ object ReadingProgressPolicy {
     }
 
     /**
-     * Computes whether this progress update marks the book FINISHED (#18):
-     * - Pure navigation (TOC/scrubber/chapter load) NEVER marks FINISHED.
-     * - Natural audio completion on the final chapter marks FINISHED even if trailing
-     *   non-speakable blocks (e.g. illustrations/HR) follow the last spoken paragraph.
-     * - Organic reading progression reaching the last block of the last chapter marks FINISHED.
+     * Computes whether this progress update marks the book FINISHED (#18, #50):
+     * - NAVIGATION and CHECKPOINT (lifecycle pause/stop, TOC jump, seek/start) NEVER mark FINISHED.
+     * - AUDIO_CHAPTER_COMPLETE on the final linear chapter marks FINISHED even with trailing images.
+     * - CONSUMED_READING reaching the last block of the final linear chapter marks FINISHED.
      */
     fun shouldMarkFinished(
         event: ProgressEvent,
@@ -105,21 +147,16 @@ object ReadingProgressPolicy {
         chapterCount: Int,
         blockIndex: Int,
         lastBlockIndex: Int,
+        isFinalLinearChapter: Boolean = (chapterCount > 0 && chapterIndex >= chapterCount - 1),
     ): Boolean {
-        if (chapterCount <= 0 || chapterIndex < chapterCount - 1) return false
+        if (chapterCount <= 0 || !isFinalLinearChapter) return false
         return when (event) {
-            ProgressEvent.NAVIGATION -> false
+            ProgressEvent.NAVIGATION, ProgressEvent.CHECKPOINT -> false
             ProgressEvent.AUDIO_CHAPTER_COMPLETE -> true
             ProgressEvent.CONSUMED_READING -> lastBlockIndex >= 0 && blockIndex >= lastBlockIndex
         }
     }
 
-    /**
-     * Computes organic pages delta (#18):
-     * - Pure navigation adds 0 pages (prevents TOC/scrubber jump inflation).
-     * - Natural chapter completion adds 1 page.
-     * - Organic forward scroll of >= 6 blocks within the same chapter adds 1 page.
-     */
     fun computePagesDelta(
         event: ProgressEvent,
         prevChapter: Int,
@@ -127,7 +164,7 @@ object ReadingProgressPolicy {
         newChapter: Int,
         newBlock: Int,
     ): Long = when (event) {
-        ProgressEvent.NAVIGATION -> 0L
+        ProgressEvent.NAVIGATION, ProgressEvent.CHECKPOINT -> 0L
         ProgressEvent.AUDIO_CHAPTER_COMPLETE -> 1L
         ProgressEvent.CONSUMED_READING -> {
             if (newChapter == prevChapter && newBlock > prevBlock && (newBlock - prevBlock) >= 6) 1L
@@ -135,15 +172,21 @@ object ReadingProgressPolicy {
             else 0L
         }
     }
+
+    /** Computes consistent 0..1 chapter fraction where the last page maps to 1.0 (#51). */
+    fun chapterFractionForPage(clampedGlobalPage: Int, chapterStartPage: Int, chapterPages: Int): Float {
+        if (chapterPages <= 1) return 0f
+        return ((clampedGlobalPage - chapterStartPage).toFloat() / (chapterPages - 1).toFloat()).coerceIn(0f, 1f)
+    }
 }
 
 /**
- * Pure-Kotlin monotonic sleep timer deadline tracker (#9).
+ * Pure-Kotlin monotonic sleep timer deadline tracker (#9, #56).
  */
 class SleepDeadlineTracker(
     private val clockMs: () -> Long = { android.os.SystemClock.elapsedRealtime() },
 ) {
-    private val deadlineMs = java.util.concurrent.atomic.AtomicLong(0L)
+    private val deadlineMs = AtomicLong(0L)
 
     fun setMinutes(minutes: Int) {
         if (minutes <= 0) {
@@ -153,14 +196,26 @@ class SleepDeadlineTracker(
         }
     }
 
+    fun setDelayMs(delayMs: Long) {
+        if (delayMs <= 0L) {
+            deadlineMs.set(0L)
+        } else {
+            deadlineMs.set(clockMs() + delayMs)
+        }
+    }
+
     fun clear() {
         deadlineMs.set(0L)
     }
 
-    fun remainingMinutes(): Int {
+    fun remainingMs(): Long {
         val d = deadlineMs.get()
-        if (d <= 0L) return 0
-        val rem = d - clockMs()
+        if (d <= 0L) return 0L
+        return (d - clockMs()).coerceAtLeast(0L)
+    }
+
+    fun remainingMinutes(): Int {
+        val rem = remainingMs()
         if (rem <= 0L) return 0
         return ((rem + 59_999L) / 60_000L).toInt()
     }
@@ -175,5 +230,87 @@ class SleepDeadlineTracker(
     fun isExpired(): Boolean {
         val d = deadlineMs.get()
         return d > 0L && clockMs() >= d
+    }
+
+    fun hasActiveDeadline(): Boolean = deadlineMs.get() > 0L
+}
+
+/**
+ * Generation-aware focus-gated playback handshake (#57).
+ * Prevents AudioTrack.play() / PCM writes before foreground service + audio focus grant.
+ */
+class PlaybackFocusGate {
+    enum class State { PENDING, GRANTED, DENIED }
+
+    private val lock = Any()
+    private var currentGen: Long = 0L
+    private var state: State = State.GRANTED
+    private var latch: CountDownLatch = CountDownLatch(0)
+
+    fun beginSession(gen: Long, requireGrant: Boolean) {
+        synchronized(lock) {
+            currentGen = gen
+            if (requireGrant) {
+                state = State.PENDING
+                latch = CountDownLatch(1)
+            } else {
+                state = State.GRANTED
+                latch = CountDownLatch(0)
+            }
+        }
+    }
+
+    fun onFocusGranted(gen: Long): Boolean {
+        synchronized(lock) {
+            if (gen != currentGen || state != State.PENDING) return false
+            state = State.GRANTED
+            latch.countDown()
+            return true
+        }
+    }
+
+    fun onFocusDenied(gen: Long): Boolean {
+        synchronized(lock) {
+            if (gen != currentGen) return false
+            state = State.DENIED
+            latch.countDown()
+            return true
+        }
+    }
+
+    fun cancel(gen: Long) {
+        synchronized(lock) {
+            if (gen == currentGen && state == State.PENDING) {
+                state = State.DENIED
+                latch.countDown()
+            }
+        }
+    }
+
+    fun currentState(gen: Long): State = synchronized(lock) {
+        if (gen != currentGen) State.DENIED else state
+    }
+
+    fun awaitGrant(gen: Long, cancelled: AtomicBoolean, timeoutMs: Long = 8_000L): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (!cancelled.get()) {
+            val l: CountDownLatch
+            synchronized(lock) {
+                if (gen != currentGen) return false
+                when (state) {
+                    State.GRANTED -> return true
+                    State.DENIED -> return false
+                    State.PENDING -> l = latch
+                }
+            }
+            val remNs = deadline - System.nanoTime()
+            if (remNs <= 0L) return false
+            try {
+                l.await(minOf(remNs, TimeUnit.MILLISECONDS.toNanos(50L)), TimeUnit.NANOSECONDS)
+            } catch (_: InterruptedException) {
+                return false
+            }
+        }
+        return false
     }
 }

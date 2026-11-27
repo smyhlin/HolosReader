@@ -112,21 +112,76 @@ class TtsPlaybackController(context: Context) {
         abLoopEnd = -1
     }
 
+    private val sleepScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "HolosSleepDeadline").apply { isDaemon = true }
+    }
+    @Volatile
+    private var sleepFuture: java.util.concurrent.ScheduledFuture<*>? = null
+    internal val focusGate = PlaybackFocusGate()
+    val currentSessionGeneration: Long get() = sessionGen.get()
+
+    fun onAudioFocusGranted(generation: Long) {
+        focusGate.onFocusGranted(generation)
+    }
+
+    fun onAudioFocusDenied(generation: Long) {
+        if (focusGate.onFocusDenied(generation) && sessionGen.get() == generation) {
+            activeCancel?.set(true)
+            playingFlag.set(false)
+            pausedFlag.set(false)
+            listener?.onPlaybackStateChanged(
+                false,
+                false,
+                AppStrings.t(appContext, "Не вдалося отримати аудіофокус", "Audio focus denied"),
+            )
+        }
+    }
+
+    private fun cancelScheduledSleep() {
+        sleepFuture?.cancel(false)
+        sleepFuture = null
+    }
+
+    private fun scheduleSleepDeadline(gen: Long, sessionCancel: AtomicBoolean) {
+        cancelScheduledSleep()
+        if (!sleepTracker.hasActiveDeadline()) return
+        val delayMs = sleepTracker.remainingMs()
+        sleepFuture = sleepScheduler.schedule({
+            if (sessionGen.get() == gen && !sessionCancel.get()) {
+                handleSleepExpiry(sessionCancel)
+            }
+        }, delayMs, java.util.concurrent.TimeUnit.MILLISECONDS)
+    }
+
     fun setSleepTimerMinutes(minutes: Int) {
         sleepAtChapterEnd.set(false)
         sleepTracker.setMinutes(minutes)
+        val cancel = activeCancel
+        if (minutes > 0 && cancel != null && playingFlag.get()) {
+            scheduleSleepDeadline(sessionGen.get(), cancel)
+        } else {
+            cancelScheduledSleep()
+        }
     }
 
     fun setSleepAtChapterEnd(enabled: Boolean) {
         sleepTracker.clear()
+        cancelScheduledSleep()
         sleepAtChapterEnd.set(enabled)
     }
 
     private fun handleSleepExpiry(sessionCancel: AtomicBoolean): Boolean {
         if (!sleepTracker.consumeIfExpired()) return false
+        cancelScheduledSleep()
         sessionCancel.set(true)
         playingFlag.set(false)
         pausedFlag.set(false)
+        synchronized(trackLock) {
+            try {
+                currentTrack?.pause()
+                currentTrack?.flush()
+            } catch (_: Exception) {}
+        }
         listener?.onPlaybackStateChanged(false, false, AppStrings.t(appContext, "Таймер сну завершено", "Sleep timer finished"))
         return true
     }
@@ -135,15 +190,22 @@ class TtsPlaybackController(context: Context) {
         blocks: List<ReaderBlock>,
         startBlockIndex: Int,
         offlineWavFile: File? = null,
-    ) {
+        requireFocusGrant: Boolean = false,
+    ): Long {
         stop()
-        if (blocks.isEmpty()) return
+        if (blocks.isEmpty()) return 0L
+        if (sleepTracker.consumeIfExpired()) {
+            listener?.onPlaybackStateChanged(false, false, AppStrings.t(appContext, "Таймер сну завершено", "Sleep timer finished"))
+            return 0L
+        }
 
         val gen = sessionGen.incrementAndGet()
         val sessionCancel = AtomicBoolean(false)
         activeCancel = sessionCancel
+        focusGate.beginSession(gen, requireFocusGrant)
         pausedFlag.set(false)
         playingFlag.set(true)
+        scheduleSleepDeadline(gen, sessionCancel)
 
         val startIdx = startBlockIndex.coerceIn(0, blocks.lastIndex)
         listener?.onPlaybackStateChanged(
@@ -153,6 +215,9 @@ class TtsPlaybackController(context: Context) {
         )
 
         val bootstrap = Thread({
+            if (!isCurrent(gen, sessionCancel) || handleSleepExpiry(sessionCancel)) {
+                return@Thread
+            }
             val prefs = ReaderPreferences(appContext)
             val speed = prefs.speechSpeed
 
@@ -618,6 +683,12 @@ class TtsPlaybackController(context: Context) {
                 var offset = 0
                 val total = ap.samples.size
                 while (offset < total && isCurrent(gen, sessionCancel)) {
+                    if (handleSleepExpiry(sessionCancel)) return false
+                    while (pausedFlag.get() && isCurrent(gen, sessionCancel)) {
+                        if (handleSleepExpiry(sessionCancel)) return false
+                        try { Thread.sleep(25) } catch (_: InterruptedException) { return false }
+                    }
+                    if (!isCurrent(gen, sessionCancel)) return false
                     val w = try {
                         track.write(ap.samples, offset, total - offset, AudioTrack.WRITE_BLOCKING)
                     } catch (e: Exception) {
@@ -635,10 +706,23 @@ class TtsPlaybackController(context: Context) {
                         totalFramesWritten += w.toLong()
                     }
                 }
-                return true
+                return isCurrent(gen, sessionCancel)
             }
 
             fun ensurePlaying() {
+                if (!focusGate.awaitGrant(gen, sessionCancel)) {
+                    if (isCurrent(gen, sessionCancel)) {
+                        sessionCancel.set(true)
+                        playingFlag.set(false)
+                        pausedFlag.set(false)
+                        listener?.onPlaybackStateChanged(
+                            false,
+                            false,
+                            AppStrings.t(appContext, "Не вдалося отримати аудіофокус", "Audio focus denied"),
+                        )
+                    }
+                    return
+                }
                 synchronized(trackLock) {
                     if (currentTrack === track && track.playState != AudioTrack.PLAYSTATE_PLAYING && !pausedFlag.get()) {
                         track.play()
@@ -858,7 +942,10 @@ class TtsPlaybackController(context: Context) {
 
     /** Non-blocking stop: signals cancellation and interrupts worker threads without stalling the UI thread. */
     fun stop() {
+        val prevGen = sessionGen.get()
         sessionGen.incrementAndGet()
+        focusGate.cancel(prevGen)
+        cancelScheduledSleep()
         activeCancel?.set(true)
         activeCancel = null
         pausedFlag.set(false)

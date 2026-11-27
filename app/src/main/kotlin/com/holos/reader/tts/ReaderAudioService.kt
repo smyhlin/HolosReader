@@ -196,6 +196,20 @@ class ReaderAudioService : Service() {
                 updateMediaSessionState()
                 updateNotification(currentTitle, currentSubtitle)
             }
+            ACTION_RESUME -> {
+                val ctrl = activeController
+                if (ctrl != null && ctrl.isPlaying && ctrl.isPaused) {
+                    if (requestAudioFocus() == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                        ctrl.resumeIfPaused()
+                        acquireWakeLock()
+                    } else {
+                        ctrl.pauseIfPlaying()
+                        releaseWakeLock()
+                    }
+                    updateMediaSessionState()
+                    updateNotification(currentTitle, currentSubtitle)
+                }
+            }
             ACTION_STOP -> {
                 activeController?.stop()
                 abandonAudioFocus()
@@ -230,15 +244,25 @@ class ReaderAudioService : Service() {
                     Log.w(TAG, "startForeground failed", e)
                     stopSelf()
                 }
+                val sessionGen = intent?.getLongExtra(EXTRA_SESSION_GEN, 0L) ?: 0L
                 if (fgOk) {
                     if (requestAudioFocus() == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
                         acquireWakeLock()
+                        if (sessionGen > 0L) {
+                            activeController?.onAudioFocusGranted(sessionGen)
+                        }
                     } else {
-                        activeController?.pauseIfPlaying()
+                        if (sessionGen > 0L) {
+                            activeController?.onAudioFocusDenied(sessionGen)
+                        } else {
+                            activeController?.pauseIfPlaying()
+                        }
                         releaseWakeLock()
                     }
                     updateMediaSessionState()
                     updateNotification(currentTitle, currentSubtitle)
+                } else if (sessionGen > 0L) {
+                    activeController?.onAudioFocusDenied(sessionGen)
                 }
             }
         }
@@ -471,7 +495,9 @@ class ReaderAudioService : Service() {
         const val ACTION_PREV = "com.holos.reader.ACTION_PREV"
         const val ACTION_NEXT = "com.holos.reader.ACTION_NEXT"
                 const val ACTION_REFRESH = "com.holos.reader.ACTION_REFRESH"
+        const val ACTION_RESUME = "com.holos.reader.ACTION_RESUME"
         const val ACTION_STOP = "com.holos.reader.ACTION_STOP"
+        const val EXTRA_SESSION_GEN = "session_gen"
         const val EXTRA_TITLE = "title"
         const val EXTRA_SUBTITLE = "subtitle"
         const val EXTRA_ALBUM = "album"
@@ -514,6 +540,7 @@ class ReaderAudioService : Service() {
             positionMs: Long = 0L,
             durationMs: Long = 0L,
             speed: Float = 1.0f,
+            sessionGen: Long = 0L,
         ) {
             val intent = Intent(context, ReaderAudioService::class.java).apply {
                 action = ACTION_START
@@ -524,6 +551,7 @@ class ReaderAudioService : Service() {
                 putExtra(EXTRA_POS_MS, positionMs)
                 putExtra(EXTRA_DUR_MS, durationMs)
                 putExtra(EXTRA_SPEED, speed)
+                if (sessionGen > 0L) putExtra(EXTRA_SESSION_GEN, sessionGen)
             }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -533,6 +561,21 @@ class ReaderAudioService : Service() {
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Unable to start foreground service", e)
+                if (sessionGen > 0L) {
+                    activeController?.onAudioFocusDenied(sessionGen)
+                }
+            }
+        }
+
+        fun requestResume(context: Context) {
+            val intent = Intent(context, ReaderAudioService::class.java).apply {
+                action = ACTION_RESUME
+            }
+            try {
+                context.startService(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Unable to request audio focus resume", e)
+                activeController?.pauseIfPlaying()
             }
         }
 

@@ -240,20 +240,20 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     override fun onResume() {
         super.onResume()
-        sessionTracker.onForegroundChanged(true)
+        sessionTracker.setForeground(true)
         if (::frameRoot.isInitialized) {
             applyTheme()
         }
     }
 
     override fun onPause() {
-        saveProgress(event = com.holos.reader.tts.ProgressEvent.CONSUMED_READING)
-        sessionTracker.onForegroundChanged(false)
+        sessionTracker.setForeground(false)
+        saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
         super.onPause()
     }
 
     override fun onStop() {
-        saveProgress(event = com.holos.reader.tts.ProgressEvent.CONSUMED_READING)
+        saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
         super.onStop()
     }
 
@@ -810,14 +810,34 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val idx = blockIdx.coerceIn(0, currentBlocks.lastIndex)
         activeBlockIndex = idx
         miniPlayerPill.visibility = View.VISIBLE
-        saveProgress(idx)
+        saveProgress(idx, com.holos.reader.tts.ProgressEvent.NAVIGATION)
         val offlineFile = book?.let { TtsPlaybackController.offlineChapterFile(this, it.id, chapterIndex, prefs) }
-        controller.startFrom(currentBlocks, idx, offlineWavFile = offlineFile)
+        val gen = controller.startFrom(currentBlocks, idx, offlineWavFile = offlineFile, requireFocusGrant = true)
+        if (gen > 0L) {
+            val (posMs, durMs) = estimateChapterAudioTiming(idx)
+            val snippet = currentBlocks.getOrNull(idx)?.text?.trim()?.take(90)
+                ?.ifBlank { book?.title ?: "HolosReader" } ?: (book?.title ?: "HolosReader")
+            ReaderAudioService.start(
+                context = this,
+                title = snippet,
+                subtitle = chapterTitle,
+                bookId = book?.id,
+                album = book?.title,
+                positionMs = posMs,
+                durationMs = durMs,
+                speed = prefs.speechSpeed,
+                sessionGen = gen,
+            )
+        }
     }
 
     private fun togglePlayPause() {
         if (controller.isPlaying) {
-            controller.togglePause()
+            if (controller.isPaused) {
+                ReaderAudioService.requestResume(this)
+            } else {
+                controller.pauseIfPlaying()
+            }
         } else {
             val target = com.holos.reader.tts.ReadingProgressPolicy.resolveIdlePlayBlock(
                 blocks = currentBlocks,
@@ -862,12 +882,14 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val b = book ?: return
         if (!contentCommitted) return
         val deltaSec = sessionTracker.flushSeconds()
+        val isFinalLinear = db.findNextLinearChapter(b.id, chapterIndex, +1) == null
         val reachedEnd = com.holos.reader.tts.ReadingProgressPolicy.shouldMarkFinished(
             event = event,
             chapterIndex = chapterIndex,
             chapterCount = b.chapterCount,
             blockIndex = blockIdx,
             lastBlockIndex = currentBlocks.lastIndex,
+            isFinalLinearChapter = isFinalLinear,
         )
         db.updateProgress(b.id, chapterIndex, blockIdx, addSeconds = deltaSec, reachedEnd = reachedEnd, event = event)
     }
@@ -875,7 +897,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     // --- TtsPlaybackController.Listener ---
 
     override fun onPlaybackStateChanged(isPlaying: Boolean, isPaused: Boolean, statusText: String) {
-        sessionTracker.onAudioPlayingChanged(isPlaying && !isPaused)
+        val isPreparing = statusText.contains("Підготовка") || statusText.contains("Preparing")
+        sessionTracker.setAudioPlaying(isPlaying && !isPaused && !isPreparing)
         runOnUiThread {
             miniPlayBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
             if (audioSheet.isVisible()) {
@@ -894,6 +917,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     positionMs = posMs,
                     durationMs = durMs,
                     speed = prefs.speechSpeed,
+                    sessionGen = controller.currentSessionGeneration,
                 )
             } else if (isPlaying && isPaused) {
                 ReaderAudioService.refresh(
@@ -1040,6 +1064,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     override fun onChapterFinished(stopForSleepTimer: Boolean) {
+        sessionTracker.setAudioPlaying(false)
         runOnUiThread {
             saveProgress(activeBlockIndex.coerceAtLeast(0), com.holos.reader.tts.ProgressEvent.AUDIO_CHAPTER_COMPLETE)
             val b = book
@@ -1056,6 +1081,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     override fun onError(message: String) {
+        sessionTracker.setAudioPlaying(false)
         runOnUiThread {
             ReaderAudioService.stop(this)
             miniPlayBtn.setImageResource(R.drawable.ic_play)
@@ -1832,7 +1858,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         navBackStack.addLast(chapterIndex to currentAnchorBlock())
         if (navBackStack.size > 30) navBackStack.removeFirst()
         navForwardStack.clear()
-        loadChapter(clamped, scrollToBlock = targetBlock, autoPlay = controller.isPlaying, targetFraction = targetFraction)
+        loadChapter(clamped, scrollToBlock = targetBlock, autoPlay = controller.isPlaying && !controller.isPaused, targetFraction = targetFraction)
     }
 
     private fun jumpToGlobalPage(targetZeroBasedPage: Int) {
@@ -1852,14 +1878,24 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         }
         val chStart = starts[targetCh]
         val chPages = (starts.getOrElse(targetCh + 1) { chStart + 1 } - chStart).coerceAtLeast(1)
-        val fracInCh = ((clamped - chStart).toFloat() / chPages.toFloat()).coerceIn(0f, 1f)
+        val fracInCh = com.holos.reader.tts.ReadingProgressPolicy.chapterFractionForPage(clamped, chStart, chPages)
         if (targetCh == chapterIndex && currentBlocks.isNotEmpty()) {
-            navBackStack.addLast(chapterIndex to currentAnchorBlock())
+            navBackStack.addLast(chapterIndex to viewportBlockIndex.coerceIn(0, currentBlocks.lastIndex))
             if (navBackStack.size > 30) navBackStack.removeFirst()
             navForwardStack.clear()
             val blk = (fracInCh * (currentBlocks.size - 1)).roundToInt().coerceIn(0, currentBlocks.lastIndex)
-            activeBlockIndex = blk
+            viewportBlockIndex = blk
             blocksListView.setSelection(blk)
+            saveProgress(blk, com.holos.reader.tts.ProgressEvent.NAVIGATION)
+            if (controller.isPlaying && !controller.isPaused) {
+                startPlaybackAt(blk)
+            } else {
+                if (controller.isPlaying && controller.isPaused) {
+                    controller.stop()
+                }
+                activeBlockIndex = blk
+                blocksAdapter.notifyDataSetChanged()
+            }
             refreshBookScrubberUi()
         } else {
             navigateWithHistory(targetCh, 0, targetFraction = fracInCh)
@@ -1901,15 +1937,15 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         scrubUndoBtn = UiTheme.iconView(this, R.drawable.ic_undo, padDp = 8, tagName = "scrub_undo") {
             if (navBackStack.isNotEmpty()) {
                 val (prevCh, prevBlk) = navBackStack.removeLast()
-                navForwardStack.addLast(chapterIndex to activeBlockIndex.coerceAtLeast(0))
-                loadChapter(prevCh, scrollToBlock = prevBlk, autoPlay = controller.isPlaying)
+                navForwardStack.addLast(chapterIndex to currentAnchorBlock())
+                loadChapter(prevCh, scrollToBlock = prevBlk, autoPlay = controller.isPlaying && !controller.isPaused)
             }
         }
         scrubRedoBtn = UiTheme.iconView(this, R.drawable.ic_redo, padDp = 8, tagName = "scrub_redo") {
             if (navForwardStack.isNotEmpty()) {
                 val (nextCh, nextBlk) = navForwardStack.removeLast()
                 navBackStack.addLast(chapterIndex to currentAnchorBlock())
-                loadChapter(nextCh, scrollToBlock = nextBlk, autoPlay = controller.isPlaying)
+                loadChapter(nextCh, scrollToBlock = nextBlk, autoPlay = controller.isPlaying && !controller.isPaused)
             }
         }
         val nextBtn = UiTheme.iconView(this, R.drawable.ic_chevron_right, padDp = 8, tagName = "scrub_nav") {
