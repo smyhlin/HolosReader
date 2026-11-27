@@ -365,7 +365,12 @@ object UkrainianTextNormalizer {
         text = RE_DEG_C.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Цельсія" }
         text = RE_DEG_F.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Фаренгейта" }
         text = RE_DEG.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів" }
-        text = RE_PERCENT.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} відсотків" }
+        text = RE_PERCENT.replace(text) { m ->
+            val amount = m.groupValues[1]
+            val magnitude = amount.trimStart('+', '-', '±').toLongOrNull()
+            val unit = magnitude?.let { pluralForm(it, "відсоток", "відсотки", "відсотків") } ?: "відсотків"
+            "${signedNumToWords(amount)} $unit"
+        }
         text = RE_PERMILLE.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} проміле" }
 
         // 10. RPG arrows, HP/MP fractions, multipliers, signed deltas
