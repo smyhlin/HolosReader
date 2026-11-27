@@ -33,4 +33,20 @@ class OnnxAddonCatalogTest {
         assertTrue(OnnxAddonManager.CONTEXTUAL_STRESS_INT8_ONNX_URL.contains("/onnx-addons-v1/uk_stress_contextual_int8.onnx"))
         assertTrue(OnnxAddonManager.VOICE_ENCODER_ONNX_URL.contains("/onnx-addons-v1/voice_encoder.onnx"))
     }
+    @Test
+    fun contextualDiagnosticsUsesInstalledPrecisionFromTheDownloadRecord() {
+        val dir = kotlin.io.path.createTempDirectory("holos-addon").toFile()
+        try {
+            val file = java.io.File(dir, "uk_stress_contextual.onnx").apply { writeText("downloaded") }
+            ModelIntegrityChecker.recordVerifiedFile(dir, file.name, file, OnnxAddonManager.CONTEXTUAL_STRESS_INT8_ONNX_URL, "int8")
+            file.writeText("damaged")
+            assertEquals(false, OnnxAddonManager.installedContextualPrecision(dir))
+
+            ModelIntegrityChecker.recordVerifiedFile(dir, file.name, file, OnnxAddonManager.CONTEXTUAL_STRESS_FP16_ONNX_URL, "fp16")
+            assertEquals(true, OnnxAddonManager.installedContextualPrecision(dir))
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
 }
