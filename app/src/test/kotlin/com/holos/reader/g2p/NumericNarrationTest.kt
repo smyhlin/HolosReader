@@ -1,5 +1,6 @@
 package com.holos.reader.g2p
 
+import com.holos.reader.tts.SupertonicLanguageSplitter
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -74,7 +75,6 @@ class NumericNarrationTest {
         check("1/2", "один на два")
     }
 
-
     @Test
     fun spellsNamedDatesIsoDatesYearPhrasesAndOrdinalsViaUaNumericEngine() {
         check("9 червня 2077 року", "дев'ятого червня дві тисячі сімдесят сьомого року")
@@ -86,6 +86,58 @@ class NumericNarrationTest {
         check("з 1999 року", "з тисяча дев'ятсот дев'яносто дев'ятого року")
         check("1-й, 2-га, 3-тє, 2000-го", "перший, друга, третє, двохтисячного")
         check("1 000 000 000 000", "трильйон")
+    }
+
+    @Test
+    fun readsDateSuffixesAndPreservesSentencePunctuation() {
+        val date = "дев'ятого червня дві тисячі сімдесят сьомого року"
+        check("Запис від 09.06.2077 року.", "Запис від $date.")
+        check("Запис від 2077-06-09 р.", "Запис від $date.")
+        check("9 червня 2077 р. Він повернувся.", "$date. Він повернувся.")
+        check("9 червня 2077 р. він повернувся.", "$date він повернувся.")
+        check("9 червня 2077 р., потім виїхав.", "$date, потім виїхав.")
+        check("9 че́рвня 2077 ро́ку", date)
+        check("Це сталося 1.01.0999 року.", "Це сталося першого січня дев'ятсот дев'яносто дев'ятого року.")
+    }
+
+    @Test
+    fun expandsExplicitYearEndingsAndAbbreviationsInContext() {
+        val whenYear = "У дві тисячі сімдесят сьомому році"
+        check("У 2077 р. він повернувся.", "$whenYear він повернувся.")
+        check("У 2077‑му році.", "$whenYear.")
+        check("У 2077 ро́ці", whenYear)
+        check("Від 2077-го року.", "Від дві тисячі сімдесят сьомого року.")
+    }
+
+    @Test
+    fun speaksSignedLongLimitsAndDigitsBeyondThem() {
+        check(
+            "−9223372036854775808",
+            "мінус дев'ять квінтильйонів двісті двадцять три квадрильйони триста сімдесят два трильйони " +
+                "тридцять шість мільярдів вісімсот п'ятдесят чотири мільйони сімсот сімдесят п'ять тисяч вісімсот вісім",
+        )
+        check("+99999999999999999999", "плюс " + List(20) { "дев'ять" }.joinToString(" "))
+        check("1 001", "одна тисяча один")
+        check("1 001 001", "один мільйон одна тисяча один")
+    }
+
+    @Test
+    fun inflectsLargerStarRatingsInRunningText() {
+        check("Ранг ★★★☆☆☆☆☆☆☆☆", "Ранг три з одинадцяти зірок")
+    }
+
+    @Test
+    fun recognizesUkrainianCalendarPhrasesBeforeRoutingMixedLanguage() {
+        val text = SupertonicLanguageSplitter.prepareParagraph("Вийшло оновлення Shadow Step 09.06.2077 року.")
+        val spans = SupertonicLanguageSplitter.split(text, true)
+
+        assertEquals(SupertonicLanguageSplitter.LanguageSpan("Shadow Step", "en"), spans[1])
+        assertEquals(
+            SupertonicLanguageSplitter.LanguageSpan("дев'ятого червня дві тисячі сімдесят сьомого року.", "uk"),
+            spans[2],
+        )
+        val english = "Shadow Step launched on 2077-06-09."
+        assertEquals(english, SupertonicLanguageSplitter.prepareParagraph(english))
     }
 
     private fun check(input: String, expected: String) {

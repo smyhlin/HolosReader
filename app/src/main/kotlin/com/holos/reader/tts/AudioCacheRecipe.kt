@@ -100,7 +100,8 @@ data class AudioCacheRecipe(
     companion object {
         // v3 could key a render using a different generation's globally loaded model.
         // v4 rendered every percentage with the same noun form.
-        const val CURRENT_RECIPE_VERSION = 5
+        // v5 predates the Ukrainian calendar and cardinal narration changes.
+        const val CURRENT_RECIPE_VERSION = 6
         private const val HEX = "0123456789abcdef"
 
         fun resolve(

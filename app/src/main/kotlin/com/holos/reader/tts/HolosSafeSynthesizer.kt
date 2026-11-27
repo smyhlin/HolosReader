@@ -89,7 +89,7 @@ object HolosSafeSynthesizer {
         if (rawClean.isEmpty()) return
 
         val sentences = if (englishPronunciation) {
-            SentenceSplitter.split(rawClean, maxChars = 240)
+            SentenceSplitter.split(SupertonicLanguageSplitter.prepareParagraph(rawClean), maxChars = 240)
         } else {
             val normalized = UkrainianTextNormalizer.normalize(rawClean, ensureTerminalPunctuation = true)
             if (normalized.isBlank()) return

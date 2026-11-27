@@ -1,5 +1,7 @@
 package com.holos.reader.tts
 
+import com.holos.reader.g2p.UkrainianTextNormalizer
+
 /**
  * Extendable multilingual span router for Supertonic 3.
  *
@@ -22,6 +24,9 @@ object SupertonicLanguageSplitter {
         "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X",
         "XI", "XII", "XIII", "XIV", "XV", "XX",
     )
+
+    internal fun prepareParagraph(text: String): String =
+        if (CYRILLIC_CHAR_RE.containsMatchIn(text)) UkrainianTextNormalizer.normalizeCalendarPhrases(text) else text
 
     fun split(text: String, englishPronunciationEnabled: Boolean): List<LanguageSpan> {
         val clean = text.trim()

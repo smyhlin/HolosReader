@@ -1,11 +1,13 @@
 package com.holos.reader.g2p
 
 import java.text.Normalizer
+import ua.numeric.CalendarWords
 import ua.numeric.Case
 import ua.numeric.Gender
 import ua.numeric.NumberForm
+import ua.numeric.Quantity
 import ua.numeric.UaNumericEngine
-import ua.numeric.YearForm
+import ua.numeric.quantity
 
 /**
  * Production Ukrainian Book / Light Novel / LitRPG Text Normalizer & Symbol Verbalizer
@@ -36,15 +38,6 @@ object UkrainianTextNormalizer {
     private val RE_RUN_STARS = Regex("[★⭐✪✦]{2,}")
     private val RE_NUM_STARS = Regex("(?<!\\d)(\\d+)\\s*[★⭐✪✦]")
 
-    private val RE_DATE_FULL = Regex("""(?<![\d/])(\d{1,2})([./])(\d{1,2})\2(\d{4})(?![\d/])""")
-    private val RE_DATE_ISO = Regex("""(?<![\d-])(\d{4})-(\d{2})-(\d{2})(?![\d-])""")
-    private val RE_DATE_NAMED = Regex(
-        """(?iu)(?<!\d)(\d{1,2})\s+(січня|лютого|березня|квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня)\s+(\d{4})(?:\s+(?:року|р\.))?(?![\p{L}\d])"""
-    )
-    private val RE_YEAR_PHRASE = Regex(
-        """(?iu)(?<![\p{L}\d])(?:(у|в|з|із|зі|до|від)\s+)?(\d{4})(?:-(й))?\s+(рік|року|році)(?![\p{L}\d])"""
-    )
-    private val RE_YEAR_ABBR = Regex("""(?iu)(?<!\d)(\d{4})\s*р\.(?=\s|$|[,;!?])""")
     private val RE_SPACE_GROUPED = Regex("""(?<![\d.,])([1-9]\d{0,2})(?: \d{3})+(?!\d)""")
     private val RE_COMMA_GROUPED = Regex("""(?<![\d.,])([1-9]\d{0,2})(,\d{3})+(?!\d|,\d)""")
     private val RE_CYRILLIC = Regex("""\p{IsCyrillic}""")
@@ -123,11 +116,12 @@ object UkrainianTextNormalizer {
         fun form(value: Long): String = pluralForm(value, one, few, many)
 
         fun count(value: Long): String {
-            val words = numberToWords(value, feminine)
-            val numeral = if (neuter && form(value) == one && words.endsWith("один")) {
-                words.removeSuffix("один") + "одне"
-            } else words
-            return "$numeral ${form(value)}"
+            val gender = when {
+                neuter -> Gender.NEUTER
+                feminine -> Gender.FEMININE
+                else -> Gender.MASCULINE
+            }
+            return "${cardinalToWords(value, gender)} ${form(value)}"
         }
     }
 
@@ -353,11 +347,7 @@ object UkrainianTextNormalizer {
         text = RE_MIXED_STARS.replace(text) { m ->
             val filled = m.groupValues[1].length.toLong()
             val total = (m.groupValues[1].length + m.groupValues[2].length).toLong()
-            val totalGen = when (total.toInt()) {
-                1 -> "однієї"; 2 -> "двох"; 3 -> "трьох"; 4 -> "чотирьох"; 5 -> "п'яти"
-                6 -> "шести"; 7 -> "семи"; 8 -> "восьми"; 9 -> "дев'яти"; 10 -> "десяти"
-                else -> numberToWords(total)
-            }
+            val totalGen = UaNumericEngine.cardinal(total, Case.GENITIVE, Gender.FEMININE).toNormalizerApostrophe()
             " ${numberToWords(filled, feminine = true)} з $totalGen ${pluralForm(total, "зірки", "зірок", "зірок")} "
         }
         text = RE_NUM_STARS.replace(text) { m ->
@@ -369,25 +359,8 @@ object UkrainianTextNormalizer {
             " ${numberToWords(n, feminine = true)} ${pluralForm(n, "зірка", "зірки", "зірок")} "
         }
 
-        // 4. Full dates (DD.MM.YYYY, DD/MM/YYYY, YYYY-MM-DD, named dates) & calendar year phrases via UaNumericEngine
-        text = RE_DATE_NAMED.replace(text) { m ->
-            UaNumericEngine.dateOrNull(m.value)?.toNormalizerApostrophe() ?: m.value
-        }
-        text = RE_DATE_ISO.replace(text) { m ->
-            UaNumericEngine.dateOrNull(m.value)?.toNormalizerApostrophe() ?: m.value
-        }
-        text = RE_DATE_FULL.replace(text) { m ->
-            UaNumericEngine.dateOrNull(m.value)?.toNormalizerApostrophe() ?: m.value
-        }
-        text = RE_YEAR_PHRASE.replace(text) { m ->
-            UaNumericEngine.yearOrNull(m.value)?.toNormalizerApostrophe() ?: m.value
-        }
-        text = RE_YEAR_ABBR.replace(text) { m ->
-            val year = m.groupValues[1].toIntOrNull()
-            if (year != null && year in 1000..9999) {
-                UaNumericEngine.year(year, YearForm.GENITIVE).toNormalizerApostrophe()
-            } else m.value
-        }
+        // 4. Full dates and calendar year phrases.
+        text = normalizeCalendarPhrases(text)
 
         // 5. Roman numerals (Latin & Cyrillic І/ІІ/ІІІ) after nouns + standalone II/III/IV..XX + Latin I
         text = RE_CHAPTER_ROMAN.replace(text) { m ->
@@ -450,15 +423,13 @@ object UkrainianTextNormalizer {
         // 10. RPG arrows, HP/MP fractions, multipliers, signed deltas
         text = RE_ARROW_TRANSITION.replace(text, " переходить у ")
         text = RE_FRACTION.replace(text) { m ->
-            val a = m.groupValues[1].toLongOrNull() ?: 0L
-            val b = m.groupValues[2].toLongOrNull() ?: 0L
-            "${numberToWords(a)} на ${numberToWords(b)}"
+            "${integerToWords(m.groupValues[1])} на ${integerToWords(m.groupValues[2])}"
         }
         text = RE_MULT_PREFIX.replace(text) { m -> "на ${numOrDecimalToWords(m.groupValues[1])}" }
         text = RE_MULT_SUFFIX.replace(text) { m -> "${numOrDecimalToWords(m.groupValues[1])} ікс" }
         text = RE_PLUS_MINUS.replace(text) { m -> "плюс-мінус ${numOrDecimalToWords(m.groupValues[1])}" }
         text = RE_POS_DELTA.replace(text) { m -> "плюс ${numOrDecimalToWords(m.groupValues[1])}" }
-        text = RE_NEG_DELTA.replace(text) { m -> "мінус ${numOrDecimalToWords(m.groupValues[1])}" }
+        text = RE_NEG_DELTA.replace(text) { m -> signedNumToWords(m.value) }
 
         // 11. Abbreviations (Ukrainian + LitRPG)
         for ((re, repl) in ABBREVIATIONS) {
@@ -466,19 +437,14 @@ object UkrainianTextNormalizer {
         }
 
         // 12. Hash numbers (#12 -> номер дванадцять), ranges, decimals, remaining integers
-        text = RE_HASH_NUM.replace(text) { m -> "номер ${numberToWords(m.groupValues[1].toLongOrNull() ?: 0L)}" }
+        text = RE_HASH_NUM.replace(text) { m -> "номер ${integerToWords(m.groupValues[1])}" }
         text = RE_RANGE.replace(text) { m ->
             val a = m.groupValues[1].toLongOrNull()
             val b = m.groupValues[2].toLongOrNull()
             if (a != null && b != null) "${numberToWords(a)} — ${numberToWords(b)}" else m.value
         }
         text = RE_DECIMAL.replace(text) { m -> decimalToWords("${m.groupValues[1]},${m.groupValues[2]}") }
-        text = RE_INT.replace(text) { m ->
-            val rawNum = m.value
-            val parsed = rawNum.toLongOrNull()
-            if (parsed == null) rawNum.map { digitToWord(it) }.joinToString(" ")
-            else numberToWords(parsed)
-        }
+        text = RE_INT.replace(text) { integerToWords(it.value) }
 
         // 13. Popular novel / status symbols -> Ukrainian words
         for ((sym, word) in SYMBOL_WORDS) {
@@ -521,12 +487,13 @@ object UkrainianTextNormalizer {
     private fun signedNumToWords(s: String): String = when {
         s.startsWith("±") -> "плюс-мінус ${numOrDecimalToWords(s.substring(1))}"
         s.startsWith("+") -> "плюс ${numOrDecimalToWords(s.substring(1))}"
-        s.startsWith("-") -> "мінус ${numOrDecimalToWords(s.substring(1))}"
+        s.startsWith("-") -> s.toLongOrNull()?.takeIf { it == Long.MIN_VALUE }?.let { numberToWords(it) }
+            ?: "мінус ${numOrDecimalToWords(s.substring(1))}"
         else -> numOrDecimalToWords(s)
     }
 
     private fun numOrDecimalToWords(s: String): String =
-        if ('.' in s || ',' in s) decimalToWords(s) else numberToWords(s.toLongOrNull() ?: 0L)
+        if ('.' in s || ',' in s) decimalToWords(s) else integerToWords(s)
 
     private fun currencyToWords(numStr: String, sym: String): String {
         val isDec = '.' in numStr || ',' in numStr
@@ -547,6 +514,9 @@ object UkrainianTextNormalizer {
     }
 
     private fun String.toNormalizerApostrophe(): String = replace('’', '\'')
+
+    internal fun normalizeCalendarPhrases(text: String): String =
+        CalendarWords.replaceInText(text) { it.toNormalizerApostrophe() }
 
     private fun ordinalToWords(n: Int, suf: String): String? {
         if (n < 0 || n > 999_999) return null
@@ -605,61 +575,24 @@ object UkrainianTextNormalizer {
         else -> ""
     }
 
-    fun numberToWords(n: Long, feminine: Boolean = false): String {
-        if (n == 0L) return "нуль"
-        if (n == Long.MIN_VALUE || n >= 1_000_000_000_000L) {
-            val gender = if (feminine) Gender.FEMININE else Gender.MASCULINE
-            return UaNumericEngine.cardinal(n, gender = gender).toNormalizerApostrophe()
-        }
-        if (n < 0L) return "мінус ${numberToWords(-n, feminine)}"
-        val parts = mutableListOf<String>()
-        var rem = n
-        val billions = rem / 1_000_000_000L
-        if (billions > 0) {
-            parts.add(tripletToWords(billions.toInt(), false))
-            parts.add(pluralForm(billions, "мільярд", "мільярди", "мільярдів"))
-            rem %= 1_000_000_000L
-        }
-        val millions = rem / 1_000_000L
-        if (millions > 0) {
-            parts.add(tripletToWords(millions.toInt(), false))
-            parts.add(pluralForm(millions, "мільйон", "мільйони", "мільйонів"))
-            rem %= 1_000_000L
-        }
-        val thousands = rem / 1_000L
-        if (thousands > 0) {
-            parts.add(tripletToWords(thousands.toInt(), true))
-            parts.add(pluralForm(thousands, "тисяча", "тисячі", "тисяч"))
-            rem %= 1_000L
-        }
-        if (rem > 0) parts.add(tripletToWords(rem.toInt(), feminine))
-        return parts.joinToString(" ")
-    }
+    private fun integerToWords(digits: String): String =
+        digits.toLongOrNull()?.let { numberToWords(it) } ?: digits.map(::digitToWord).joinToString(" ")
 
-    private fun tripletToWords(n: Int, feminine: Boolean): String {
-        val hundreds = arrayOf("", "сто", "двісті", "триста", "чотириста", "п'ятсот", "шістсот", "сімсот", "вісімсот", "дев'ятсот")
-        val tens = arrayOf("", "", "двадцять", "тридцять", "сорок", "п'ятдесят", "шістдесят", "сімдесят", "вісімдесят", "дев'яносто")
-        val teens = arrayOf("десять", "одинадцять", "дванадцять", "тринадцять", "чотирнадцять", "п'ятнадцять", "шістнадцять", "сімнадцять", "вісімнадцять", "дев'ятнадцять")
-        val unitsM = arrayOf("", "один", "два", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять")
-        val unitsF = arrayOf("", "одна", "дві", "три", "чотири", "п'ять", "шість", "сім", "вісім", "дев'ять")
-        val out = mutableListOf<String>()
-        val h = n / 100; val t = (n % 100) / 10; val u = n % 10
-        if (h > 0) out.add(hundreds[h])
-        if (t == 1) out.add(teens[u]) else {
-            if (t >= 2) out.add(tens[t])
-            if (u > 0) out.add(if (feminine) unitsF[u] else unitsM[u])
-        }
-        return out.joinToString(" ")
-    }
+    fun numberToWords(n: Long, feminine: Boolean = false): String =
+        cardinalToWords(n, if (feminine) Gender.FEMININE else Gender.MASCULINE)
 
-    private fun pluralForm(n: Long, one: String, few: String, many: String): String {
-        val mod100 = (n % 100).toInt(); val mod10 = (n % 10).toInt()
-        return when {
-            mod100 in 11..19 -> many
-            mod10 == 1 -> one
-            mod10 in 2..4 -> few
-            else -> many
-        }
+    private fun cardinalToWords(n: Long, gender: Gender): String =
+        UaNumericEngine.cardinal(
+            n,
+            gender = gender,
+            // Keep the reader's established treatment of thousands, millions and billions.
+            explicitScaleOnes = n in -999_999_999_999L..999_999_999_999L,
+        ).toNormalizerApostrophe()
+
+    private fun pluralForm(n: Long, one: String, few: String, many: String): String = when (quantity(n)) {
+        Quantity.ONE -> one
+        Quantity.FEW -> few
+        Quantity.MANY -> many
     }
 
     private fun transliterateLatin(word: String): String {

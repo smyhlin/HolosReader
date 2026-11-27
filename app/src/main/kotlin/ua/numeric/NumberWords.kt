@@ -25,13 +25,20 @@ internal fun List<String>.render(value: Long, stress: Boolean): String {
 }
 
 internal object NumberWords {
-    fun cardinal(value: Long, case: Case, gender: Gender, animacy: Animacy, variant: Variant): List<String> {
+    fun cardinal(
+        value: Long,
+        case: Case,
+        gender: Gender,
+        animacy: Animacy,
+        variant: Variant,
+        explicitScaleOnes: Boolean = false,
+    ): List<String> {
         if (value == 0L) return listOf(cardinalWord(0, case, gender, Animacy.INANIMATE, variant))
 
         return buildList {
             for ((triplet, scale) in groups(value)) {
                 if (scale > 0) {
-                    addAll(scaleWords(triplet, scale, case, variant))
+                    addAll(scaleWords(triplet, scale, case, variant, explicitScaleOnes))
                     continue
                 }
                 val atoms = atoms(triplet)
@@ -74,7 +81,13 @@ internal object NumberWords {
         }
     }
 
-    private fun scaleWords(value: Int, scale: Int, case: Case, variant: Variant): List<String> {
+    private fun scaleWords(
+        value: Int,
+        scale: Int,
+        case: Case,
+        variant: Variant,
+        explicitScaleOnes: Boolean = false,
+    ): List<String> {
         val scaleValue = scaleValues[scale]
         val gender = if (scale == 1) Gender.FEMININE else Gender.MASCULINE
         val forms = scaleLexicon.getValue(scaleValue)
@@ -86,7 +99,7 @@ internal object NumberWords {
                 forms.plural[nounCase, variant]
             }
         }
-        if (value == 1) return listOf(noun)
+        if (value == 1 && !explicitScaleOnes) return listOf(noun)
         return atoms(value).map { cardinalWord(it, case, gender, Animacy.INANIMATE, variant) } + noun
     }
 

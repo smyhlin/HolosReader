@@ -4,7 +4,7 @@ import java.math.BigDecimal
 
 /** Ukrainian numeric spell-out for explicit grammatical contexts. */
 object UaNumericEngine {
-    /** Spells a signed integer, inflecting every cardinal component for the requested case. */
+    /** Spells a signed integer. Pass explicitScaleOnes to say одна тисяча instead of тисяча. */
     fun cardinal(
         value: Long,
         case: Case = Case.NOMINATIVE,
@@ -12,7 +12,8 @@ object UaNumericEngine {
         animacy: Animacy = Animacy.INANIMATE,
         variant: Variant = Variant.PRIMARY,
         stress: Boolean = false,
-    ): String = NumberWords.cardinal(value, case, gender, animacy, variant).render(value, stress)
+        explicitScaleOnes: Boolean = false,
+    ): String = NumberWords.cardinal(value, case, gender, animacy, variant, explicitScaleOnes).render(value, stress)
 
     /** Spells a signed ordinal, inflecting its final component. */
     fun ordinal(
