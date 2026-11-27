@@ -74,6 +74,20 @@ class NumericNarrationTest {
         check("1/2", "один на два")
     }
 
+
+    @Test
+    fun spellsNamedDatesIsoDatesYearPhrasesAndOrdinalsViaUaNumericEngine() {
+        check("9 червня 2077 року", "дев'ятого червня дві тисячі сімдесят сьомого року")
+        check("9 червня 2077", "дев'ятого червня дві тисячі сімдесят сьомого року")
+        check("2077-06-09", "дев'ятого червня дві тисячі сімдесят сьомого року")
+        check("у 2077 році", "у дві тисячі сімдесят сьомому році")
+        check("2077-й рік", "дві тисячі сімдесят сьомий рік")
+        check("2001 року", "дві тисячі першого року")
+        check("з 1999 року", "з тисяча дев'ятсот дев'яносто дев'ятого року")
+        check("1-й, 2-га, 3-тє, 2000-го", "перший, друга, третє, двохтисячного")
+        check("1 000 000 000 000", "трильйон")
+    }
+
     private fun check(input: String, expected: String) {
         assertEquals(input, expected, UkrainianTextNormalizer.normalize(input))
     }

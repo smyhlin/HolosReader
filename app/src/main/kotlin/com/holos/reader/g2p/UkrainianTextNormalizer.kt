@@ -1,6 +1,11 @@
 package com.holos.reader.g2p
 
 import java.text.Normalizer
+import ua.numeric.Case
+import ua.numeric.Gender
+import ua.numeric.NumberForm
+import ua.numeric.UaNumericEngine
+import ua.numeric.YearForm
 
 /**
  * Production Ukrainian Book / Light Novel / LitRPG Text Normalizer & Symbol Verbalizer
@@ -32,6 +37,14 @@ object UkrainianTextNormalizer {
     private val RE_NUM_STARS = Regex("(?<!\\d)(\\d+)\\s*[★⭐✪✦]")
 
     private val RE_DATE_FULL = Regex("""(?<![\d/])(\d{1,2})([./])(\d{1,2})\2(\d{4})(?![\d/])""")
+    private val RE_DATE_ISO = Regex("""(?<![\d-])(\d{4})-(\d{2})-(\d{2})(?![\d-])""")
+    private val RE_DATE_NAMED = Regex(
+        """(?iu)(?<!\d)(\d{1,2})\s+(січня|лютого|березня|квітня|травня|червня|липня|серпня|вересня|жовтня|листопада|грудня)\s+(\d{4})(?:\s+(?:року|р\.))?(?![\p{L}\d])"""
+    )
+    private val RE_YEAR_PHRASE = Regex(
+        """(?iu)(?<![\p{L}\d])(?:(у|в|з|із|зі|до|від)\s+)?(\d{4})(?:-(й))?\s+(рік|року|році)(?![\p{L}\d])"""
+    )
+    private val RE_YEAR_ABBR = Regex("""(?iu)(?<!\d)(\d{4})\s*р\.(?=\s|$|[,;!?])""")
     private val RE_SPACE_GROUPED = Regex("""(?<![\d.,])([1-9]\d{0,2})(?: \d{3})+(?!\d)""")
     private val RE_COMMA_GROUPED = Regex("""(?<![\d.,])([1-9]\d{0,2})(,\d{3})+(?!\d|,\d)""")
     private val RE_CYRILLIC = Regex("""\p{IsCyrillic}""")
@@ -356,16 +369,23 @@ object UkrainianTextNormalizer {
             " ${numberToWords(n, feminine = true)} ${pluralForm(n, "зірка", "зірки", "зірок")} "
         }
 
-        // 4. Full dates DD.MM.YYYY (e.g. 22.08.2025 -> двадцять другого серпня дві тисячі двадцять п'ятого року)
+        // 4. Full dates (DD.MM.YYYY, DD/MM/YYYY, YYYY-MM-DD, named dates) & calendar year phrases via UaNumericEngine
+        text = RE_DATE_NAMED.replace(text) { m ->
+            UaNumericEngine.dateOrNull(m.value)?.toNormalizerApostrophe() ?: m.value
+        }
+        text = RE_DATE_ISO.replace(text) { m ->
+            UaNumericEngine.dateOrNull(m.value)?.toNormalizerApostrophe() ?: m.value
+        }
         text = RE_DATE_FULL.replace(text) { m ->
-            val day = m.groupValues[1].toInt()
-            val month = m.groupValues[3].toInt()
-            val year = m.groupValues[4].toInt()
-            val maxDay = if (month in 1..12 && year > 0) {
-                java.time.YearMonth.of(year, month).lengthOfMonth()
-            } else 0
-            if (day in 1..maxDay) {
-                "${dayGenitive(day)} ${MONTHS_GEN[month - 1]} ${yearGenitive(year)} року"
+            UaNumericEngine.dateOrNull(m.value)?.toNormalizerApostrophe() ?: m.value
+        }
+        text = RE_YEAR_PHRASE.replace(text) { m ->
+            UaNumericEngine.yearOrNull(m.value)?.toNormalizerApostrophe() ?: m.value
+        }
+        text = RE_YEAR_ABBR.replace(text) { m ->
+            val year = m.groupValues[1].toIntOrNull()
+            if (year != null && year in 1000..9999) {
+                UaNumericEngine.year(year, YearForm.GENITIVE).toNormalizerApostrophe()
             } else m.value
         }
 
@@ -455,8 +475,9 @@ object UkrainianTextNormalizer {
         text = RE_DECIMAL.replace(text) { m -> decimalToWords("${m.groupValues[1]},${m.groupValues[2]}") }
         text = RE_INT.replace(text) { m ->
             val rawNum = m.value
-            if (rawNum.length > 12) rawNum.map { digitToWord(it) }.joinToString(" ")
-            else numberToWords(rawNum.toLongOrNull() ?: 0L)
+            val parsed = rawNum.toLongOrNull()
+            if (parsed == null) rawNum.map { digitToWord(it) }.joinToString(" ")
+            else numberToWords(parsed)
         }
 
         // 13. Popular novel / status symbols -> Ukrainian words
@@ -525,118 +546,26 @@ object UkrainianTextNormalizer {
         return "$spokenNum $unit"
     }
 
-    private val MONTHS_GEN = arrayOf(
-        "січня", "лютого", "березня", "квітня", "травня", "червня",
-        "липня", "серпня", "вересня", "жовтня", "листопада", "грудня"
-    )
-
-    private val DAYS_GEN = arrayOf(
-        "", "першого", "другого", "третього", "четвертого", "п'ятого",
-        "шостого", "сьомого", "восьмого", "дев'ятого", "десятого",
-        "одинадцятого", "дванадцятого", "тринадцятого", "чотирнадцятого", "п'ятнадцятого",
-        "шістнадцятого", "сімнадцятого", "вісімнадцятого", "дев'ятнадцятого", "двадцятого",
-        "двадцять першого", "двадцять другого", "двадцять третього", "двадцять четвертого", "двадцять п'ятого",
-        "двадцять шостого", "двадцять сьомого", "двадцять восьмого", "двадцять дев'ятого", "тридцятого",
-        "тридцять першого"
-    )
-
-    private fun dayGenitive(day: Int): String = DAYS_GEN.getOrElse(day) { numberToWords(day.toLong()) }
-
-    private fun yearGenitive(year: Int): String =
-        ordinalToWords(year, "го") ?: numberToWords(year.toLong())
+    private fun String.toNormalizerApostrophe(): String = replace('’', '\'')
 
     private fun ordinalToWords(n: Int, suf: String): String? {
         if (n < 0 || n > 999_999) return null
-        val slot = when (suf) {
-            "й", "ий", "ій", "тий", "тій", "ший", "гий" -> "NOM_M"
-            "а", "ша", "га", "тя", "та", "я" -> "NOM_F"
-            "е", "є", "тє", "те", "ше", "ге" -> "NOM_N"
-            "і", "ті", "ші", "гі" -> "NOM_PL"
-            "го", "ого", "ього", "того", "шого" -> "GEN_M"
-            "ї", "ої", "ьої", "тої", "тьої", "шої" -> "GEN_F"
-            "му", "ому", "ьому", "тому", "шому" -> "DAT_M"
-            "у", "ю", "ту", "тю", "шу", "гу" -> "ACC_F"
-            "м", "им", "ім", "тим", "тім", "шим", "гим" -> "INS_M"
-            "ою", "ьою", "тою", "тьою", "шою" -> "INS_F"
-            "х", "их", "іх", "тих", "тіх", "ших", "гих" -> "GEN_PL"
-            "ми", "ими", "іми", "тими", "тіми", "шими" -> "INS_PL"
+        val (case, gender, number) = when (suf) {
+            "й", "ий", "ій", "тий", "тій", "ший", "гий" -> Triple(Case.NOMINATIVE, Gender.MASCULINE, NumberForm.SINGULAR)
+            "а", "ша", "га", "тя", "та", "я" -> Triple(Case.NOMINATIVE, Gender.FEMININE, NumberForm.SINGULAR)
+            "е", "є", "тє", "те", "ше", "ге" -> Triple(Case.NOMINATIVE, Gender.NEUTER, NumberForm.SINGULAR)
+            "і", "ті", "ші", "гі" -> Triple(Case.NOMINATIVE, Gender.MASCULINE, NumberForm.PLURAL)
+            "го", "ого", "ього", "того", "шого" -> Triple(Case.GENITIVE, Gender.MASCULINE, NumberForm.SINGULAR)
+            "ї", "ої", "ьої", "тої", "тьої", "шої" -> Triple(Case.GENITIVE, Gender.FEMININE, NumberForm.SINGULAR)
+            "му", "ому", "ьому", "тому", "шому" -> Triple(Case.DATIVE, Gender.MASCULINE, NumberForm.SINGULAR)
+            "у", "ю", "ту", "тю", "шу", "гу" -> Triple(Case.ACCUSATIVE, Gender.FEMININE, NumberForm.SINGULAR)
+            "м", "им", "ім", "тим", "тім", "шим", "гим" -> Triple(Case.INSTRUMENTAL, Gender.MASCULINE, NumberForm.SINGULAR)
+            "ою", "ьою", "тою", "тьою", "шою" -> Triple(Case.INSTRUMENTAL, Gender.FEMININE, NumberForm.SINGULAR)
+            "х", "их", "іх", "тих", "тіх", "ших", "гих" -> Triple(Case.GENITIVE, Gender.MASCULINE, NumberForm.PLURAL)
+            "ми", "ими", "іми", "тими", "тіми", "шими" -> Triple(Case.INSTRUMENTAL, Gender.MASCULINE, NumberForm.PLURAL)
             else -> return null
         }
-
-        fun declineStem(stem: String, soft: Boolean): String = stem + when (slot) {
-            "NOM_M" -> if (soft) "ій" else "ий"
-            "NOM_F" -> if (soft) "я" else "а"
-            "NOM_N" -> if (soft) "є" else "е"
-            "NOM_PL" -> "і"
-            "GEN_M" -> if (soft) "ього" else "ого"
-            "GEN_F" -> if (soft) "ьої" else "ої"
-            "DAT_M" -> if (soft) "ьому" else "ому"
-            "ACC_F" -> if (soft) "ю" else "у"
-            "INS_M" -> if (soft) "ім" else "им"
-            "INS_F" -> if (soft) "ьою" else "ою"
-            "GEN_PL" -> if (soft) "іх" else "их"
-            "INS_PL" -> if (soft) "іми" else "ими"
-            else -> "ий"
-        }
-
-        if (n == 0) return declineStem("нульов", soft = false)
-
-        val unitStems = mapOf(
-            1 to "перш", 2 to "друг", 3 to "трет", 4 to "четверт", 5 to "п'ят",
-            6 to "шост", 7 to "сьом", 8 to "восьм", 9 to "дев'ят", 10 to "десят",
-            11 to "одинадцят", 12 to "дванадцят", 13 to "тринадцят", 14 to "чотирнадцят",
-            15 to "п'ятнадцят", 16 to "шістнадцят", 17 to "сімнадцят", 18 to "вісімнадцят",
-            19 to "дев'ятнадцят"
-        )
-        val tenStems = mapOf(
-            20 to "двадцят", 30 to "тридцят", 40 to "сороков", 50 to "п'ятдесят",
-            60 to "шістдесят", 70 to "сімдесят", 80 to "вісімдесят", 90 to "дев'яност"
-        )
-        val hundredStems = mapOf(
-            100 to "сот", 200 to "двохсот", 300 to "трьохсот", 400 to "чотирьохсот",
-            500 to "п'ятисот", 600 to "шестисот", 700 to "семисот", 800 to "восьмисот",
-            900 to "дев'ятисот"
-        )
-
-        // Exact thousands (e.g., 1000-го -> тисячного, 2000-го -> двохтисячного)
-        if (n % 1000 == 0) {
-            val th = n / 1000
-            val thPrefix = when (th) {
-                1 -> ""
-                2 -> "двох"
-                3 -> "трьох"
-                4 -> "чотирьох"
-                5 -> "п'яти"
-                6 -> "шести"
-                7 -> "семи"
-                8 -> "восьми"
-                9 -> "дев'яти"
-                10 -> "десяти"
-                else -> "${numberToWords(th.toLong())} "
-            }
-            return thPrefix + declineStem("тисячн", soft = false)
-        }
-
-        // Exact hundreds (e.g., 100-го -> сотого, 1200-го -> тисяча двохсотого)
-        if (n % 100 == 0) {
-            val head = n - (n % 1000)
-            val hStem = hundredStems[n % 1000] ?: return null
-            val tail = declineStem(hStem, soft = false)
-            return if (head > 0) "${numberToWords(head.toLong())} $tail" else tail
-        }
-
-        val rem100 = n % 100
-        val head100 = n - rem100
-        val tailWord = when {
-            rem100 in 1..19 -> declineStem(unitStems[rem100]!!, soft = rem100 == 3)
-            rem100 % 10 == 0 -> declineStem(tenStems[rem100]!!, soft = false)
-            else -> {
-                val tens = (rem100 / 10) * 10
-                val unit = rem100 % 10
-                "${numberToWords(tens.toLong())} ${declineStem(unitStems[unit]!!, soft = unit == 3)}"
-            }
-        }
-        return if (head100 > 0) "${numberToWords(head100.toLong())} $tailWord" else tailWord
+        return UaNumericEngine.ordinal(n.toLong(), case, gender, number).toNormalizerApostrophe()
     }
 
     private fun parseRoman(s: String): Int? {
@@ -678,9 +607,11 @@ object UkrainianTextNormalizer {
 
     fun numberToWords(n: Long, feminine: Boolean = false): String {
         if (n == 0L) return "нуль"
-        if (n == Long.MIN_VALUE) return "мінус " + "9223372036854775808".map { digitToWord(it) }.joinToString(" ")
+        if (n == Long.MIN_VALUE || n >= 1_000_000_000_000L) {
+            val gender = if (feminine) Gender.FEMININE else Gender.MASCULINE
+            return UaNumericEngine.cardinal(n, gender = gender).toNormalizerApostrophe()
+        }
         if (n < 0L) return "мінус ${numberToWords(-n, feminine)}"
-        if (n >= 1_000_000_000_000L) return n.toString().map { digitToWord(it) }.joinToString(" ")
         val parts = mutableListOf<String>()
         var rem = n
         val billions = rem / 1_000_000_000L
