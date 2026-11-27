@@ -217,7 +217,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 "id=?",
                 arrayOf(bookId),
             )
-            return getBook(bookId) ?: existing.copy(contentSha256 = sha256)
+            return restoreMissingCover(existing.copy(contentSha256 = sha256), dest, meta)
         } catch (t: Throwable) {
             staged.delete()
             throw t
@@ -336,6 +336,42 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         return out
     }
 
+    private fun restoreMissingCover(book: BookRecord, epubFile: File, parsed: ParsedEpubMeta? = null): BookRecord {
+        if (getCoverFile(book) != null) return book
+        val meta = parsed ?: try {
+            EpubStreamingParser.parsePackage(epubFile)
+        } catch (_: Exception) {
+            return book
+        }
+        val coverName = storeCover(book.id, epubFile, meta.coverEntryPath) ?: return book
+        writableDatabase.update(
+            "books",
+            ContentValues().apply { put("cover_file", coverName) },
+            "id=?",
+            arrayOf(book.id),
+        )
+        return book.copy(coverFileName = coverName)
+    }
+
+    private fun storeCover(bookId: String, epubFile: File, entryPath: String?): String? {
+        if (entryPath == null) return null
+        var staged: File? = null
+        return try {
+            val bytes = ZipFile(epubFile).use { EpubStreamingParser.extractEntryBytes(it, entryPath) }
+            if (bytes == null || bytes.isEmpty()) return null
+            val rawExt = entryPath.substringAfterLast('.', "jpg").lowercase()
+            val ext = if (rawExt in setOf("jpg", "jpeg", "png", "webp", "gif")) rawExt else "jpg"
+            val coverName = "$bookId.$ext"
+            staged = File.createTempFile("cover-", ".part", coversDir)
+            staged.writeBytes(bytes)
+            if (staged.renameTo(File(coversDir, coverName))) coverName else null
+        } catch (_: Exception) {
+            null
+        } finally {
+            staged?.delete()
+        }
+    }
+
     private fun indexLocalEpubFile(
         id: String,
         safeName: String,
@@ -346,14 +382,14 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         val matches = findAllBySha256(sha256)
         matches.firstOrNull { !isDetached(it) }?.let { healthy ->
             stagedFile.delete()
-            return healthy
+            return if (healthy.coverFileName == null) healthy else restoreMissingCover(healthy, getBookFile(healthy))
         }
         matches.firstOrNull { isDetached(it) }?.let { detached ->
             val dest = getBookFile(detached)
             dest.parentFile?.mkdirs()
             if (dest.exists()) dest.delete()
             check(stagedFile.renameTo(dest)) { "Не вдалося відновити файл книги" }
-            return getBook(detached.id) ?: detached
+            return restoreMissingCover(detached, dest)
         }
 
         val meta = try {
@@ -365,22 +401,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             throw e
         }
 
-        var coverName: String? = null
-        if (meta.coverEntryPath != null) {
-            try {
-                val bytes = ZipFile(stagedFile).use { zip ->
-                    EpubStreamingParser.extractEntryBytes(zip, meta.coverEntryPath)
-                }
-                if (bytes != null && bytes.isNotEmpty()) {
-                    val rawExt = meta.coverEntryPath.substringAfterLast('.', "jpg").lowercase()
-                    val ext = if (rawExt in setOf("jpg", "jpeg", "png", "webp", "gif")) rawExt else "jpg"
-                    coverName = "$id.$ext"
-                    File(coversDir, coverName).writeBytes(bytes)
-                }
-            } catch (_: Throwable) {
-                coverName = null
-            }
-        }
+        val coverName = storeCover(id, stagedFile, meta.coverEntryPath)
 
         val destFile = File(booksDir, safeName)
         if (destFile.exists()) destFile.delete()
