@@ -104,7 +104,7 @@ class FlashSrOnnx @JvmOverloads constructor(
         val len = audio16k.size
         OnnxTensor.createTensor(env, FloatBuffer.wrap(audio16k), longArrayOf(1L, len.toLong())).use { input ->
             session.run(mapOf("audio_values" to input)).use { res ->
-                val output = res.get("reconstruction").orElseThrow().value
+                val output = res.get("reconstruction").orElse(null)?.value
                 return when (output) {
                     is FloatArray -> output
                     is Array<*> -> output.singleOrNull() as? FloatArray ?: FloatArray(0)
