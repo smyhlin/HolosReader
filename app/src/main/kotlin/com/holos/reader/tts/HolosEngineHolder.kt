@@ -130,6 +130,37 @@ object HolosEngineHolder {
         }
     }
 
+    private fun <T> tryCreateAddon(
+        prefs: ReaderPreferences,
+        label: String,
+        factory: (OrtSession.SessionOptions) -> T,
+    ): T? {
+        val threads = prefs.cpuThreads
+        val wantAccel = prefs.onnxAccelerator
+        val candidates: List<String> = when (wantAccel) {
+            EP_NNAPI -> listOf(EP_NNAPI, EP_XNNPACK, EP_CPU)
+            EP_XNNPACK -> listOf(EP_XNNPACK, EP_CPU)
+            EP_CPU -> listOf(EP_CPU)
+            else -> listOf(EP_NNAPI, EP_XNNPACK, EP_CPU)
+        }
+        for (ep in candidates) {
+            val opts = OrtSession.SessionOptions()
+            try {
+                opts.setIntraOpNumThreads(threads)
+                opts.addConfigEntry("session.intra_op.allow_spinning", "0")
+                when (ep) {
+                    EP_NNAPI -> opts.addNnapi()
+                    EP_XNNPACK -> opts.addXnnpack(mapOf("intra_op_num_threads" to threads.toString()))
+                }
+                return factory(opts)
+            } catch (t: Throwable) {
+                try { opts.close() } catch (_: Throwable) {}
+                Log.w(TAG, "Add-on $label EP=$ep failed; trying fallback", t)
+            }
+        }
+        return null
+    }
+
     fun getFlashSr(context: Context): FlashSrOnnx? {
         val appCtx = context.applicationContext
         val prefs = ReaderPreferences(appCtx)
@@ -141,7 +172,7 @@ object HolosEngineHolder {
             flashSr?.let { return it }
             val modelFile = File(OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.FLASH_SR), "model.onnx")
             return try {
-                FlashSrOnnx(modelFile).also { flashSr = it }
+                tryCreateAddon(prefs, "FlashSR") { opts -> FlashSrOnnx(modelFile, options = opts, closeOptionsOnClose = true) }?.also { flashSr = it }
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to load FlashSR ONNX", t)
                 null
@@ -160,7 +191,7 @@ object HolosEngineHolder {
             emotionClassifier?.let { return it }
             val dir = OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.UK_EMOTION)
             return try {
-                UkrainianEmotionOnnx(dir).also { emotionClassifier = it }
+                tryCreateAddon(prefs, "Emotion") { opts -> UkrainianEmotionOnnx(dir, options = opts, closeOptionsOnClose = true) }?.also { emotionClassifier = it }
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to load UkrainianEmotionOnnx", t)
                 null
@@ -185,7 +216,7 @@ object HolosEngineHolder {
         synchronized(addonLock) {
             val loaded = contextualStress ?: try {
                 val dir = OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.CONTEXTUAL_STRESS)
-                ContextualStressOnnx(dir).also { contextualStress = it }
+                tryCreateAddon(prefs, "ContextualStress") { opts -> ContextualStressOnnx(dir, options = opts, closeOptionsOnClose = true) }?.also { contextualStress = it }
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to load ContextualStressOnnx", t)
                 null

@@ -56,6 +56,9 @@
 - **Контекстні наголоси / омографи (~110 МБ, імпорт `.onnx`):** розрізняє *за́мок/замо́к*, *му́ка/мука́* в контексті речення; експортується командою `python3 tools/export_stress_onnx.py` ([aloudreader/uk-stress-token-classifier](https://huggingface.co/aloudreader/uk-stress-token-classifier)).
 - **Клонування голосу з WAV на телефоні (~20 МБ, імпорт `.onnx`):** експортуйте `voice_encoder.onnx` через `python3 tools/export_voice_encoder_onnx.py`, імпортуйте в **Налаштування → TTS** та оберіть 5–15 с **16-bit PCM `.wav`** запис.
 
+
+Детальний довідник щодо всіх ONNX-моделей, точностей (INT8 / FP16 / FP32), скриптів експорту та хостингу на GitHub Releases: [`docs/ONNX_MODELS_AND_ADDONS.md`](docs/ONNX_MODELS_AND_ADDONS.md).
+
 ### Обмеження та зауваження
 - **FlashSR 48 кГц** працює лише з **HolosTTS INT8 / FP32** (24 кГц); **Supertonic 3** вже синтезує нативні 44,1 кГц.
 - **Supertonic 3** використовує власні 10 стилів (`F1`–`F5`, `M1`–`M5`) і не підтримує клоновані 256-вимірні вектори HolosTTS; римські цифри (`II`, `IV`, `X`) у режимі англійських слів лишаються українськими.

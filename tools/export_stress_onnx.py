@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
 Exports `aloudreader/uk-stress-token-classifier` (XLM-RoBERTa-uk + 2-layer vowel-ordinal head)
-into a single dynamic INT8 ONNX file (`uk_stress_contextual.onnx`) compatible with HolosReader's
+into a single ONNX file (`uk_stress_contextual.onnx`) compatible with HolosReader's
 `ContextualStressOnnx` Android runtime.
 
+Precision choices:
+- `int8` (~110 MB, default): Smallest & fastest on CPU / XNNPACK.
+- `fp16` (~220 MB): Best for mobile GPU / NPU via Android NNAPI (keeps I/O float32).
+- `fp32` (~440 MB): Full reference precision.
+
 Usage:
-    pip install torch transformers huggingface_hub onnx onnxruntime
-    python3 tools/export_stress_onnx.py --out uk_stress_contextual.onnx
+    pip install torch transformers huggingface_hub onnx onnxruntime onnxconverter-common
+    python3 tools/export_stress_onnx.py --precision fp16 --out uk_stress_contextual.onnx
 """
 import argparse
 import os
@@ -41,8 +46,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="aloudreader/uk-stress-token-classifier")
     ap.add_argument("--out", default="uk_stress_contextual.onnx")
-    ap.add_argument("--fp32", action="store_true", help="Skip INT8 dynamic quantization")
+    ap.add_argument(
+        "--precision",
+        choices=["int8", "fp16", "fp32"],
+        default="int8",
+        help="Target weight precision (int8=CPU/XNNPACK, fp16=GPU/NNAPI, fp32=full)",
+    )
+    ap.add_argument("--fp32", action="store_true", help="Alias for --precision fp32")
     args = ap.parse_args()
+    precision = "fp32" if args.fp32 else args.precision
 
     encoder = AutoModel.from_pretrained(args.repo)
     head_path = hf_hub_download(repo_id=args.repo, filename="head.pt")
@@ -62,7 +74,7 @@ def main() -> None:
     dummy_word_mask = torch.zeros((1, 32), dtype=torch.float32)
     dummy_word_mask[0, 3:5] = 1.0
 
-    raw_path = args.out if args.fp32 else args.out + ".fp32.tmp"
+    raw_path = args.out if precision == "fp32" else args.out + ".fp32.tmp"
     torch.onnx.export(
         wrapper,
         (dummy_ids, dummy_mask, dummy_word_mask),
@@ -77,10 +89,19 @@ def main() -> None:
         },
         opset_version=17,
     )
-    if not args.fp32:
+    if precision == "int8":
         quantize_dynamic(raw_path, args.out, weight_type=QuantType.QInt8)
         os.remove(raw_path)
-    print(f"Exported {args.out} ({os.path.getsize(args.out) / (1024*1024):.1f} MB)")
+    elif precision == "fp16":
+        import onnx
+        from onnxconverter_common import float16
+
+        model_fp32 = onnx.load(raw_path)
+        model_fp16 = float16.convert_float_to_float16(model_fp32, keep_io_types=True)
+        onnx.save(model_fp16, args.out)
+        os.remove(raw_path)
+
+    print(f"Exported {args.out} [{precision}] ({os.path.getsize(args.out) / (1024*1024):.1f} MB)")
 
 
 if __name__ == "__main__":
