@@ -35,7 +35,7 @@ object OnnxAddonManager {
     fun recommendFp16Stress(context: Context): Boolean {
         val hw = DeviceCapabilityScanner.scan(context)
         val accel = ReaderPreferences(context).onnxAccelerator.uppercase(Locale.US)
-        return hw.totalRamMb >= 6000L && (accel == "AUTO" || accel == "NNAPI")
+        return hw.totalRamGb >= 6.0 && (accel == "AUTO" || accel == "NNAPI")
     }
 
     fun getAddonDir(context: Context, addonId: OnnxAddonId): File {
