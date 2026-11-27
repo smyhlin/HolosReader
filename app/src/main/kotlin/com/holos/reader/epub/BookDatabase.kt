@@ -428,6 +428,20 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         stagedFile: File,
         displayName: String?,
         sha256: String,
+    ): ImportedBook = synchronized(importIndexLock) {
+        try {
+            indexStagedEpub(id, safeName, stagedFile, displayName, sha256)
+        } finally {
+            stagedFile.delete()
+        }
+    }
+
+    private fun indexStagedEpub(
+        id: String,
+        safeName: String,
+        stagedFile: File,
+        displayName: String?,
+        sha256: String,
     ): ImportedBook {
         val matches = findAllBySha256(sha256)
         matches.firstOrNull { !isDetached(it) }?.let { healthy ->
@@ -891,6 +905,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     companion object {
+        private val importIndexLock = Any()
         private const val DB_NAME = "holos_reader.db"
         private const val DB_VERSION = 5
         private const val MAX_IMPORT_BYTES = 512L * 1024L * 1024L
