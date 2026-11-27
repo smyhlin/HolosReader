@@ -11,8 +11,10 @@ import kotlin.concurrent.write
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.exp
 import kotlin.math.floor
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Lightweight 487 KB neural audio super-resolution engine (`YatharthS/FlashSR`).
@@ -22,7 +24,7 @@ import kotlin.math.sin
  * - Output: `reconstruction` [1, 3*N] float32 @ 48,000 Hz
  *
  * Automatically resamples 24 kHz (or any input rate) to 16 kHz, runs FlashSR ONNX
- * on a complete, bounded utterance and emits duration-matched 48 kHz audio.
+ * over contiguous utterance audio with contextual windows and emits duration-matched 48 kHz audio.
  */
 class FlashSrOnnx @JvmOverloads constructor(
     modelFile: File,
@@ -69,27 +71,33 @@ class FlashSrOnnx @JvmOverloads constructor(
             inputSampleRate < INPUT_RATE -> resampleLinear(samples, inputSampleRate, INPUT_RATE)
             else -> samples
         }
-        if (audio16k.size < MIN_CHUNK_SAMPLES) return fallback()
-
-        val padded = FloatArray(audio16k.size + 2 * CONTEXT_SAMPLES)
-        audio16k.copyInto(padded, CONTEXT_SAMPLES)
-        val result = runOnnx(padded)
-        if (result.size != padded.size * RATE_MULTIPLIER) return fallback()
-        val start = CONTEXT_SAMPLES * RATE_MULTIPLIER
-        val expected = (samples.size.toLong() * OUTPUT_RATE / inputSampleRate).toInt()
-        val produced = audio16k.size * RATE_MULTIPLIER
-        val enhanced = result.copyOfRange(start, start + produced)
-        val peak = enhanced.maxOf { abs(it) }
-        if (!peak.isFinite() || peak > 2f || (peak < 1e-5f && audio16k.any { abs(it) > 0.03f })) {
+        if (audio16k.size < MIN_CHUNK_SAMPLES || audio16k.none { abs(it) >= 0.0005f }) {
             return fallback()
         }
-        // Apply one gain per utterance so peaks do not turn into a hard-clipped waveform.
-        if (peak > 0.98f) {
-            val gain = 0.98f / peak
-            for (i in enhanced.indices) enhanced[i] *= gain
+
+        val expected = (samples.size.toLong() * OUTPUT_RATE / inputSampleRate).toInt()
+        val produced = audio16k.size * RATE_MULTIPLIER
+        val enhanced = FloatArray(produced)
+        for (start in audio16k.indices step WINDOW_SAMPLES) {
+            val end = minOf(start + WINDOW_SAMPLES, audio16k.size)
+            val left = maxOf(0, start - CONTEXT_SAMPLES)
+            val right = minOf(audio16k.size, end + CONTEXT_SAMPLES)
+            val padded = FloatArray(end - start + 2 * CONTEXT_SAMPLES)
+            audio16k.copyInto(padded, CONTEXT_SAMPLES - (start - left), left, right)
+            val result = runOnnx(padded)
+            if (result.size != padded.size * RATE_MULTIPLIER) return fallback()
+            val offset = CONTEXT_SAMPLES * RATE_MULTIPLIER
+            result.copyInto(enhanced, start * RATE_MULTIPLIER, offset, offset + (end - start) * RATE_MULTIPLIER)
         }
-        if (expected == produced) return enhanced
-        return FloatArray(expected) { i -> enhanced[i.coerceAtMost(enhanced.lastIndex)] }
+        val dry = fallback()
+        if (dry.size != expected || !matchModelLevel(enhanced, dry)) return dry
+        // Keep the original speech as an anchor. The network can boost quiet
+        // regions quite differently from louder regions even after RMS matching.
+        for (i in dry.indices) {
+            val wet = enhanced[i.coerceAtMost(enhanced.lastIndex)]
+            dry[i] += 0.25f * (wet - dry[i])
+        }
+        return dry
     }
 
     private fun runOnnx(audio16k: FloatArray): FloatArray {
@@ -121,8 +129,38 @@ class FlashSrOnnx @JvmOverloads constructor(
         const val OUTPUT_RATE = 48_000
         const val PROCESSING_REVISION = 2
         private const val RATE_MULTIPLIER = OUTPUT_RATE / INPUT_RATE
+        private const val WINDOW_SAMPLES = 2 * INPUT_RATE
         private const val CONTEXT_SAMPLES = 512
         private const val MIN_CHUNK_SAMPLES = 320
+
+        /**
+         * Remove the model's DC bias and match the original speech level in-place.
+         * Returns false for invalid output or an utterance without usable signal.
+         */
+        fun matchModelLevel(enhanced: FloatArray, reference: FloatArray): Boolean {
+            if (enhanced.isEmpty() || reference.isEmpty()) return false
+            val alpha = exp(-2.0 * PI * 25 / OUTPUT_RATE).toFloat()
+            var previousInput = enhanced.first()
+            var previousOutput = 0f
+            var energy = 0.0
+            var peak = 0f
+            for (i in enhanced.indices) {
+                val current = enhanced[i]
+                if (!current.isFinite() || abs(current) > 2f) return false
+                val filtered = alpha * (previousOutput + current - previousInput)
+                enhanced[i] = filtered
+                previousInput = current
+                previousOutput = filtered
+                peak = maxOf(peak, abs(filtered))
+                energy += filtered.toDouble() * filtered
+            }
+            val rms = sqrt(energy / enhanced.size)
+            val desired = sqrt(reference.sumOf { it.toDouble() * it } / reference.size)
+            if (rms < 1e-5 || !desired.isFinite() || desired < 1e-5) return false
+            val gain = minOf(desired / rms, 0.98 / peak, 2.0).toFloat()
+            for (i in enhanced.indices) enhanced[i] *= gain
+            return true
+        }
 
         // Windowed sinc low-pass before decimation; linear interpolation alone aliases
         // components above 8 kHz into the band that FlashSR uses as its reference.

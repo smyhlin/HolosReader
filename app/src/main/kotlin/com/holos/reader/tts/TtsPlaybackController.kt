@@ -6,8 +6,8 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.SystemClock
 import android.util.Log
-import com.holos.reader.epub.ReaderBlock
 import com.holos.tts.FlashSrOnnx
+import com.holos.reader.epub.ReaderBlock
 import com.holos.reader.ui.AppStrings
 import com.holos.reader.ui.BionicTextHelper
 import java.io.File
@@ -1052,7 +1052,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                 supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
                 flashSrActive = flashSrActive,
                 flashSrRevision = if (flashSrActive) {
-                    "${FlashSrOnnx.PROCESSING_REVISION}:${addonRevisionFingerprint(appCtx, OnnxAddonId.FLASH_SR)}"
+                    "${com.holos.tts.FlashSrOnnx.PROCESSING_REVISION}:${addonRevisionFingerprint(appCtx, OnnxAddonId.FLASH_SR)}"
                 } else "",
                 emotionActive = emotionActive,
                 emotionRevision = if (emotionActive) addonRevisionFingerprint(appCtx, OnnxAddonId.UK_EMOTION) else "",

@@ -52,4 +52,16 @@ class FlashSrOnnxTest {
         org.junit.Assert.assertTrue(rms(1_000.0) > 0.65)
         org.junit.Assert.assertTrue(rms(10_000.0) < 0.02)
     }
+
+    @org.junit.Test
+    fun flashSrRemovesModelBiasAndPreservesQuietSignalLevel() {
+        val original = FloatArray(4800) { i -> (0.02 * kotlin.math.cos(2 * Math.PI * i / 48)).toFloat() }
+        val model = FloatArray(original.size) { i -> 0.46f + original[i] * 28f }
+        org.junit.Assert.assertTrue(FlashSrOnnx.matchModelLevel(model, original))
+        val tail = model.drop(2400)
+        org.junit.Assert.assertTrue(kotlin.math.abs(tail.average()) < 0.001)
+        val rms = kotlin.math.sqrt(tail.sumOf { (it * it).toDouble() } / tail.size)
+        assertEquals(0.02 / kotlin.math.sqrt(2.0), rms, 0.001)
+        org.junit.Assert.assertFalse(FlashSrOnnx.matchModelLevel(FloatArray(100) { 0.46f }, original))
+    }
 }
