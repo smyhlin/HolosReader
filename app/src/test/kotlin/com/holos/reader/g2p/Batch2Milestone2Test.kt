@@ -78,7 +78,12 @@ class Batch2Milestone2Test {
         }
 
         assertRejected("float64", makeNpy("<f8", "(256,)", ByteArray(256 * 8)))
-        assertRejected("big-endian float32", makeNpy(">f4", "(256,)", goodPayload))
+        val bePayload = ByteArray(256 * 4)
+        val beBb = ByteBuffer.wrap(bePayload).order(ByteOrder.BIG_ENDIAN)
+        for (i in 1..256) beBb.putFloat(i.toFloat())
+        val okBe = CustomVoiceLoader.parseVoiceBytes(makeNpy(">f4", "(256,)", bePayload))
+        assertEquals(1.0f, okBe[0], 1e-5f)
+        assertEquals(256.0f, okBe[255], 1e-5f)
         assertRejected("int32", makeNpy("<i4", "(256,)", goodPayload))
         assertRejected("512 float32", makeNpy("<f4", "(512,)", ByteArray(512 * 4)))
         assertRejected("trailing bytes", makeNpy("<f4", "(256,)", ByteArray(256 * 4 + 16)))
