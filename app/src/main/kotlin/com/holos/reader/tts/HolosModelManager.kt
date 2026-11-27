@@ -219,7 +219,12 @@ object HolosModelManager {
                 val baseUrl = if (modelId == TtsModelId.HOLOS_INT8) HOLOS_INT8_BASE_URL else HOLOS_FP32_BASE_URL
                 val manifestFile = File(dir, HOLOS_MANIFEST_NAME)
                 val out = ArrayList<ModelIntegrityChecker.ExpectedFile>()
-                out.add(ModelIntegrityChecker.ExpectedFile(HOLOS_MANIFEST_NAME, manifestFile, baseUrl + HOLOS_MANIFEST_NAME, modelId.id))
+                out.add(ModelIntegrityChecker.ExpectedFile(
+                    HOLOS_MANIFEST_NAME, manifestFile, baseUrl + HOLOS_MANIFEST_NAME, modelId.id,
+                    validateContent = { candidate ->
+                        runCatching { requiredHolosFiles(dir, candidate) }.isSuccess
+                    },
+                ))
                 if (manifestFile.isFile && manifestFile.length() > 0L) {
                     try {
                         for (f in requiredHolosFiles(dir, manifestFile)) {
@@ -246,10 +251,31 @@ object HolosModelManager {
         onProgress: (String, Int) -> Unit = { _, _ -> },
     ): ModelIntegrityChecker.BundleReport {
         val dir = getBundleDir(context, modelId).apply { mkdirs() }
+        val initial = expectedFilesForModel(context, modelId)
+        val manifest = initial.firstOrNull { it.relPath == HOLOS_MANIFEST_NAME }
+        if (manifest != null) {
+            ModelIntegrityChecker.repairBundle(dir, listOf(manifest)) { item ->
+                onProgress("Repairing ${item.file.name}…", 0)
+                val staging = java.nio.file.Files.createTempDirectory(dir.toPath(), "repair-").toFile()
+                try {
+                    val stagedManifest = File(staging, item.file.name)
+                    downloadFile(item.sourceUrl, stagedManifest) { _, _ -> }
+                    check(item.validateContent?.invoke(stagedManifest) == true) { "Downloaded Holos manifest is invalid" }
+                    java.nio.file.Files.move(
+                        stagedManifest.toPath(), item.file.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    )
+                } finally {
+                    staging.deleteRecursively()
+                }
+            }
+        }
+
         val expected = expectedFilesForModel(context, modelId)
         val total = expected.size.coerceAtLeast(1)
         var done = 0
         return ModelIntegrityChecker.repairBundle(dir, expected) { item ->
+            check(item.relPath != HOLOS_MANIFEST_NAME) { "Holos manifest could not be repaired" }
             done++
             onProgress("Repairing ${item.file.name} ($done/$total)…", ((done - 1) * 100) / total)
             downloadFile(item.sourceUrl, item.file) { _, _ -> }

@@ -31,6 +31,7 @@ object ModelIntegrityChecker {
         val variant: String = "",
         val expectedBytes: Long = -1L,
         val expectedSha256: String? = null,
+        val validateContent: ((File) -> Boolean)? = null,
     )
 
     data class FileDiagnostic(
@@ -170,6 +171,11 @@ object ModelIntegrityChecker {
             }
             if (f.name.endsWith(".onnx", ignoreCase = true) && !isPlausibleOnnxFile(f)) {
                 diagnostics.add(FileDiagnostic(item.relPath, f, item.sourceUrl, FileStatus.CORRUPT, "Invalid or truncated ONNX header"))
+                repairable++
+                continue
+            }
+            if (item.validateContent?.invoke(f) == false) {
+                diagnostics.add(FileDiagnostic(item.relPath, f, item.sourceUrl, FileStatus.CORRUPT, "Invalid bundle metadata"))
                 repairable++
                 continue
             }
