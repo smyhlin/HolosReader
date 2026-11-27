@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicReference
  *   `Authorization` headers to third-party CDN/storage hosts and without logging signed URLs.
  * - Probes Range support with `Range: bytes=0-0`; when HTTP 206 + `Content-Range` is supported
  *   and file size >= [minParallelBytes], downloads across bounded concurrent connections
- *   (default [DEFAULT_CONCURRENCY] = 6; configurable 1/2/4/6/8/16) writing directly to exact
+ *   (default [DEFAULT_CONCURRENCY] = 8; configurable 1/2/4/6/8/16) writing directly to exact
  *   offsets in a preallocated `.part` file using small 256 KiB streaming buffers.
  * - Persists segment progress (`.part.segs`) for resumable downloads guarded by strong `ETag`/
  *   `Last-Modified` or mandatory `expectedSha256`, retries only failed segments with exponential
@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicReference
  */
 object VerifiedHttpDownloader {
 
-    const val DEFAULT_CONCURRENCY = 6
+    const val DEFAULT_CONCURRENCY = 8
     val ALLOWED_CONCURRENCY = listOf(1, 2, 4, 6, 8, 16)
     const val PARALLEL_MIN_BYTES = 4L * 1024L * 1024L
     private const val STREAM_BUFFER_BYTES = 256 * 1024
