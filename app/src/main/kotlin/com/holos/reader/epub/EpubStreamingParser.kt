@@ -94,15 +94,25 @@ object EpubStreamingParser {
 
             val spine = ArrayList<SpineItem>(256)
             val spineIndexByHref = HashMap<String, Int>(512)
+            val spineIndexByHrefLower = HashMap<String, Int>(512)
+            val spineLinearByHref = HashMap<String, Boolean>(512)
             scanTags(opfXml, spineStart, spineEnd, "itemref") { attrs ->
                 val idref = fastAttr(attrs, "idref") ?: return@scanTags
-                if (fastAttr(attrs, "linear").equals("no", ignoreCase = true)) return@scanTags
+                val isLinear = !fastAttr(attrs, "linear").equals("no", ignoreCase = true)
                 val item = manifest[idref] ?: return@scanTags
                 val resolved = resolvePath(opfDir, item.href)
                 val idx = spine.size
-                spine.add(SpineItem(idx, item.id, resolved, item.mediaType))
-                spineIndexByHref[resolved] = idx
-                spineIndexByHref[resolved.lowercase()] = idx
+                spine.add(SpineItem(idx, item.id, resolved, item.mediaType, linear = isLinear))
+                // #36 + #40: keep FIRST linear occurrence per exact href; retain non-linear items for explicit TOC links
+                val prevLinear = spineLinearByHref[resolved]
+                if (prevLinear == null || (!prevLinear && isLinear)) {
+                    spineIndexByHref[resolved] = idx
+                    spineLinearByHref[resolved] = isLinear
+                }
+                val lower = resolved.lowercase()
+                if (!spineIndexByHrefLower.containsKey(lower)) {
+                    spineIndexByHrefLower[lower] = idx
+                }
             }
 
             // Parse TOC (EPUB 3 nav -> EPUB 2 NCX -> spine fallback)
@@ -110,13 +120,13 @@ object EpubStreamingParser {
             if (navHref != null) {
                 val navPath = resolvePath(opfDir, navHref!!)
                 readEntryText(zip, navPath)?.let { navHtml ->
-                    toc = parseEpub3NavFast(navHtml, parentDir(navPath), spineIndexByHref)
+                    toc = parseEpub3NavFast(navHtml, parentDir(navPath), spineIndexByHref, spineIndexByHrefLower)
                 }
             }
             if (toc.isEmpty() && ncxHref != null) {
                 val ncxPath = resolvePath(opfDir, ncxHref!!)
                 readEntryText(zip, ncxPath)?.let { ncxXml ->
-                    toc = parseNcxFast(ncxXml, parentDir(ncxPath), spineIndexByHref)
+                    toc = parseNcxFast(ncxXml, parentDir(ncxPath), spineIndexByHref, spineIndexByHrefLower)
                 }
             }
             if (toc.isEmpty()) {
@@ -135,7 +145,7 @@ object EpubStreamingParser {
         }
     }
 
-    const val PARSER_VERSION: Int = 2
+    const val PARSER_VERSION: Int = 3
 
     fun parseChapterBlocks(zip: ZipFile, spineItem: SpineItem): List<ReaderBlock> =
         parseChapterWithAnchors(zip, spineItem).blocks
@@ -589,6 +599,7 @@ object EpubStreamingParser {
         navHtml: String,
         navDir: String,
         spineIndexByHref: Map<String, Int>,
+        spineIndexByHrefLower: Map<String, Int>,
     ): List<TocEntry> {
         val navMatch = RE_NAV_TOC_OPEN.find(navHtml) ?: return emptyList()
         val navStart = navMatch.range.first
@@ -612,9 +623,8 @@ object EpubStreamingParser {
                     val label = parseInlineRichText(m.groupValues[2]).first
                     if (label.isEmpty() || rawPath.isEmpty()) continue
                     val resolved = resolvePath(navDir, rawPath)
-                    val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHref[resolved.lowercase()] ?: -1
-                    val fullHref = if (fragment != null) "$resolved#$fragment" else resolved
-                    result.add(TocEntry(label, fullHref, spineIdx, depth.coerceAtLeast(0)))
+                    val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHrefLower[resolved.lowercase()] ?: -1
+                    result.add(TocEntry(label, resolved, spineIdx, depth.coerceAtLeast(0), fragment = fragment))
                 }
             }
         }
@@ -625,6 +635,7 @@ object EpubStreamingParser {
         ncxXml: String,
         ncxDir: String,
         spineIndexByHref: Map<String, Int>,
+        spineIndexByHrefLower: Map<String, Int>,
     ): List<TocEntry> {
         val result = ArrayList<TocEntry>(256)
         var depth = 0
@@ -649,9 +660,8 @@ object EpubStreamingParser {
                     if (!label.isNullOrEmpty() && !rawSrc.isNullOrBlank()) {
                         val (rawPath, fragment) = splitRawHref(rawSrc)
                         val resolved = resolvePath(ncxDir, rawPath)
-                        val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHref[resolved.lowercase()] ?: -1
-                        val fullHref = if (fragment != null) "$resolved#$fragment" else resolved
-                        result.add(TocEntry(label, fullHref, spineIdx, (depth - 1).coerceAtLeast(0)))
+                        val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHrefLower[resolved.lowercase()] ?: -1
+                        result.add(TocEntry(label, resolved, spineIdx, (depth - 1).coerceAtLeast(0), fragment = fragment))
                     }
                     pendingLabel = null
                 }
@@ -886,5 +896,47 @@ object EpubStreamingParser {
                 }
             }
         }
+    }
+}
+
+/**
+ * Remaps legacy bookmark & resume block indices across parser version upgrades (#30)
+ * and resolves default linear reading order skipping `linear="no"` appendices (#40).
+ */
+object BookmarkRemapper {
+    fun remapBlockIndex(blocks: List<ReaderBlock>, savedBlockIndex: Int, excerpt: String?): Int {
+        if (blocks.isEmpty()) return 0
+        val clamped = savedBlockIndex.coerceIn(0, blocks.lastIndex)
+        val needle = excerpt?.trim()?.take(80).orEmpty()
+        if (needle.length < 4) return clamped
+        val currentText = blocks[clamped].text.trim()
+        if (currentText.startsWith(needle, ignoreCase = true) || currentText.contains(needle, ignoreCase = true)) {
+            return clamped
+        }
+        var bestIdx = -1
+        var bestDist = Int.MAX_VALUE
+        for (i in blocks.indices) {
+            val t = blocks[i].text.trim()
+            if (t.isEmpty()) continue
+            if (t.startsWith(needle, ignoreCase = true) || t.contains(needle, ignoreCase = true) || needle.startsWith(t, ignoreCase = true)) {
+                val dist = kotlin.math.abs(i - clamped)
+                if (dist < bestDist) {
+                    bestDist = dist
+                    bestIdx = i
+                }
+            }
+        }
+        return if (bestIdx >= 0) bestIdx else clamped
+    }
+
+    fun nextLinearIndex(spine: List<SpineItem>, currentIndex: Int, delta: Int): Int? {
+        if (spine.isEmpty() || delta == 0) return null
+        val step = if (delta > 0) 1 else -1
+        var idx = currentIndex + step
+        while (idx in spine.indices) {
+            if (spine[idx].linear) return idx
+            idx += step
+        }
+        return null
     }
 }

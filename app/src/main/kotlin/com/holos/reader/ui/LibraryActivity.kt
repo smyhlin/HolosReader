@@ -64,6 +64,7 @@ class LibraryActivity : Activity() {
     private var currentBooks: List<BookRecord> = emptyList()
     private var autoOpenedOnce: Boolean = false
     private var externalOpenPending: Boolean = false
+    private var pendingRelinkBookId: String? = null
     private val coverCache = object : LruCache<String, Bitmap>(8 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
     }
@@ -1078,6 +1079,27 @@ class LibraryActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_OK || data == null) return
         when (requestCode) {
+            REQ_RELINK_EPUB -> {
+                val uri = data.data
+                val bookId = pendingRelinkBookId
+                pendingRelinkBookId = null
+                if (uri != null && bookId != null) {
+                    worker.execute {
+                        try {
+                            val existing = db.getBook(bookId)
+                            val relinked = db.relinkBookFile(bookId, uri, forceLegacy = (existing?.contentSha256 == null))
+                            runOnUiThread {
+                                refreshBooks()
+                                openBook(relinked)
+                            }
+                        } catch (e: Exception) {
+                            runOnUiThread {
+                                Toast.makeText(this, e.message ?: "Помилка прив’язки EPUB", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                }
+            }
             REQ_PICK_FILE -> {
                 val clip = data.clipData
                 if (clip != null && clip.itemCount > 1) {
@@ -1155,6 +1177,30 @@ class LibraryActivity : Activity() {
     }
 
     private fun openBook(book: BookRecord) {
+        if (db.isDetached(book)) {
+            val en = AppStrings.isEnglish(this)
+            UiTheme.showThemedDialog(
+                UiTheme.dialogBuilder(this, prefs.theme)
+                    .setTitle(book.title)
+                    .setMessage(
+                        if (en) "The local EPUB file is missing (e.g. after cloud restore). Locate the original EPUB to restore bookmarks and reading progress."
+                        else "Локальний файл EPUB відсутній (наприклад, після відновлення з хмари). Вкажіть оригінальний EPUB, щоб зберегти закладки й прогрес."
+                    )
+                    .setPositiveButton(if (en) "Locate original EPUB" else "Знайти оригінальний EPUB") { _, _ ->
+                        pendingRelinkBookId = book.id
+                        val pick = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = "*/*"
+                            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/epub+zip", "application/x-epub+zip", "application/octet-stream"))
+                        }
+                        @Suppress("DEPRECATION")
+                        startActivityForResult(pick, REQ_RELINK_EPUB)
+                    }
+                    .setNegativeButton(if (en) "Cancel" else "Скасувати", null),
+                prefs.theme,
+            )
+            return
+        }
         prefs.lastBookId = book.id
         startActivity(Intent(this, ReaderActivity::class.java).apply {
             putExtra(ReaderActivity.EXTRA_BOOK_ID, book.id)
@@ -1164,5 +1210,6 @@ class LibraryActivity : Activity() {
     companion object {
         private const val REQ_PICK_FILE = 1001
         private const val REQ_PICK_DIR = 1002
+        private const val REQ_RELINK_EPUB = 1003
     }
 }

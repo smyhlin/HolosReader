@@ -69,6 +69,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 item_id TEXT NOT NULL,
                 href TEXT NOT NULL,
                 media_type TEXT NOT NULL,
+                linear INTEGER NOT NULL DEFAULT 1,
                 PRIMARY KEY (book_id, idx)
             )
         """)
@@ -80,6 +81,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 href TEXT NOT NULL,
                 spine_idx INTEGER NOT NULL,
                 depth INTEGER NOT NULL DEFAULT 0,
+                fragment TEXT,
                 PRIMARY KEY (book_id, ord)
             )
         """)
@@ -162,6 +164,16 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             ensureBookColumn(db, bookCols, "content_sha256", "TEXT")
             ensureBookColumn(db, bookCols, "parser_version", "INTEGER NOT NULL DEFAULT 1")
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_sha256 ON books(content_sha256)")
+        }
+        if (oldVersion < 5) {
+            val spineCols = existingColumns(db, "spine")
+            if ("linear" !in spineCols) {
+                db.execSQL("ALTER TABLE spine ADD COLUMN linear INTEGER NOT NULL DEFAULT 1")
+            }
+            val tocCols = existingColumns(db, "toc")
+            if ("fragment" !in tocCols) {
+                db.execSQL("ALTER TABLE toc ADD COLUMN fragment TEXT")
+            }
         }
     }
 
@@ -311,17 +323,17 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         return indexLocalEpubFile(id, safeName, staged, cleanTitle, sha256)
     }
 
-    private fun findHealthyBySha256(sha256: String): BookRecord? {
+    private fun findAllBySha256(sha256: String): List<BookRecord> {
+        val out = ArrayList<BookRecord>()
         readableDatabase.rawQuery(
-            "SELECT id FROM books WHERE content_sha256=? LIMIT 1",
+            "SELECT id FROM books WHERE content_sha256=?",
             arrayOf(sha256),
         ).use { c ->
-            if (c.moveToFirst()) {
-                val rec = getBook(c.getString(0))
-                if (rec != null && !isDetached(rec)) return rec
+            while (c.moveToNext()) {
+                getBook(c.getString(0))?.let { out.add(it) }
             }
         }
-        return null
+        return out
     }
 
     private fun indexLocalEpubFile(
@@ -331,10 +343,17 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         displayName: String?,
         sha256: String,
     ): BookRecord {
-        // Deduplicate strictly by exact content SHA-256 (only when existing file is healthy on disk)
-        findHealthyBySha256(sha256)?.let { existing ->
+        val matches = findAllBySha256(sha256)
+        matches.firstOrNull { !isDetached(it) }?.let { healthy ->
             stagedFile.delete()
-            return existing
+            return healthy
+        }
+        matches.firstOrNull { isDetached(it) }?.let { detached ->
+            val dest = getBookFile(detached)
+            dest.parentFile?.mkdirs()
+            if (dest.exists()) dest.delete()
+            check(stagedFile.renameTo(dest)) { "Не вдалося відновити файл книги" }
+            return getBook(detached.id) ?: detached
         }
 
         val meta = try {
@@ -412,7 +431,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 put("parser_version", record.parserVersion)
             })
 
-            val spineStmt = db.compileStatement("INSERT INTO spine(book_id, idx, item_id, href, media_type) VALUES(?,?,?,?,?)")
+            val spineStmt = db.compileStatement("INSERT INTO spine(book_id, idx, item_id, href, media_type, linear) VALUES(?,?,?,?,?,?)")
             for (s in meta.spine) {
                 spineStmt.clearBindings()
                 spineStmt.bindString(1, record.id)
@@ -420,10 +439,11 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 spineStmt.bindString(3, s.id)
                 spineStmt.bindString(4, s.href)
                 spineStmt.bindString(5, s.mediaType)
+                spineStmt.bindLong(6, if (s.linear) 1L else 0L)
                 spineStmt.executeInsert()
             }
 
-            val tocStmt = db.compileStatement("INSERT INTO toc(book_id, ord, title, href, spine_idx, depth) VALUES(?,?,?,?,?,?)")
+            val tocStmt = db.compileStatement("INSERT INTO toc(book_id, ord, title, href, spine_idx, depth, fragment) VALUES(?,?,?,?,?,?,?)")
             meta.toc.forEachIndexed { ord, t ->
                 tocStmt.clearBindings()
                 tocStmt.bindString(1, record.id)
@@ -432,6 +452,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 tocStmt.bindString(4, t.href)
                 tocStmt.bindLong(5, t.spineIndex.toLong())
                 tocStmt.bindLong(6, t.depth.toLong())
+                if (t.fragment != null) tocStmt.bindString(7, t.fragment) else tocStmt.bindNull(7)
                 tocStmt.executeInsert()
             }
             db.setTransactionSuccessful()
@@ -542,13 +563,29 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
 
     fun getSpineItem(bookId: String, index: Int): SpineItem? {
         readableDatabase.rawQuery(
-            "SELECT idx, item_id, href, media_type FROM spine WHERE book_id=? AND idx=?",
+            "SELECT idx, item_id, href, media_type, linear FROM spine WHERE book_id=? AND idx=?",
             arrayOf(bookId, index.toString())
         ).use { c ->
             if (!c.moveToFirst()) return null
-            return SpineItem(c.getInt(0), c.getString(1), c.getString(2), c.getString(3))
+            return SpineItem(c.getInt(0), c.getString(1), c.getString(2), c.getString(3), linear = c.getInt(4) != 0)
         }
     }
+
+    fun getAllSpineItems(bookId: String): List<SpineItem> {
+        val out = ArrayList<SpineItem>()
+        readableDatabase.rawQuery(
+            "SELECT idx, item_id, href, media_type, linear FROM spine WHERE book_id=? ORDER BY idx ASC",
+            arrayOf(bookId)
+        ).use { c ->
+            while (c.moveToNext()) {
+                out.add(SpineItem(c.getInt(0), c.getString(1), c.getString(2), c.getString(3), linear = c.getInt(4) != 0))
+            }
+        }
+        return out
+    }
+
+    fun findNextLinearChapter(bookId: String, currentIndex: Int, delta: Int): Int? =
+        BookmarkRemapper.nextLinearIndex(getAllSpineItems(bookId), currentIndex, delta)
 
     fun getChapterTitle(bookId: String, spineIdx: Int, totalChapters: Int): String {
         readableDatabase.rawQuery(
@@ -565,15 +602,18 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         val sql: String
         val args: Array<String>
         if (filter.isBlank()) {
-            sql = "SELECT title, href, spine_idx, depth FROM toc WHERE book_id=? ORDER BY ord ASC"
+            sql = "SELECT title, href, spine_idx, depth, fragment FROM toc WHERE book_id=? ORDER BY ord ASC"
             args = arrayOf(bookId)
         } else {
-            sql = "SELECT title, href, spine_idx, depth FROM toc WHERE book_id=? AND title LIKE ? ESCAPE '\\' ORDER BY ord ASC"
+            sql = "SELECT title, href, spine_idx, depth, fragment FROM toc WHERE book_id=? AND title LIKE ? ESCAPE '\\' ORDER BY ord ASC"
             args = arrayOf(bookId, "%${escapeLike(filter.trim())}%")
         }
         readableDatabase.rawQuery(sql, args).use { c ->
             while (c.moveToNext()) {
-                out.add(TocEntry(c.getString(0), c.getString(1), c.getInt(2), c.getInt(3)))
+                val rawHref = c.getString(1)
+                val storedFrag = if (c.isNull(4)) null else c.getString(4)
+                val frag = storedFrag ?: rawHref.substringAfter('#', "").takeIf { it.isNotBlank() }
+                out.add(TocEntry(c.getString(0), rawHref, c.getInt(2), c.getInt(3), fragment = frag))
             }
         }
         return out
@@ -777,9 +817,9 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         private const val DB_NAME = "holos_reader.db"
-        private const val DB_VERSION = 4
+        private const val DB_VERSION = 5
         private const val MAX_IMPORT_BYTES = 512L * 1024L * 1024L
-        const val CURRENT_PARSER_VERSION = 2
+        const val CURRENT_PARSER_VERSION = 3
 
         fun buildSingleChapterEpub(outFile: File, title: String, bodyText: String) {
             fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

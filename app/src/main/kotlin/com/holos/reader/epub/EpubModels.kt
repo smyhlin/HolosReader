@@ -31,7 +31,7 @@ data class BookRecord(
     val addedAtMs: Long = System.currentTimeMillis(),
     val lastReadAtMs: Long = 0L,
     val contentSha256: String? = null,
-    val parserVersion: Int = 2,
+    val parserVersion: Int = 3,
 ) {
     val progressPercent: Int
         get() {
@@ -54,6 +54,7 @@ data class SpineItem(
     val id: String,
     val href: String,
     val mediaType: String,
+    val linear: Boolean = true,
 )
 
 data class TocEntry(
@@ -61,7 +62,10 @@ data class TocEntry(
     val href: String,
     val spineIndex: Int,
     val depth: Int = 0,
-)
+    val fragment: String? = null,
+) {
+    fun effectiveFragment(): String? = fragment?.takeIf { it.isNotBlank() }
+}
 
 data class BookmarkRecord(
     val id: Long = 0L,

@@ -476,8 +476,22 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             activity = this,
             db = db,
             prefs = prefs,
-            onSelectChapter = { idx -> loadChapter(idx, scrollToBlock = 0, autoPlay = controller.isPlaying) },
-            onSelectBookmark = { bm -> loadChapter(bm.chapterIndex, scrollToBlock = bm.blockIndex, autoPlay = false) },
+            onSelectChapter = { entry ->
+                val total = book?.chapterCount ?: 0
+                if (entry.spineIndex !in 0 until total) {
+                    Toast.makeText(this, AppStrings.t(this, "Розділ недоступний у файлі книги", "Chapter unavailable in EPUB"), Toast.LENGTH_SHORT).show()
+                } else {
+                    loadChapter(
+                        entry.spineIndex,
+                        scrollToBlock = 0,
+                        autoPlay = controller.isPlaying && !controller.isPaused,
+                        targetFragment = entry.effectiveFragment(),
+                    )
+                }
+            },
+            onSelectBookmark = { bm ->
+                loadChapter(bm.chapterIndex, scrollToBlock = bm.blockIndex, autoPlay = false, targetExcerpt = bm.excerpt)
+            },
         )
         frameRoot.addView(tocSheet.root, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         setContentView(frameRoot)
@@ -681,6 +695,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         autoPlay: Boolean = false,
         targetFraction: Float? = null,
         targetFragment: String? = null,
+        targetExcerpt: String? = null,
     ) {
         val b = book ?: return
         val session = epubSession ?: return
@@ -730,6 +745,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     fragmentBlock != null -> fragmentBlock
                     targetFraction != null && blocks.isNotEmpty() ->
                         (targetFraction.coerceIn(0f, 1f) * (blocks.size - 1)).roundToInt()
+                    !targetExcerpt.isNullOrBlank() ->
+                        com.holos.reader.epub.BookmarkRemapper.remapBlockIndex(blocks, scrollToBlock, targetExcerpt)
                     else -> scrollToBlock
                 }.coerceIn(0, (blocks.size - 1).coerceAtLeast(0))
 
@@ -809,12 +826,18 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     private fun jumpChapter(targetIndex: Int, autoPlay: Boolean) {
-        val total = book?.chapterCount ?: return
-        if (targetIndex !in 0 until total) {
+        val b = book ?: return
+        val delta = targetIndex - chapterIndex
+        val resolved = if (delta == 1 || delta == -1) {
+            db.findNextLinearChapter(b.id, chapterIndex, delta)
+        } else {
+            targetIndex.takeIf { it in 0 until b.chapterCount }
+        }
+        if (resolved == null) {
             Toast.makeText(this, "Це крайній розділ книги", Toast.LENGTH_SHORT).show()
             return
         }
-        loadChapter(targetIndex, scrollToBlock = 0, autoPlay = autoPlay)
+        loadChapter(resolved, scrollToBlock = 0, autoPlay = autoPlay)
     }
 
     private fun saveProgress(

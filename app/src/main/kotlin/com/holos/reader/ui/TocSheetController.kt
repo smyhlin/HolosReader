@@ -37,7 +37,7 @@ class TocSheetController(
     private val activity: Activity,
     private val db: BookDatabase,
     private val prefs: ReaderPreferences,
-    private val onSelectChapter: (Int) -> Unit,
+    private val onSelectChapter: (TocEntry) -> Unit,
     private val onSelectBookmark: (BookmarkRecord) -> Unit,
 ) {
     val root: FrameLayout
@@ -195,11 +195,10 @@ class TocSheetController(
                     when (val item = tocRows[position]) {
                         is RowItem.CurrentMarker -> {
                             hide()
-                            onSelectChapter(item.chapterIndex)
                         }
                         is RowItem.Chapter -> {
                             hide()
-                            onSelectChapter(item.entry.spineIndex)
+                            onSelectChapter(item.entry)
                         }
                     }
                 } else {
