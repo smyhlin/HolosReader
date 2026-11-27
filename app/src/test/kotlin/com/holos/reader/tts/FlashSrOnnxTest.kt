@@ -38,4 +38,30 @@ class FlashSrOnnxTest {
         assertEquals(3, out.size)
         assertEquals(-0.2f, out[1], 1e-6f)
     }
+
+    @org.junit.Test
+    fun flashSrInputResamplerSuppressesEnergyAboveTheTargetNyquistRate() {
+        fun rms(frequency: Double): Double {
+            val samples = FloatArray(2400) { i -> kotlin.math.sin(2.0 * Math.PI * frequency * i / 24_000).toFloat() }
+            val filtered = FlashSrOnnx.downsampleForModel(samples, 24_000)
+            assertEquals(1600, filtered.size)
+            val steadyState = filtered.copyOfRange(40, filtered.lastIndex - 40)
+            return kotlin.math.sqrt(steadyState.sumOf { (it * it).toDouble() } / steadyState.size)
+        }
+
+        org.junit.Assert.assertTrue(rms(1_000.0) > 0.65)
+        org.junit.Assert.assertTrue(rms(10_000.0) < 0.02)
+    }
+
+    @org.junit.Test
+    fun flashSrRemovesModelBiasAndPreservesQuietSignalLevel() {
+        val original = FloatArray(4800) { i -> (0.02 * kotlin.math.cos(2 * Math.PI * i / 48)).toFloat() }
+        val model = FloatArray(original.size) { i -> 0.46f + original[i] * 28f }
+        org.junit.Assert.assertTrue(FlashSrOnnx.matchModelLevel(model, original))
+        val tail = model.drop(2400)
+        org.junit.Assert.assertTrue(kotlin.math.abs(tail.average()) < 0.001)
+        val rms = kotlin.math.sqrt(tail.sumOf { (it * it).toDouble() } / tail.size)
+        assertEquals(0.02 / kotlin.math.sqrt(2.0), rms, 0.001)
+        org.junit.Assert.assertFalse(FlashSrOnnx.matchModelLevel(FloatArray(100) { 0.46f }, original))
+    }
 }
