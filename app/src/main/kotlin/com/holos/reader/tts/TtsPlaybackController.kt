@@ -444,6 +444,7 @@ class TtsPlaybackController(context: Context) {
 
         initThread = bootstrap
         bootstrap.start()
+        return gen
     }
 
     /**

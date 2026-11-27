@@ -1059,7 +1059,7 @@ class ReaderSettingsActivity : Activity() {
                 val dir = OnnxAddonManager.getAddonDir(this, a)
                 if (!dir.exists()) continue
                 val rep = OnnxAddonManager.diagnoseAddon(this, a, deepHashCheck = true)
-                lines.add("${OnnxAddonCatalog.byId(a).displayName(en)}: ${rep.status.name} (${rep.verifiedCount}/${rep.files.size})")
+                lines.add("${OnnxAddonCatalog.byId(a).title(en)}: ${rep.status.name} (${rep.verifiedCount}/${rep.files.size})")
                 if (rep.repairableCount > 0) repairableAddons.add(a)
             }
             val summary = if (lines.isEmpty()) {

@@ -1567,7 +1567,7 @@ class AudioSheetController(
                 effectiveModelOverride = activeModelId,
                 flashSrActiveOverride = flashSr != null,
                 emotionActiveOverride = emotionClassifier != null,
-                contextualStressActiveOverride = prefs.contextualStressEnabled && OnnxAddonManager.isAddonReady(activity, OnnxAddonId.CONTEXTUAL_STRESS),
+                contextualStressActiveOverride = prefs.contextualStressEnabled && com.holos.reader.tts.OnnxAddonManager.isAddonReady(activity, com.holos.reader.tts.OnnxAddonId.CONTEXTUAL_STRESS),
             )
             val outFile = TtsPlaybackController.offlineChapterFile(activity, renderBookId, renderChapterIdx, snapshot.recipe)
             val defaultVoice = snapshot.selectedVoice?.takeIf {
