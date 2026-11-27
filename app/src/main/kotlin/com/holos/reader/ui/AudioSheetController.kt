@@ -1625,7 +1625,7 @@ class AudioSheetController(
             lease.use { activeLease ->
             val engine = activeLease.engine
             val voicePlan = AdaptiveVoicePlan.capture(activity, prefs)
-            AdaptiveEngineSet.acquire(activity, engine, voicePlan, requireAll = true).use { roleEngines ->
+            AdaptiveEngineSet.acquire(activity, engine, voicePlan).use { roleEngines ->
             val flashSrLease = if (roleEngines.hasHolos) HolosEngineHolder.acquireFlashSrLease(activity) else null
             val emotionLease = HolosEngineHolder.acquireEmotionLease(activity)
             val flashSr = flashSrLease?.engine

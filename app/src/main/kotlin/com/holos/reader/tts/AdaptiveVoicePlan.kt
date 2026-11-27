@@ -1,8 +1,8 @@
 package com.holos.reader.tts
 
 import android.content.Context
-import android.util.Log
 import com.holos.tts.FlashSrOnnx
+import com.holos.reader.ui.AppStrings
 
 internal data class AdaptiveVoicePlan(
     val enabled: Boolean,
@@ -78,19 +78,21 @@ internal class AdaptiveEngineSet private constructor(
             context: Context,
             primary: HolosTtsEngine,
             plan: AdaptiveVoicePlan,
-            requireAll: Boolean = false,
         ): AdaptiveEngineSet {
             val requiredModels = plan.assignments.values.map { it.model }.toSet() - primary.modelId
             val leases = mutableMapOf<TtsModelId, EngineLeasePool.Lease<HolosTtsEngine>>()
             try {
                 for (model in requiredModels) {
                     val lease = HolosEngineHolder.acquireEngineLease(context, model)
-                    if (lease != null) {
-                        leases[model] = lease
-                    } else {
-                        check(!requireAll) { "Could not load ${model.id} for offline narration" }
-                        Log.w("AdaptiveEngineSet", "Could not load ${model.id}; using the current model")
+                    checkNotNull(lease) {
+                        val name = TtsModelCatalog.byId(model).displayName(AppStrings.isEnglish(context))
+                        AppStrings.t(
+                            context,
+                            "Не вдалося завантажити модель голосу $name. Оберіть іншу модель або перевстановіть цю.",
+                            "Could not load voice model $name. Choose another model or reinstall it.",
+                        )
                     }
+                    leases[model] = lease
                 }
                 return AdaptiveEngineSet(primary, plan, leases)
             } catch (error: Throwable) {
