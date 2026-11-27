@@ -1573,7 +1573,17 @@ class AudioSheetController(
             val defaultVoice = snapshot.selectedVoice?.takeIf {
                 it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
             } ?: engine.voices.firstOrNull()
-            com.holos.reader.tts.OfflineStorageManager.markActive(outFile)
+            val cacheLease = com.holos.reader.tts.OfflineStorageManager.acquireWrite(outFile)
+            if (cacheLease == null) {
+                emotionLease?.close()
+                flashSrLease?.close()
+                activity.runOnUiThread {
+                    offlineSubTv.text = AppStrings.t(activity, "Офлайн-аудіо вже використовується", "Offline audio is already in use")
+                    offlineBadgeTv.text = AppStrings.t(activity, "Офлайн ›", "Offline ›")
+                    offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
+                }
+                return@execute
+            }
             val tmp = File(outFile.path + ".part")
             var totalPcmBytes = 0L
             try {
@@ -1681,7 +1691,7 @@ class AudioSheetController(
                     offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
                 }
             } finally {
-                com.holos.reader.tts.OfflineStorageManager.unmarkActive(outFile)
+                cacheLease.close()
                 emotionLease?.close()
                 flashSrLease?.close()
             }

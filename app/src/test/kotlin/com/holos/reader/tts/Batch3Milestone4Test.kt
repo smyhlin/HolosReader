@@ -75,14 +75,11 @@ class Batch3Milestone4Test {
         assertFalse(b2Broken.exists())
 
         // Mark b2Valid as active -> clearAll must skip it and delete only b1Valid
-        OfflineStorageManager.markActive(b2Valid)
-        try {
+        OfflineStorageManager.acquireRead(b2Valid)!!.use {
             val cleared = OfflineStorageManager.clearAll(listOf(dir))
             assertFalse(b1Valid.exists())
             assertTrue("Active file must NOT be deleted", b2Valid.exists())
             assertEquals(3, cleared.skippedActiveFiles)
-        } finally {
-            OfflineStorageManager.unmarkActive(b2Valid)
         }
 
         // Simulated deletion failure must be reported accurately
@@ -91,4 +88,30 @@ class Batch3Milestone4Test {
         assertEquals(3, failRes.failedFiles)
         assertTrue(b2Valid.exists())
     }
+    @Test
+    fun activeGenerationSurvivesRemovalUntilTheLastReaderCloses() {
+        val dir = tmp.newFolder()
+        val wav = createValidChapter(dir, "book", 0, "abcdef")
+        val first = OfflineStorageManager.acquireRead(wav)!!
+        val second = OfflineStorageManager.acquireRead(wav)!!
+        try {
+            first.close()
+            first.close()
+            assertEquals(null, OfflineStorageManager.acquireWrite(wav))
+            val result = OfflineStorageManager.deleteBook(listOf(dir), "book", protectedWavPaths = emptySet())
+            assertEquals(3, result.skippedActiveFiles)
+            assertTrue(wav.isFile)
+        } finally {
+            first.close()
+            second.close()
+        }
+        OfflineStorageManager.acquireWrite(wav)!!.use {
+            assertEquals(null, OfflineStorageManager.acquireRead(wav))
+            assertEquals(null, OfflineStorageManager.acquireWrite(wav))
+            assertEquals(3, OfflineStorageManager.clearAll(listOf(dir)).skippedActiveFiles)
+        }
+        assertEquals(3, OfflineStorageManager.clearAll(listOf(dir)).deletedFiles)
+        assertFalse(wav.exists())
+    }
+
 }

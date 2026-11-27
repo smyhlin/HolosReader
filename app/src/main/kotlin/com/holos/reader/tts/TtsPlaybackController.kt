@@ -229,10 +229,21 @@ class TtsPlaybackController(context: Context) {
                 }
                 return@Thread
             }
-            val validatedOffline = offlineWavFile?.let { OfflineAudioCache.validate(it, spokenIds) }
-            if (validatedOffline != null && validatedOffline.entries.any { it.blockIndex >= startIdx }) {
-                startOfflineWavPipeline(gen, sessionCancel, blocks, startIdx, speed, validatedOffline)
-                return@Thread
+            if (offlineWavFile != null) {
+                val readLease = OfflineStorageManager.acquireRead(offlineWavFile)
+                if (readLease != null) {
+                    var handedOff = false
+                    try {
+                        val validated = OfflineAudioCache.validate(offlineWavFile, spokenIds)
+                        if (validated != null && validated.entries.any { it.blockIndex >= startIdx }) {
+                            startOfflineWavPipeline(gen, sessionCancel, blocks, startIdx, speed, validated, readLease)
+                            handedOff = true
+                            return@Thread
+                        }
+                    } finally {
+                        if (!handedOff) readLease.close()
+                    }
+                }
             }
 
             // Live ONNX streaming pipeline
@@ -457,6 +468,7 @@ class TtsPlaybackController(context: Context) {
         startIdx: Int,
         speed: Float,
         validated: OfflineAudioCache.ValidatedChapter,
+        readLease: OfflineStorageManager.Lease,
     ) {
         val wavFile = validated.wavFile
         val index = validated.entries
@@ -534,6 +546,8 @@ class TtsPlaybackController(context: Context) {
                             (t.message ?: t.javaClass.simpleName)
                     )
                 }
+            } finally {
+                readLease.close()
             }
         }, "HolosOfflineProducer")
 
@@ -548,6 +562,7 @@ class TtsPlaybackController(context: Context) {
             producer = prod,
             prebufferMs = 200,
             playingLabel = AppStrings.t(appContext, "Офлайн-аудіо", "Offline audio"),
+            onProducerNotStarted = readLease::close,
         )
     }
 
