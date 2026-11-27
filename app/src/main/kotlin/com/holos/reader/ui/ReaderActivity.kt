@@ -133,6 +133,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private var previousLinearChapterIndex: Int? = null
     private var chapterLoadPending = false
     private lateinit var chapterPullChip: TextView
+    private lateinit var bottomDock: LinearLayout
     private var chapterTitle: String = ""
     private var currentBlocks: List<ReaderBlock> = emptyList()
     private var chapterTimeline = com.holos.reader.tts.ChapterTimeline(emptyList())
@@ -418,7 +419,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         readerCanvas.addView(chapterProgressBar, LinearLayout.LayoutParams(MATCH_PARENT, d(3)))
 
         // Floating Pill Mini-Player + Bottom Icon Bar docked at bottom
-        val bottomDock = LinearLayout(this).apply {
+        bottomDock = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
 
@@ -904,23 +905,35 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             return
         }
         val gravity = Gravity.CENTER_HORIZONTAL or if (direction < 0) Gravity.TOP else Gravity.BOTTOM
+        val margin = if (direction < 0) d(8) else {
+            val progressHeight = if (chapterProgressBar.visibility == View.VISIBLE) chapterProgressBar.height else 0
+            (bottomDock.height - footerCounterTv.height - progressHeight).coerceAtLeast(0) + d(8)
+        }
         val lp = chip.layoutParams as FrameLayout.LayoutParams
-        if (lp.gravity != gravity) {
+        val changedEdge = lp.gravity != gravity
+        val bottomMargin = if (direction > 0) margin else 0
+        val topMargin = if (direction < 0) margin else 0
+        if (changedEdge || lp.bottomMargin != bottomMargin || lp.topMargin != topMargin) {
             lp.gravity = gravity
+            lp.bottomMargin = bottomMargin
+            lp.topMargin = topMargin
             chip.layoutParams = lp
         }
-        val palette = UiTheme.palette(prefs.theme)
         val armed = progress >= 1f
-        chip.text = if (direction < 0) {
-            AppStrings.t(this, "↑ Попередній розділ", "↑ Previous chapter")
-        } else {
-            AppStrings.t(this, "↓ Наступний розділ", "↓ Next chapter")
+        if (changedEdge || chip.isActivated != armed || chip.visibility != View.VISIBLE) {
+            val palette = UiTheme.palette(prefs.theme)
+            chip.isActivated = armed
+            chip.text = if (direction < 0) {
+                AppStrings.t(this, "↑ Попередній розділ", "↑ Previous chapter")
+            } else {
+                AppStrings.t(this, "↓ Наступний розділ", "↓ Next chapter")
+            }
+            chip.background = UiTheme.rounded(
+                if (armed) palette.accentBlue else palette.cardBg,
+                d(20).toFloat(),
+            )
+            chip.setTextColor(if (armed) android.graphics.Color.WHITE else palette.primaryText)
         }
-        chip.background = UiTheme.rounded(
-            if (armed) palette.accentBlue else palette.cardBg,
-            d(20).toFloat(),
-        )
-        chip.setTextColor(if (armed) android.graphics.Color.WHITE else palette.primaryText)
         val reveal = progress.coerceIn(0f, 1f)
         chip.alpha = reveal
         chip.translationY = offset * (1f - reveal)
