@@ -82,8 +82,9 @@ object UkrainianTextNormalizer {
     private val RE_DEG_C = Regex("(?<!\\d)([+-]?\\d+(?:[.,]\\d+)?)\\s*°\\s*[CcСс]")
     private val RE_DEG_F = Regex("(?<!\\d)([+-]?\\d+(?:[.,]\\d+)?)\\s*°\\s*[Ff]")
     private val RE_DEG = Regex("(?<!\\d)([+-]?\\d+(?:[.,]\\d+)?)\\s*°")
-    private val RE_PERCENT = Regex("(\\d+[.,]\\d+|\\d+)\\s*%")
-    private val RE_PERMILLE = Regex("(\\d+[.,]\\d+|\\d+)\\s*‰")
+    // Only a standalone sign belongs to the value. A dash after a digit remains a range separator.
+    private val RE_PERCENT = Regex("((?:(?<![\\p{L}\\p{N}])[+±-])?\\d+(?:[.,]\\d+)?)\\s*%")
+    private val RE_PERMILLE = Regex("((?:(?<![\\p{L}\\p{N}])[+±-])?\\d+(?:[.,]\\d+)?)\\s*‰")
 
     // Signed deltas (+50, -20, ±5)
     private val RE_PLUS_MINUS = Regex("±\\s*(\\d+(?:[.,]\\d+)?)")
@@ -364,8 +365,8 @@ object UkrainianTextNormalizer {
         text = RE_DEG_C.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Цельсія" }
         text = RE_DEG_F.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Фаренгейта" }
         text = RE_DEG.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів" }
-        text = RE_PERCENT.replace(text) { m -> "${numOrDecimalToWords(m.groupValues[1])} відсотків" }
-        text = RE_PERMILLE.replace(text) { m -> "${numOrDecimalToWords(m.groupValues[1])} проміле" }
+        text = RE_PERCENT.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} відсотків" }
+        text = RE_PERMILLE.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} проміле" }
 
         // 10. RPG arrows, HP/MP fractions, multipliers, signed deltas
         text = RE_ARROW_TRANSITION.replace(text, " переходить у ")
@@ -423,6 +424,7 @@ object UkrainianTextNormalizer {
     }
 
     private fun signedNumToWords(s: String): String = when {
+        s.startsWith("±") -> "плюс-мінус ${numOrDecimalToWords(s.substring(1))}"
         s.startsWith("+") -> "плюс ${numOrDecimalToWords(s.substring(1))}"
         s.startsWith("-") -> "мінус ${numOrDecimalToWords(s.substring(1))}"
         else -> numOrDecimalToWords(s)

@@ -36,6 +36,16 @@ class Batch2Milestone2Test {
         assertTrue(uHp.contains("мінус"))
     }
 
+    @Test
+    fun spokenPercentAndPermilleKeepTheirSigns() {
+        val normalize = UkrainianTextNormalizer::normalize
+        assertEquals("мінус п'ять відсотків", normalize("−5%", false))
+        assertEquals("мінус п'ять відсотків", normalize("-5%", false))
+        assertEquals("плюс два проміле", normalize("+2‰", false))
+        assertEquals("плюс-мінус п'ять відсотків", normalize("±5%", false))
+        assertTrue("мінус" !in normalize("5-10%", false))
+    }
+
     // #28: Strict .npy header validation rejects float64, big-endian, int32, and wrong shapes
     private fun makeNpy(descr: String, shape: String, payload: ByteArray, major: Int = 1): ByteArray {
         val dict = "{'descr': '$descr', 'fortran_order': False, 'shape': $shape, }"
