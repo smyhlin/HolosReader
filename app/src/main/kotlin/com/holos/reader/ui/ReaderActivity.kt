@@ -899,7 +899,9 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     override fun onPlaybackStateChanged(isPlaying: Boolean, isPaused: Boolean, statusText: String) {
         val isPreparing = statusText.contains("Підготовка") || statusText.contains("Preparing")
         sessionTracker.setAudioPlaying(isPlaying && !isPaused && !isPreparing)
+        val callbackGeneration = controller.currentSessionGeneration
         runOnUiThread {
+            if (isFinishing || isDestroyed || controller.currentSessionGeneration != callbackGeneration) return@runOnUiThread
             miniPlayBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
             if (audioSheet.isVisible()) {
                 audioSheet.updateState(activeBlockIndex, isPlaying, isPaused)
@@ -907,19 +909,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             val (posMs, durMs) = estimateChapterAudioTiming(activeBlockIndex.coerceAtLeast(0))
             val snippet = currentBlocks.getOrNull(activeBlockIndex)?.text?.trim()?.take(90)
                 ?.ifBlank { book?.title ?: "HolosReader" } ?: (book?.title ?: "HolosReader")
-            if (isPlaying && !isPaused) {
-                ReaderAudioService.start(
-                    context = this,
-                    title = snippet,
-                    subtitle = chapterTitle,
-                    bookId = book?.id,
-                    album = book?.title,
-                    positionMs = posMs,
-                    durationMs = durMs,
-                    speed = prefs.speechSpeed,
-                    sessionGen = controller.currentSessionGeneration,
-                )
-            } else if (isPlaying && isPaused) {
+            if (isPlaying && !isPreparing) {
                 ReaderAudioService.refresh(
                     context = this,
                     title = snippet,
