@@ -31,8 +31,12 @@ object UkrainianTextNormalizer {
     private val RE_RUN_STARS = Regex("[★⭐✪✦]{2,}")
     private val RE_NUM_STARS = Regex("(?<!\\d)(\\d+)\\s*[★⭐✪✦]")
 
-    // Dates DD.MM.YYYY (e.g., 22.08.2025)
-    private val RE_DATE_FULL = Regex("(?<!\\d)(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})(?!\\d)")
+    private val RE_DATE_FULL = Regex("""(?<![\d/])(\d{1,2})([./])(\d{1,2})\2(\d{4})(?![\d/])""")
+    private val RE_SPACE_GROUPED = Regex("""(?<![\d.,])([1-9]\d{0,2})(?: \d{3})+(?!\d)""")
+    private val RE_COMMA_GROUPED = Regex("""(?<![\d.,])([1-9]\d{0,2})(,\d{3})+(?!\d|,\d)""")
+    private val RE_CYRILLIC = Regex("""\p{IsCyrillic}""")
+    private const val UNARY_SIGN = """(?:(?<![\p{L}\p{N}])[+±−-])?"""
+    private const val AMOUNT = """\d+(?:[.,]\d+)?"""
 
     // Roman numerals after chapter/skill/rank/title nouns (supports Latin I/V/X and Cyrillic І/ІІ/ІІІ)
     private val RE_CHAPTER_ROMAN = Regex(
@@ -61,27 +65,25 @@ object UkrainianTextNormalizer {
             "го|му|ми|ша|га|тя|та|тє|те|ше|ге|ті|ші|гі|ту|тю|шу|гу|й|а|я|е|є|ї|у|ю|і|м|х)(?![\\p{L}])"
     )
 
-    // Time HH:MM
-    private val RE_TIME = Regex("(?<!\\d)(\\d{1,2}):(\\d{2})(?!\\d)")
+    private val RE_TIME = Regex("""(?<![\d:])(\d{1,2}):(\d{2})(?::(\d{2}))?(?![\d:])""")
 
-    // Currencies ($100 or 100$, €50, ₴500, £20, ¥1000)
-    private val RE_CURR_PREFIX = Regex("([$€₴£¥₩₿])\\s*(\\d+(?:[.,]\\d+)?)")
-    private val RE_CURR_SUFFIX = Regex("(?<!\\d)(\\d+(?:[.,]\\d+)?)\\s*([$€₴£¥₩₿])")
+    private val RE_CURR_PREFIX = Regex("""($UNARY_SIGN)([$€₴£¥₩₿])\s*($AMOUNT)""")
+    private val RE_CURR_SUFFIX = Regex("""(?<!\d)($UNARY_SIGN)($AMOUNT)\s*([$€₴£¥₩₿])""")
 
     // RPG stat transitions (10 -> 25, 10 → 25, Lv.5 ⇒ Lv.6)
     private val RE_ARROW_TRANSITION = Regex("\\s*(?:->|=>|→|⇒|➜|➔|⟶)\\s*")
 
     // HP/MP/XP fractions (120/150)
-    private val RE_FRACTION = Regex("(?<!\\d)(\\d+)\\s*/\\s*(\\d+)(?!\\d)")
+    private val RE_FRACTION = Regex("""(?<![\d/])(\d+)\s*/\s*(\d+)(?![\d/])""")
 
     // Multipliers (×3, x3, 3×, 3x)
     private val RE_MULT_PREFIX = Regex("(?<!\\p{L})[×xX]\\s*(\\d+(?:[.,]\\d+)?)")
     private val RE_MULT_SUFFIX = Regex("(?<!\\d)(\\d+(?:[.,]\\d+)?)\\s*[×xX](?!\\p{L})")
 
     // Degrees (°C, °F, °), Percentages (%), Permille (‰), Superscript powers
-    private val RE_DEG_C = Regex("(?<!\\d)([+-]?\\d+(?:[.,]\\d+)?)\\s*°\\s*[CcСс]")
-    private val RE_DEG_F = Regex("(?<!\\d)([+-]?\\d+(?:[.,]\\d+)?)\\s*°\\s*[Ff]")
-    private val RE_DEG = Regex("(?<!\\d)([+-]?\\d+(?:[.,]\\d+)?)\\s*°")
+    private val RE_DEG_C = Regex("""(?<!\d)($UNARY_SIGN$AMOUNT)\s*°\s*[CcСс](?!\p{L})""")
+    private val RE_DEG_F = Regex("""(?<!\d)($UNARY_SIGN$AMOUNT)\s*°\s*[Ff](?!\p{L})""")
+    private val RE_DEG = Regex("""(?<!\d)($UNARY_SIGN$AMOUNT)\s*°""")
     // Only a standalone sign belongs to the value. A dash after a digit remains a range separator.
     private val RE_PERCENT = Regex("((?:(?<![\\p{L}\\p{N}])[+±-])?\\d+(?:[.,]\\d+)?)\\s*%")
     private val RE_PERMILLE = Regex("((?:(?<![\\p{L}\\p{N}])[+±-])?\\d+(?:[.,]\\d+)?)\\s*‰")
@@ -98,6 +100,49 @@ object UkrainianTextNormalizer {
     private val RE_LATIN_WORD = Regex("[A-Za-z]+")
     private val RE_ALL_DASHES = Regex("[\\u1806\\u2010\\u2011\\u2012\\u2013\\u2014\\u2015\\u207B\\u208B\\u2212\\u2E3A\\u2E3B]")
 
+    private data class CountedUnit(
+        val one: String,
+        val few: String,
+        val many: String,
+        val feminine: Boolean = false,
+        val neuter: Boolean = false,
+    ) {
+        fun form(value: Long): String = pluralForm(value, one, few, many)
+
+        fun count(value: Long): String {
+            val words = numberToWords(value, feminine)
+            val numeral = if (neuter && form(value) == one && words.endsWith("один")) {
+                words.removeSuffix("один") + "одне"
+            } else words
+            return "$numeral ${form(value)}"
+        }
+    }
+
+    private val HOUR = CountedUnit("година", "години", "годин", feminine = true)
+    private val MINUTE = CountedUnit("хвилина", "хвилини", "хвилин", feminine = true)
+    private val SECOND = CountedUnit("секунда", "секунди", "секунд", feminine = true)
+    private val HRYVNIA = CountedUnit("гривня", "гривні", "гривень", feminine = true)
+    private val DEGREE = CountedUnit("градус", "градуси", "градусів")
+    private val PERCENT = CountedUnit("відсоток", "відсотки", "відсотків")
+    private val NUMBER_UNITS = mapOf(
+        "тис" to CountedUnit("тисяча", "тисячі", "тисяч", feminine = true),
+        "млн" to CountedUnit("мільйон", "мільйони", "мільйонів"),
+        "млрд" to CountedUnit("мільярд", "мільярди", "мільярдів"),
+        "ст" to CountedUnit("століття", "століття", "століть", neuter = true),
+        "км" to CountedUnit("кілометр", "кілометри", "кілометрів"),
+        "см" to CountedUnit("сантиметр", "сантиметри", "сантиметрів"),
+        "мм" to CountedUnit("міліметр", "міліметри", "міліметрів"),
+        "кг" to CountedUnit("кілограм", "кілограми", "кілограмів"),
+        "год" to HOUR,
+        "хв" to MINUTE,
+        "сек" to SECOND,
+        "с" to SECOND,
+        "грн" to HRYVNIA,
+    )
+    private val RE_NUMBER_UNIT = Regex(
+        """(?iu)(?<!\d)($UNARY_SIGN$AMOUNT)\s*(млрд|млн|год|сек|грн|км|см|мм|кг|хв|тис(?=\.)|ст(?=\.)|с(?=\.))(?![\p{L}\d])(\.)?"""
+    )
+
     private val ABBREVIATIONS = listOf(
         Regex("(?iu)(?<![\\p{L}])і т\\.\\s*д\\.") to "і так далі",
         Regex("(?iu)(?<![\\p{L}])і т\\.\\s*п\\.") to "і тому подібне",
@@ -105,23 +150,11 @@ object UkrainianTextNormalizer {
         Regex("(?iu)(?<![\\p{L}])т\\.\\s*п\\.") to "тому подібне",
         Regex("(?iu)(?<![\\p{L}])н\\.\\s*е\\.") to "нашої ери",
         Regex("(?iu)(?<![\\p{L}])до н\\.\\s*е\\.") to "до нашої ери",
-        Regex("(?iu)(?<![\\p{L}])тис\\.(?=\\s|$|,)") to "тисяч",
-        Regex("(?iu)(?<![\\p{L}])млн(?![\\p{L}])\\.?") to "мільйонів",
-        Regex("(?iu)(?<![\\p{L}])млрд(?![\\p{L}])\\.?") to "мільярдів",
         Regex("(?iu)(?<![\\p{L}])рр\\.(?=\\s|$|,)") to "років",
         Regex("(?<=\\d)\\s*р\\.(?=\\s|$|,)") to " року",
-        Regex("(?<=\\d)\\s*ст\\.(?=\\s|$|,)") to " століття",
-        Regex("(?<=\\d)\\s*км(?![\\p{L}])\\.?") to " кілометрів",
-        Regex("(?<=\\d)\\s*см(?![\\p{L}])\\.?") to " сантиметрів",
-        Regex("(?<=\\d)\\s*мм(?![\\p{L}])\\.?") to " міліметрів",
-        Regex("(?<=\\d)\\s*кг(?![\\p{L}])\\.?") to " кілограмів",
-        Regex("(?<=\\d)\\s*хв(?![\\p{L}])\\.?") to " хвилин",
-        Regex("(?<=\\d)\\s*сек(?![\\p{L}])\\.?") to " секунд",
-        Regex("(?<=\\d)\\s*с\\.(?=\\s|$|,|;|\\)|!|\\?)") to " секунд",
         Regex("(?iu)(?<![\\p{L}])макс\\.") to "максимального",
         Regex("(?iu)(?<![\\p{L}])мін\\.") to "мінімального",
         Regex("(?iu)(?<![\\p{L}])прибл\\.") to "приблизно",
-        Regex("(?<=\\d)\\s*год(?![\\p{L}])\\.?") to " годин",
         // Popular LitRPG / web-novel abbreviations
         Regex("\\bHP\\b") to "ейч-пі",
         Regex("\\bMP\\b") to "ем-пі",
@@ -291,6 +324,15 @@ object UkrainianTextNormalizer {
         text = Normalizer.normalize(text, Normalizer.Form.NFKC)
         text = text.replace("...", "…")
 
+        // Resolve separators before amounts, units, and plain numbers take different paths.
+        val cyrillicContext = RE_CYRILLIC.containsMatchIn(text) || text.any { it in "₴%‰°" }
+        text = RE_SPACE_GROUPED.replace(text) { it.value.replace(" ", "") }
+        text = RE_COMMA_GROUPED.replace(text) { m ->
+            val unambiguousGrouping = m.value.count { it == ',' } > 1 ||
+                text.getOrNull(m.range.last + 1) == '.' && text.getOrNull(m.range.last + 2)?.isDigit() == true
+            if (unambiguousGrouping || !cyrillicContext) m.value.replace(",", "") else m.value
+        }
+
         // 2b. Collapse stretched screams/groans & stutters before dash/prosody rules
         text = normalizeStretchedInterjections(text)
 
@@ -316,10 +358,13 @@ object UkrainianTextNormalizer {
 
         // 4. Full dates DD.MM.YYYY (e.g. 22.08.2025 -> двадцять другого серпня дві тисячі двадцять п'ятого року)
         text = RE_DATE_FULL.replace(text) { m ->
-            val day = m.groupValues[1].toIntOrNull()
-            val month = m.groupValues[2].toIntOrNull()
-            val year = m.groupValues[3].toIntOrNull()
-            if (day != null && month != null && year != null && day in 1..31 && month in 1..12) {
+            val day = m.groupValues[1].toInt()
+            val month = m.groupValues[3].toInt()
+            val year = m.groupValues[4].toInt()
+            val maxDay = if (month in 1..12 && year > 0) {
+                java.time.YearMonth.of(year, month).lengthOfMonth()
+            } else 0
+            if (day in 1..maxDay) {
                 "${dayGenitive(day)} ${MONTHS_GEN[month - 1]} ${yearGenitive(year)} року"
             } else m.value
         }
@@ -344,29 +389,43 @@ object UkrainianTextNormalizer {
             ordinalToWords(n, suf) ?: "${numberToWords(n.toLong())}-$suf"
         }
 
-        // 7. Time HH:MM
+        // 7. Clock times with optional seconds.
         text = RE_TIME.replace(text) { m ->
-            val h = m.groupValues[1].toLongOrNull()
-            val min = m.groupValues[2].toLongOrNull()
-            if (h != null && min != null && h in 0..23 && min in 0..59) {
-                val mWord = if (min == 0L) "годин" else numberToWords(min)
-                "${numberToWords(h)} $mWord"
-            } else m.value
+            val hours = m.groupValues[1].toLong()
+            val minutes = m.groupValues[2].toLong()
+            val seconds = m.groupValues[3].toLongOrNull()
+            if (hours !in 0..23 || minutes !in 0..59 || (seconds != null && seconds !in 0..59)) {
+                return@replace m.value
+            }
+            buildList {
+                add(HOUR.count(hours))
+                if (minutes != 0L || seconds != null) add(clockPart(minutes, MINUTE))
+                if (seconds != null) add(clockPart(seconds, SECOND))
+            }.joinToString(" ")
         }
 
-        // 8. Currencies ($100, 100₴, €50)
-        text = RE_CURR_PREFIX.replace(text) { m -> currencyToWords(m.groupValues[2], m.groupValues[1]) }
-        text = RE_CURR_SUFFIX.replace(text) { m -> currencyToWords(m.groupValues[1], m.groupValues[2]) }
-
-        // #37: normalize Unicode minus (U+2212) before digits so signed values & temperatures speak 'мінус'
+        // 8. Currencies and Unicode minus.
+        text = RE_CURR_PREFIX.replace(text) { m -> spokenSign(m.groupValues[1]) + currencyToWords(m.groupValues[3], m.groupValues[2]) }
+        text = RE_CURR_SUFFIX.replace(text) { m -> spokenSign(m.groupValues[1]) + currencyToWords(m.groupValues[2], m.groupValues[3]) }
         text = Regex("\u2212(?=\\d)").replace(text, "-")
 
         // 9. Degrees, percentages, permille
-        text = RE_DEG_C.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Цельсія" }
-        text = RE_DEG_F.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів Фаренгейта" }
-        text = RE_DEG.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} градусів" }
-        text = RE_PERCENT.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} відсотків" }
+        text = RE_DEG_C.replace(text) { m -> "${speakMeasurement(m.groupValues[1], DEGREE)} Цельсія" }
+        text = RE_DEG_F.replace(text) { m -> "${speakMeasurement(m.groupValues[1], DEGREE)} Фаренгейта" }
+        text = RE_DEG.replace(text) { m -> speakMeasurement(m.groupValues[1], DEGREE) }
+        text = RE_PERCENT.replace(text) { m -> speakMeasurement(m.groupValues[1], PERCENT) }
         text = RE_PERMILLE.replace(text) { m -> "${signedNumToWords(m.groupValues[1])} проміле" }
+
+        text = RE_NUMBER_UNIT.replace(text) { m ->
+            val amount = m.groupValues[1]
+            val unit = NUMBER_UNITS.getValue(m.groupValues[2].lowercase())
+            val spoken = if (unit == HRYVNIA) {
+                spokenSign(amount.takeWhile { it in "+-±" }) + currencyToWords(amount.trimStart('+', '-', '±'), "₴")
+            } else speakMeasurement(amount, unit)
+            val punctuation = if (m.groupValues[3].isNotEmpty() &&
+                text.substring(m.range.last + 1).isBlank()) "." else ""
+            spoken + punctuation
+        }
 
         // 10. RPG arrows, HP/MP fractions, multipliers, signed deltas
         text = RE_ARROW_TRANSITION.replace(text, " переходить у ")
@@ -393,8 +452,6 @@ object UkrainianTextNormalizer {
             val b = m.groupValues[2].toLongOrNull()
             if (a != null && b != null) "${numberToWords(a)} — ${numberToWords(b)}" else m.value
         }
-        // Strip English-style thousands commas (10,000 -> 10000) before decimal handling
-        text = Regex("(?<!\\d)([1-9]\\d{0,2}(?:,\\d{3})+)(?!\\d)").replace(text) { m -> m.groupValues[1].replace(",", "") }
         text = RE_DECIMAL.replace(text) { m -> decimalToWords("${m.groupValues[1]},${m.groupValues[2]}") }
         text = RE_INT.replace(text) { m ->
             val rawNum = m.value
@@ -423,6 +480,23 @@ object UkrainianTextNormalizer {
         return text
     }
 
+    private fun clockPart(value: Long, unit: CountedUnit): String =
+        (if (value in 1..9) "нуль " else "") + unit.count(value)
+
+    private fun spokenSign(sign: String): String = when (sign) {
+        "+" -> "плюс "
+        "-", "−" -> "мінус "
+        "±" -> "плюс-мінус "
+        else -> ""
+    }
+
+    private fun speakMeasurement(amount: String, unit: CountedUnit): String {
+        val magnitude = amount.trimStart('+', '-', '±')
+        val value = magnitude.toLongOrNull()
+        return if (value == null) "${signedNumToWords(amount)} ${unit.many}"
+        else spokenSign(amount.takeWhile { it in "+-±" }) + unit.count(value)
+    }
+
     private fun signedNumToWords(s: String): String = when {
         s.startsWith("±") -> "плюс-мінус ${numOrDecimalToWords(s.substring(1))}"
         s.startsWith("+") -> "плюс ${numOrDecimalToWords(s.substring(1))}"
@@ -435,17 +509,17 @@ object UkrainianTextNormalizer {
 
     private fun currencyToWords(numStr: String, sym: String): String {
         val isDec = '.' in numStr || ',' in numStr
-        val n = if (isDec) 5L else (numStr.toLongOrNull() ?: 0L)
+        val n = numStr.toLongOrNull() ?: 0L
         val fem = sym == "₴"
         val spokenNum = if (isDec) decimalToWords(numStr) else numberToWords(n, feminine = fem)
         val unit = when (sym) {
-            "$" -> pluralForm(n, "долар", "долари", "доларів")
+            "$" -> if (isDec) "долара" else pluralForm(n, "долар", "долари", "доларів")
             "€" -> "євро"
-            "₴" -> pluralForm(n, "гривня", "гривні", "гривень")
-            "£" -> pluralForm(n, "фунт", "фунти", "фунтів")
-            "¥" -> pluralForm(n, "єна", "єни", "єн")
-            "₩" -> pluralForm(n, "вона", "вони", "вон")
-            "₿" -> pluralForm(n, "біткоїн", "біткоїни", "біткоїнів")
+            "₴" -> if (isDec) "гривні" else HRYVNIA.form(n)
+            "£" -> if (isDec) "фунта" else pluralForm(n, "фунт", "фунти", "фунтів")
+            "¥" -> if (isDec) "єни" else pluralForm(n, "єна", "єни", "єн")
+            "₩" -> if (isDec) "вони" else pluralForm(n, "вона", "вони", "вон")
+            "₿" -> if (isDec) "біткоїна" else pluralForm(n, "біткоїн", "біткоїни", "біткоїнів")
             else -> ""
         }
         return "$spokenNum $unit"
@@ -583,15 +657,14 @@ object UkrainianTextNormalizer {
         val frac = parts[1].toLongOrNull() ?: 0L
         val wholeWords = numberToWords(whole, feminine = true)
         val fracWords = numberToWords(frac, feminine = true)
-        val wholeLabel = if (whole % 10 == 1L && whole % 100 != 11L) "ціла" else "цілих"
-        val sg = frac % 10 == 1L && frac % 100 != 11L
+        val wholeLabel = pluralForm(whole, "ціла", "цілі", "цілих")
         val fracUnit = when (parts[1].length) {
-            1 -> if (sg) "десята" else "десятих"
-            2 -> if (sg) "сота" else "сотих"
-            3 -> if (sg) "тисячна" else "тисячних"
-            4 -> if (sg) "десятитисячна" else "десятитисячних"
-            5 -> if (sg) "стотисячна" else "стотисячних"
-            6 -> if (sg) "мільйонна" else "мільйонних"
+            1 -> pluralForm(frac, "десята", "десяті", "десятих")
+            2 -> pluralForm(frac, "сота", "соті", "сотих")
+            3 -> pluralForm(frac, "тисячна", "тисячні", "тисячних")
+            4 -> pluralForm(frac, "десятитисячна", "десятитисячні", "десятитисячних")
+            5 -> pluralForm(frac, "стотисячна", "стотисячні", "стотисячних")
+            6 -> pluralForm(frac, "мільйонна", "мільйонні", "мільйонних")
             else -> return "$wholeWords кома ${parts[1].map { digitToWord(it) }.joinToString(" ")}"
         }
         return "$wholeWords $wholeLabel $fracWords $fracUnit"
