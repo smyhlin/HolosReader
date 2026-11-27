@@ -286,8 +286,8 @@ class StressEditorActivity : Activity() {
                         }
                     } catch (_: Exception) {}
                 } finally {
-                    try { track.release() }
-                } catch (_: Exception) {}
+                    try { track.release() } catch (_: Exception) {}
+                }
                 }
             } catch (t: Throwable) {
                 runOnUiThread {

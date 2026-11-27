@@ -297,7 +297,7 @@ object GitHubUpdater {
         for (raw in manifestText.lineSequence()) {
             val line = raw.trim()
             if (line.isEmpty()) continue
-            val parts = line.split(Regex("\s+"), limit = 2)
+            val parts = line.split(Regex("""\s+"""), limit = 2)
             if (parts.size != 2) continue
             val hash = parts[0].trim()
             val name = parts[1].trim().removePrefix("*").substringAfterLast('/')

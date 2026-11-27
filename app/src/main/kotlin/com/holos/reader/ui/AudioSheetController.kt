@@ -41,6 +41,7 @@ import com.holos.reader.tts.HolosVoiceCatalog
 import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.TtsModelCatalog
 import com.holos.reader.tts.HolosTtsEngine
+import com.holos.reader.tts.OfflineAudioCache
 import com.holos.tts.FlashSrOnnx
 import com.holos.reader.tts.TtsPlaybackController
 import com.holos.reader.tts.VoiceRole
@@ -1464,8 +1465,8 @@ class AudioSheetController(
                     } catch (_: Exception) {}
                 } finally {
                     if (activePreviewTrack === track) activePreviewTrack = null
-                    try { track.release() }
-                } catch (_: Exception) {}
+                    try { track.release() } catch (_: Exception) {}
+                }
                 }
             } catch (t: Throwable) {
                 activity.runOnUiThread {
@@ -1549,10 +1550,6 @@ class AudioSheetController(
                                     speed = prefs.speechSpeed,
                                     cancelled = offlineRenderCancel,
                                     customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
-                                supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
-                                supertonicSteps = prefs.supertonicSteps,
-                                flashSr = flashSr,
-                                emotionClassifier = emotionClassifier,
                                     supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
                                     supertonicSteps = prefs.supertonicSteps,
                                     flashSr = flashSr,
@@ -1569,6 +1566,10 @@ class AudioSheetController(
                                 speed = prefs.speechSpeed,
                                 cancelled = offlineRenderCancel,
                                 customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
+                                supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                                supertonicSteps = prefs.supertonicSteps,
+                                flashSr = flashSr,
+                                emotionClassifier = emotionClassifier,
                                 onChunk = writeFloats,
                             )
                         }
