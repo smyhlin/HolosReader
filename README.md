@@ -4,129 +4,106 @@
 
 [![Latest Release](https://img.shields.io/github/v/release/smyhlin/HolosReader?display_name=tag&sort=semver)](https://github.com/smyhlin/HolosReader/releases/latest)
 [![Build APK](https://github.com/smyhlin/HolosReader/actions/workflows/build-apk.yml/badge.svg)](https://github.com/smyhlin/HolosReader/actions/workflows/build-apk.yml)
-[![Release APK](https://github.com/smyhlin/HolosReader/actions/workflows/release.yml/badge.svg)](https://github.com/smyhlin/HolosReader/actions/workflows/release.yml)
+[![Release APK](https://img.shields.io/github/v/release/smyhlin/HolosReader?label=Release%20APK&color=2ea44f)](https://github.com/smyhlin/HolosReader/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Android 10+](https://img.shields.io/badge/Android-10%2B%20(API%2029%E2%80%9335)-3DDC84?logo=android&logoColor=white)](app/build.gradle.kts)
+[![Android 10+](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)](https://github.com/smyhlin/HolosReader/releases/latest)
 
-**HolosReader** is a fast, fully offline Android EPUB 3 / EPUB 2 reader engineered for massive web novels and light novels (6,000+ chapters) with built-in neural Ukrainian text-to-speech powered by [HolosTTS](https://github.com/patriotyk/HolosTTS). Built purely on Android Framework APIs (`android.useAndroidX=false`) for minimal overhead and instant startup.
+**HolosReader** is a fast, distraction-free Android EPUB reader that turns your favorite books, web novels, and 6,000-chapter light novels into **lifelike Ukrainian audiobooks — 100% offline**.
+
+No accounts, no subscriptions, no cloud tracking, and no robotic system voices. Download your voice model once, import your EPUB files, and read or listen anywhere — even in airplane mode.
+
+[Quick Start](#quick-start) · [What Makes It Great](#what-makes-it-great) · [Voices & Add-ons](#voices--optional-add-ons) · [User Guide](docs/USER_GUIDE.md) · [FAQ](docs/FAQ.md) · [For Developers](#for-developers)
 
 ---
 
-## Features
+## Quick Start
+
+1. **Install the app** — Download the latest `HolosReader-v*.apk` from [**GitHub Releases**](https://github.com/smyhlin/HolosReader/releases/latest) and install it on any Android 10+ phone or tablet.
+2. **Download a voice** — On first launch, HolosReader checks your device's hardware and marks the best-fitting voice model with a **`★ Recommended`** badge. Tap **Download** — transfers run in the notification shade so you can keep using your phone.
+3. **Import & enjoy** — Tap **`+`** in the Library to import a single EPUB or an entire folder of books, open a chapter, and tap **Play**.
+
+> **Privacy first:** After downloading your chosen voice model, HolosReader works completely offline. Your books, bookmarks, reading stats, and custom voices never leave your device.
+
+---
+
+## What Makes It Great
 
 ### Built for Massive Books (6,000+ Chapters)
-- **One-time O(N) SQLite Indexing:** Streams EPUB archives once (`BookDatabase.kt`, `EpubStreamingParser.kt`) so opening a 6,500-chapter book takes milliseconds without re-parsing OPF manifests.
-- **Virtualized Paragraph Rendering:** Uses ViewHolder recycling (`ListView`) so only visible paragraphs live in memory — zero jank even in long chapters.
-- **Persistent `ZipFile` & LRU Image Cache:** Asynchronous image decoding with display-aware `inSampleSize` (`EpubImageCache.kt`) and full-screen tap-to-zoom illustration viewing.
-- **Instant TOC Search:** SQLite `LIKE` filtering across thousands of chapters (`TocSheetController.kt`).
+- **Opens in a blink:** Even giant multi-thousand-chapter web novels open almost instantly after a one-time import.
+- **Butter-smooth reading:** Virtualized scrolling keeps long chapters fluid and battery-friendly, with tap-to-zoom illustrations, styled tables (great for LitRPG status windows), footnotes, and rich EPUB 3 / EPUB 2 formatting.
+- **Effortless navigation:** Pull up at the end of a chapter to jump smoothly to the next one, scrub across the entire book by page count with **Undo / Redo**, or search thousands of chapters instantly in the **Table of Contents** (with quick **Clear** and **Current Chapter** buttons).
+- **Comfortable day or night:** Fullscreen reading by default, **9 color themes** (light, sepia, dark, AMOLED, and more), live typeface previews, brightness & typography quick panels, and optional **Bionic Reading** mode.
 
-### Full EPUB 3 & EPUB 2 Support
-- Inline and block formatting (`<b>`/`<strong>`, `<i>`/`<em>`, `<u>`, `<s>`/`<del>`, `<code>`, `<sup>`/`<sub>`, `<h1>`–`<h6>`, `<blockquote>`, `<ul>`/`<ol>`).
-- Styled `<table>` rendering (ideal for LitRPG status windows), `<aside epub:type="footnote">`, `<figure>`/`<figcaption>`, `<img>`, and SVG `<image>`.
-- Book cover extraction, bookmarks, reading statistics (`StatisticsActivity.kt`), and optional bionic reading (`BionicTextHelper.kt`).
+### Natural Offline Ukrainian Audiobooks
+- **Accurate Ukrainian pronunciation out of the box:** Built-in offline stress dictionary (2.88M+ word forms), neural fallback for rare/fantasy names, natural number/percentage/date reading, and a **Custom Stress Editor** so you can teach HolosReader how to pronounce any character name or term.
+- **Multi-Voice Adaptive Narration:** Assign different voices to the **Narrator**, **Dialogue**, and **`[System]` / status boxes** — you can even mix voices across different installed TTS models!
+- **Browse freely while listening:** Scroll ahead or look back at an earlier scene without interrupting narration, then tap to jump right back to the live spoken paragraph.
+- **Gentle, polished playback:** Smooth fade-in and fade-out edges eliminate harsh clicks on play, pause, or seek; lyrics-style Audio Sheet with word-by-word highlighting, speed ruler, **A–B repeat loop**, and a **14-preset Sleep Timer** (including *End of Chapter*).
+- **Zero-CPU Offline Chapter Cache:** Pre-render chapters to local audio for ultra-low battery listening on long trips, with a **Per-Book Offline Audio Storage** manager to delete individual books or prune stale caches safely.
+- **Full lock-screen & headset controls:** Cover art, live spoken line, chapter title, seek bar, and Bluetooth/headset play/pause/skip.
+- **Works in other apps too:** HolosReader also registers as a standard **Android System TTS engine** so you can use its voices system-wide.
 
-### Distraction-Free Reader & Overlay Controls
-- **Fullscreen by Default:** Hides the system status bar on launch (Android 10–15+), with a subtle chapter header at the top and a tap-to-hide book-wide page counter at the bottom.
-- **Book-Wide Page Scrubber:** Scrub and track progress by global book pages (`current / total`) rather than chapters alone.
-- **Compact Quick Panels & Overlay Settings Sheet:** Adjust brightness, switch across 9 themes, tweak font size, margins, and line spacing directly over the page, or pull up the 68%-height translucent settings sheet (`ReaderSettingsActivity.kt`).
-- **Live Typeface Previews:** Every font option in the font picker renders in its own typeface.
+### Fast Library & Hassle-Free Maintenance
+- **Scales to thousands of books:** Virtualized Grid (2–4 columns) and List views with instant debounced search, status filters (*Unread / Reading / Finished*), sorting, and bulk actions scoped strictly to your displayed search results.
+- **Reading Statistics:** Track daily reading & listening time, streaks, pages read, and book completion.
+- **Safe Cloud-Backup Relinking:** Restored your phone or moved your EPUB folder? Reattach your EPUBs while preserving reading progress, bookmarks, and automatically restoring embedded book covers.
+- **Model Health Check & 1-Tap Repair:** Built-in **Verify / Repair** diagnostics check model integrity and re-download only missing or damaged files — never wiping healthy files or switching your chosen precision.
+- **Verified In-App Updates:** Checks GitHub Releases automatically (waiting until you're on the Library screen so it never interrupts reading) and verifies every APK with SHA-256 before installing.
 
-### Offline Neural Ukrainian TTS & Media Controls
-- **4-Stage Offline Ukrainian G2P (No Python):**
-  1. Custom user stress dictionary (`stress_user.txt` via `StressEditorActivity.kt`)
-  2. 2,886,186 word forms from [ukrainian-word-stress](https://github.com/patriotyk/ukrainian-word-stress) + contextual disambiguation for 36,414 homographs
-  3. Embedded 1.17 MB ONNX neural accentor (`accentor-lite.onnx` from [egorsmkv/ukrainian-accentor](https://github.com/egorsmkv/ukrainian-accentor)) for out-of-vocabulary words and proper nouns
-  4. Native 1:1 Kotlin port of [patriotyk/ipa-uk](https://github.com/patriotyk/ipa-uk)
-- **Lyrics-Style Audio Sheet (`AudioSheetController.kt`):** Active paragraph card, dimmed surrounding context, live time scrubber, speed ruler, A-B loop, 14-preset in-sheet sleep timer (`Set Timeout`), offline chapter WAV caching, and voice catalog filtering (`All / Female / Male`) with instant preview.
-- **Rich Lock-Screen & Shade Media Player (`ReaderAudioService.kt`):** Displays book cover art, live spoken snippet, chapter subtitle, seekable progress bar, and transport controls.
-- **System TTS Integration:** Also registers as a standard Android TTS engine (`HolosTtsService.kt`).
+---
 
-### 3 Optional Offline ONNX TTS Models & Hardware Auto-Recommendation
-On first launch (and anytime in **Settings → TTS** or **Menu → TTS Model**), `DeviceCapabilityScanner` scans CPU cores, max clock, RAM, 64-bit ABI, and Vulkan / OpenGL ES support, highlighting the best-fitting model with a **`★ Recommended`** badge:
+## Voices & Optional Add-ons
 
-| Model | Rating | Size | Sample Rate | Highlights |
+All models and optional add-ons can be downloaded with **1 tap** inside **Settings → TTS** (running in the background notification shade).
+
+### Core Offline Voice Models
+
+| Model | Best For | Size | Audio Quality | Voices |
 | --- | --- | --- | --- | --- |
-| [**HolosTTS FP32 (Studio)**](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx) | `★★★★★ 4.8/5` | ~760 MB | 24 kHz | Full-precision Ukrainian neural TTS · 27 voices · custom cloned voices · best for flagship 6+ GB RAM devices |
-| [**Supertonic 3 (44.1 kHz)**](https://huggingface.co/Supertone/supertonic-3) | `★★★★★ 4.7/5` | ~398 MB | 44.1 kHz | Multilingual flow-matching TTS · 10 voices (`F1`–`F5`, `M1`–`M5`) · configurable quality steps (`2–12`) · **Experimental: English words pronunciation** (`<en>` span routing for embedded English terms) |
-| [**HolosTTS INT8 (Fast)**](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx-int8) | `★★★★☆ 4.2/5` | ~320 MB | 24 kHz | Lightweight quantized Ukrainian TTS · 27 voices · custom cloned voices · best for battery life & entry-level CPUs |
+| [**HolosTTS FP32 (Studio)**](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx) | Best Ukrainian quality on 6+ GB RAM phones | ~760 MB | 24 kHz (48 kHz with FlashSR) | 27 built-in + custom cloned voices |
+| [**Supertonic 3 (44.1 kHz)**](https://huggingface.co/Supertone/supertonic-3) | Crisp studio audio & Ukrainian + English words | ~398 MB | 44.1 kHz native | 10 styles (`F1`–`F5`, `M1`–`M5`), adjustable quality steps (`2–12`) |
+| [**HolosTTS INT8 (Fast)**](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx-int8) | Battery life & budget/older phones | ~320 MB | 24 kHz (48 kHz with FlashSR) | 27 built-in + custom cloned voices |
 
-### Optional ONNX Add-ons (Settings → TTS)
-- **FlashSR 48 kHz Upsampler (~487 KB, one-tap download):** Neural super-resolution ([YatharthS/FlashSR](https://huggingface.co/YatharthS/FlashSR)) that lifts HolosTTS 24 kHz audio to crisp **48 kHz** on CPU.
-- **Ukrainian Emotion Pacing (~580 MB, one-tap download):** 7-emotion Ukrainian classifier ([speed-brain-ai/speedbrain-emotion-uk-onnx](https://huggingface.co/speed-brain-ai/speedbrain-emotion-uk-onnx)) that dynamically adjusts narration speed and inter-sentence pauses for anger, fear, joy, sadness, disgust, and surprise.
-- **Contextual Stress / Homographs (~110 MB, local `.onnx` import):** Sentence-level homograph resolver (*за́мок/замо́к*, *му́ка/мука́*) hooked into `UkrainianStressifier` (Tier 1.5). Export from [aloudreader/uk-stress-token-classifier](https://huggingface.co/aloudreader/uk-stress-token-classifier) using `python3 tools/export_stress_onnx.py` and import in **Settings → TTS** (`tokenizer.json` downloads automatically).
-- **On-Device Voice Cloner (~20 MB, local `.onnx` import):** Export `voice_encoder.pt` from [patriotyk/HolosTTS](https://huggingface.co/patriotyk/HolosTTS) using `python3 tools/export_voice_encoder_onnx.py`, import `voice_encoder.onnx` in **Settings → TTS**, and tap **Clone Voice from WAV Clip** to turn any 5–15 s WAV clip into a custom HolosTTS speaker vector.
+### 1-Tap Optional Add-ons (**Settings → TTS → Optional ONNX Add-ons**)
 
-> **Tip:** Ordinary users do **not** need to run export scripts manually — **Contextual Stress (FP16/INT8)** and **On-Device Voice Cloner (`voice_encoder.onnx`)** are 1-tap auto-downloadable inside **Settings -> TTS -> Optional ONNX Add-ons** (from the [`onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1) release). `tools/export_voice_encoder_onnx.py` accepts only pre-traced TorchScript raw-waveform modules and intentionally exits with code 2 on raw `state_dict` checkpoints.
-
-
-For detailed ONNX model/add-on precision tradeoffs (INT8 vs FP16 vs FP32), export scripts, and GitHub Release hosting instructions, see [`docs/ONNX_MODELS_AND_ADDONS.md`](docs/ONNX_MODELS_AND_ADDONS.md).
-
-### Caveats & Limitations
-- **FlashSR 48 kHz** applies only to **HolosTTS INT8 / FP32** (24 kHz); **Supertonic 3** already outputs native 44.1 kHz audio.
-- **Supertonic 3** uses its own 10 voice styles (`F1`–`F5`, `M1`–`M5`) and does not support HolosTTS 256-dim cloned `.bin` voices. Its **English Words Pronunciation** toggle is experimental and keeps Roman numerals (`II`, `IV`, `X`) in Ukrainian.
-- **Ukrainian Emotion Pacing** loads an ~580 MB INT8 XLM-RoBERTa graph and is recommended for devices with **6+ GB RAM**.
-- **Contextual Stress & Voice Encoder** require a one-time PC export (`tools/export_stress_onnx.py` / `tools/export_voice_encoder_onnx.py`) because upstream Hugging Face repos publish PyTorch weights rather than pre-exported `.onnx` binaries.
-- **On-Device WAV Voice Cloner** requires **uncompressed 16-bit PCM `.wav`** (mono or stereo, 1–15 s; MP3/OGG/M4A are rejected).
-- **Hardware Scanner on restricted Android kernels:** If SELinux blocks `/sys/devices/system/cpu/*/cpufreq/cpuinfo_max_freq`, `DeviceCapabilityScanner` gracefully falls back to CPU core count, total RAM, 64-bit ABI, and Vulkan GPU presence.
-
-### Zero-Login In-App Updates
-- Checks [GitHub Releases](https://github.com/smyhlin/HolosReader/releases/latest) automatically on launch and on demand via **About → Check for updates** (`GitHubUpdater.kt`, `ApkFileProvider.kt`) — no GitHub account required.
+| Add-on | What It Does | Size | Notes |
+| --- | --- | --- | --- |
+| **FlashSR 48 kHz Upscaler** | Lifts HolosTTS 24 kHz audio to crisp, studio-like **48 kHz** with clean dynamics | ~487 KB | Works with HolosTTS INT8 & FP32 (Supertonic 3 is already 44.1 kHz) |
+| **Ukrainian Emotion Pacing** | Detects 7 emotions ahead of time to vary tempo & pauses in dialogue and action scenes | ~580 MB | Runs in background lookahead so live speech never stalls (6+ GB RAM recommended) |
+| **Contextual Stress (Homographs)** | Resolves context-dependent Ukrainian words like *за́мок/замо́к* and *му́ка/мука́* automatically | ~111 MB (INT8) / ~221 MB (FP16) | 1-tap download from [`onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1) |
+| **On-Device Voice Cloner** | Clone any voice directly on your phone from a 5–15 s uncompressed 16-bit PCM `.wav` clip | ~97 MB | 1-tap download from [`onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1); also supports importing `.pt`, `.npy`, and `.bin` voices |
 
 ---
 
-## Installation
+## Documentation
 
-1. Download the latest `HolosReader-v*.apk` from [**Releases**](https://github.com/smyhlin/HolosReader/releases/latest).
-2. Install the APK on any Android 10+ (API 29+) device.
-3. Subsequent updates can be installed directly inside the app via **Check for updates**.
+- 📖 **[User Guide](docs/USER_GUIDE.md)** — Everyday walkthrough of reading gestures, listening while browsing, multi-voice roles, voice cloning, custom stress dictionary, offline audio storage, and relinking books.
+- ❓ **[FAQ & Troubleshooting](docs/FAQ.md)** — Quick answers to common questions about models, storage, voice cloning, pronunciation, and updates.
+- 🧠 **[ONNX Models & Add-ons Guide](docs/ONNX_MODELS_AND_ADDONS.md)** — Precision tradeoffs (INT8 vs FP16 vs FP32), integrity verification & repair, offline cache recipes, and optional developer self-export scripts.
+- 🏗️ **[Architecture & Developer Guide](docs/ARCHITECTURE.md)** — Module map, G2P & TTS pipelines, concurrency/lease model, testing, and CI/CD.
 
 ---
 
-## Building from Source
+## For Developers
 
-### Requirements
-- **JDK 17** (Temurin / OpenJDK)
-- **Android SDK 35** (`compileSdk = 35`, `targetSdk = 35`, `minSdk = 29`)
-- **Gradle 8.11.1** (bundled via `./gradlew`)
+HolosReader is built purely on **Android Framework APIs** (`android.useAndroidX=false`, `minSdk 29`, `compileSdk 35`, **JDK 17**, **Gradle 8.11.1**) for minimal APK size and instant startup.
 
-### Local Build
 ```bash
-./gradlew :app:testDebugUnitTest :app:assembleDebug
-```
-The compiled APK is written to:
-```text
-app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 ```
 
-### GitHub Actions CI/CD
-- **[`release.yml`](.github/workflows/release.yml):** Automatically bumps `versionName` (`5.1.<run_number>`) and `versionCode` on every push to `main`, builds the APK, and publishes it to GitHub Releases.
-- **[`build-apk.yml`](.github/workflows/build-apk.yml):** Builds and uploads the `HolosReader-EPUB3-HolosTTS-apk` workflow artifact.
-
----
-
-## Project Structure
-
-| Module / Package | Responsibility |
-| --- | --- |
-| `holos-onnx` | ONNX Runtime engines (`HolosOnnx`, `SupertonicOnnx`, `FlashSrOnnx`, `UkrainianEmotionOnnx`, `ContextualStressOnnx`, `VoiceEncoderOnnx`, `UnigramTokenizer`) |
-| `com.holos.reader.epub` | Streaming EPUB parser, SQLite chapter/spine index, LRU image cache |
-| `com.holos.reader.g2p` | Offline Ukrainian text normalizer, stress dictionary, ONNX accentor, IPA converter |
-| `com.holos.reader.tts` | Prefetching synthesis controller, foreground `MediaSession` service, preferences, voice catalog |
-| `com.holos.reader.ui` | Library, fullscreen reader, overlay settings sheet, lyrics audio sheet, pill slider, TOC & stats |
-| `com.holos.reader.update` | Zero-login GitHub Releases updater and framework `ContentProvider` APK installer |
-
-For architectural rules, CI pitfalls, and multi-environment sync workflows, see [`AGENTS.md`](AGENTS.md) and [`CONTRIBUTING.md`](CONTRIBUTING.md).
+See **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**, **[`CONTRIBUTING.md`](CONTRIBUTING.md)**, and **[`AGENTS.md`](AGENTS.md)** for full engineering details and contribution guidelines.
 
 ---
 
 ## Credits
 
-- [patriotyk/HolosTTS](https://github.com/patriotyk/HolosTTS) — Ukrainian neural TTS architecture & models
+- [patriotyk/HolosTTS](https://github.com/patriotyk/HolosTTS) — Ukrainian neural TTS architecture & voice models
 - [patriotyk/ukrainian-word-stress](https://github.com/patriotyk/ukrainian-word-stress) — Ukrainian stress dictionary
 - [egorsmkv/ukrainian-accentor](https://github.com/egorsmkv/ukrainian-accentor) — Neural Ukrainian accentor
 - [patriotyk/ipa-uk](https://github.com/patriotyk/ipa-uk) — Ukrainian IPA phonemizer
 - [Supertone/supertonic-3](https://huggingface.co/Supertone/supertonic-3) — 44.1 kHz multilingual flow-matching ONNX TTS
-- [YatharthS/FlashSR](https://huggingface.co/YatharthS/FlashSR) — 487 KB neural 48 kHz audio upsampler
+- [YatharthS/FlashSR](https://huggingface.co/YatharthS/FlashSR) — Neural 48 kHz audio upsampler
 - [speed-brain-ai/speedbrain-emotion-uk-onnx](https://huggingface.co/speed-brain-ai/speedbrain-emotion-uk-onnx) — Ukrainian 7-emotion ONNX classifier
 - [aloudreader/uk-stress-token-classifier](https://huggingface.co/aloudreader/uk-stress-token-classifier) — Contextual Ukrainian homograph stress model
 

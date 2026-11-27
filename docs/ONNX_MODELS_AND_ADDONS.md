@@ -1,95 +1,96 @@
 # HolosReader — ONNX Models & Add-ons Guide
 
-Complete developer and power-user reference for every offline ONNX TTS model and optional add-on in **HolosReader**: exact upstream sources, licenses, precision tradeoffs (INT8 vs FP16 vs FP32), export commands, hosting guidelines, and Android Runtime caveats.
+This guide covers all offline ONNX TTS models, optional neural add-ons, precision tradeoffs (INT8 vs. FP16 vs. FP32), background downloads, bundle integrity verification & repair, offline cache recipes, and optional developer self-export scripts.
 
 ---
 
 ## 1. Core Offline TTS Models (1-Tap In-App Download)
 
-All three models download automatically inside HolosReader (first-launch selector, **Menu → TTS Model**, or **Settings → TTS**) with HTTP Range resume (`206 Partial Content` + `Content-Range` verification).
+All core TTS models download in the background via `ModelDownloadService` (foreground notification transfer) using `VerifiedHttpDownloader` (strict validator / SHA-256 resumable transfers with crash-safe atomic promotion).
 
-| Model ID | Upstream Source | Precision & Size | Output Rate | Voices | Custom Cloned Voices | Best Hardware |
-| :--- | :--- | :--- | :--- | :--- | :---: | :--- |
-| `holos_fp32` | [`patriotyk/HolosTTS`](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx) | FP32 (~760 MB) | 24 kHz | 27 Ukrainian | Yes | Flagship 64-bit, 6+ GB RAM |
-| `supertonic_3` | [`Supertone/supertonic-3`](https://huggingface.co/Supertone/supertonic-3) | FP32/ONNX (~398 MB) | 44.1 kHz | 10 (`F1`–`F5`, `M1`–`M5`) | No | Mid-range & flagship 64-bit |
-| `holos_int8` | [`patriotyk/HolosTTS`](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx-int8) | INT8 (~320 MB) | 24 kHz | 27 Ukrainian | Yes | Entry/older CPUs & battery life |
+| Model ID | Display Name | Size | Sample Rate | Voices | Precision | Upstream Repository |
+| --- | --- | --- | --- | --- | --- | --- |
+| `holos_fp32` | **HolosTTS FP32 (Studio)** | ~760 MB | 24 kHz | 27 + custom cloned | FP32 | [patriotyk/HolosTTS](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx) |
+| `supertonic_3` | **Supertonic 3 (44.1 kHz)** | ~398 MB | 44.1 kHz | 10 (`F1`–`F5`, `M1`–`M5`) | FP32 | [Supertone/supertonic-3](https://huggingface.co/Supertone/supertonic-3) |
+| `holos_int8` | **HolosTTS INT8 (Fast)** | ~320 MB | 24 kHz | 27 + custom cloned | INT8 | [patriotyk/HolosTTS](https://huggingface.co/patriotyk/HolosTTS/tree/main/onnx-int8) |
 
 ### Hardware Auto-Recommendation (`DeviceCapabilityScanner.kt`)
-- Scans CPU core count, max clock (`/sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq`), total RAM, 64-bit ABI, and Vulkan / OpenGL ES support.
-- Marks the best-fitting model with **`★ Recommended`**: `HIGH` → `holos_fp32`, `MEDIUM` → `supertonic_3`, `ENTRY` → `holos_int8`.
-- If SELinux restricts `cpufreq` sysfs reads (`maxCpuMhz == 0`), falls back cleanly to core count, RAM, 64-bit ABI, and Vulkan GPU presence.
+On first launch and in **Settings → TTS**, `DeviceCapabilityScanner` evaluates CPU core count, max clock (with graceful SELinux fallback), total RAM, 64-bit ABI, and Vulkan/GLES availability, marking the best-fitting model with **`★ Recommended`**.
 
 ---
 
-## 2. Optional ONNX Add-ons (Settings → TTS → Optional ONNX Add-ons)
+## 2. Optional ONNX Add-ons (All 1-Tap In-App Download)
 
-### A. Ready for 1-Tap In-App Download
+Every optional add-on is directly downloadable in **Settings → TTS → Optional ONNX Add-ons** (no PC or Python required for users). All add-ons are managed through generation-counted `EngineLeasePool` leases (`HolosEngineHolder.kt`) so changing settings or repairing an add-on never closes a native ONNX session while active narration or offline rendering still holds a lease.
 
-| Add-on | Upstream Source | Files Downloaded | Size | What It Does |
-| :--- | :--- | :--- | :--- | :--- |
-| **FlashSR 48 kHz Upsampler** | [`YatharthS/FlashSR`](https://huggingface.co/YatharthS/FlashSR) | `onnx/model.onnx` | ~487 KB | Neural audio super-resolution (`audio_values` 16 kHz → `reconstruction` 48 kHz). Applies to **HolosTTS INT8 / FP32** only (Supertonic 3 is already 44.1 kHz). |
-| **Ukrainian Emotion Pacing** | [`speed-brain-ai/speedbrain-emotion-uk-onnx`](https://huggingface.co/speed-brain-ai/speedbrain-emotion-uk-onnx) | `model_quantized.onnx`, `tokenizer.json` | ~580 MB | Multi-label sigmoid 7-emotion Ukrainian classifier (`Joy`, `Fear`, `Anger`, `Sadness`, `Disgust`, `Surprise`, `None`). Dynamically adjusts speed & inter-sentence pauses. Best on **6+ GB RAM** devices. |
+| Add-on | Size | Source | Key Behavior |
+| --- | --- | --- | --- |
+| **FlashSR 48 kHz Upsampler** (`model.onnx`) | ~487 KB | [YatharthS/FlashSR](https://huggingface.co/YatharthS/FlashSR) | Upsamples HolosTTS 24 kHz → 48 kHz with DC-bias removal, preserved original narration dynamics, Android 10 compatibility, and clean between-window cancellation. Not used for Supertonic 3 (already 44.1 kHz). |
+| **Ukrainian Emotion Pacing** (`model_quantized.onnx` + `tokenizer.json`) | ~580 MB | [speed-brain-ai/speedbrain-emotion-uk-onnx](https://huggingface.co/speed-brain-ai/speedbrain-emotion-uk-onnx) | 7-emotion XLM-RoBERTa classifier (`LiveEmotionPacing.kt`) running in background lookahead off the live synthesis hot path to dynamically modulate tempo and inter-sentence pauses. Recommended for 6+ GB RAM devices. |
+| **Contextual Stress / Homographs** (`uk_stress_contextual.onnx` + `tokenizer.json`) | ~111 MB (INT8) / ~221 MB (FP16) | [`onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1) | Sentence-level Ukrainian homograph disambiguator (*за́мок/замо́к*, *му́ка/мука́*) hooked into `UkrainianStressifier` (Tier 1.5). Recommends FP16 on 6+ GB RAM + NNAPI/AUTO devices, INT8 otherwise. |
+| **On-Device Voice Cloner** (`voice_encoder.onnx`) | ~97 MB | [`onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1) | Pre-exported ECAPA-TDNN speaker encoder with baked 24 kHz log-mel frontend (`VoiceEncoderOnnx.kt`). Converts any 5–15 s uncompressed 16-bit PCM `.wav` clip into a 256-dim HolosTTS voice vector on-device. |
 
-### B. Local `.onnx` Export & Import (Until Hosted on a Release Asset)
+### Pre-Built Release Assets (`onnx-addons-v1`, `--latest=false`)
+Published on [`smyhlin/HolosReader` release `onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1) (marked `make_latest=false` so in-app APK update checks ignore it):
 
-Upstream Hugging Face repos for these two add-ons publish PyTorch checkpoints rather than pre-exported `.onnx` files.
-
-#### 1. Contextual Ukrainian Stress / Homographs (`uk_stress_contextual.onnx`)
-- **Upstream:** [`aloudreader/uk-stress-token-classifier`](https://huggingface.co/aloudreader/uk-stress-token-classifier) (`model.safetensors` + `head.pt`, trained on 100 modern Ukrainian audiobooks).
-- **What it fixes:** Sentence-level homographs (*за́мок* vs *замо́к*, *му́ка* vs *мука́*, *доро́га* vs *дорога́*, *пла́чу* vs *плачу́*).
-- **Export command:**
-  ```bash
-  pip install torch transformers huggingface_hub onnx onnxruntime onnxconverter-common
-
-  # Option 1: INT8 (~110 MB) — smallest & fastest on CPU / XNNPACK
-  python3 tools/export_stress_onnx.py --precision int8 --out uk_stress_contextual.onnx
-
-  # Option 2: FP16 (~220 MB) — best for Android GPU / NPU via NNAPI
-  python3 tools/export_stress_onnx.py --precision fp16 --out uk_stress_contextual.onnx
-
-  # Option 3: FP32 (~440 MB) — maximum numerical precision (high RAM)
-  python3 tools/export_stress_onnx.py --precision fp32 --out uk_stress_contextual.onnx
-  ```
-- **How to install on phone:** Copy `uk_stress_contextual.onnx` to phone storage or Google Drive → open **Settings → TTS → Contextual Stress (Homographs) → Import .onnx**. HolosReader automatically downloads the matching `tokenizer.json` from Hugging Face.
-- **Accelerator behavior:** `HolosEngineHolder` applies your **Settings → TTS → ONNX Accelerator** preference (`AUTO`: NNAPI → XNNPACK → CPU) and **CPU Threads** to `ContextualStressOnnx`, `UkrainianEmotionOnnx`, and `FlashSrOnnx`.
-
-#### 2. On-Device WAV Voice Cloner (`voice_encoder.onnx`)
-- **Upstream:** [`patriotyk/HolosTTS`](https://huggingface.co/patriotyk/HolosTTS) (`voice_encoder.pt`).
-- **Important Upstream Contract Caveat (H27):** `patriotyk/HolosTTS`'s `voice_encoder.pt` is a PyTorch `state_dict` for two log-mel `StyleEncoder` networks, **not** a raw-waveform TorchScript graph. `tools/export_voice_encoder_onnx.py` intentionally fails closed on raw `state_dict` checkpoints rather than emitting an unqualified `.onnx` graph.
-- **Audio input requirements:** Uncompressed **16-bit PCM `.wav`** (mono or stereo, 1–15 s, max 16 MB). Produces a 256-float little-endian `.bin` vector in `files/custom_voices/` (excluded from cloud backup and device transfer).
+| Asset | Size | SHA-256 |
+| --- | --- | --- |
+| `uk_stress_contextual_fp16.onnx` | 220.5 MB (231,203,310 B) | `b9f966e92d9176152940f24542038f86bd57921b930992412c7143e7b6a15e9e` |
+| `uk_stress_contextual_int8.onnx` | 110.9 MB (116,250,425 B) | `722b7d72f79586694158b1f7141f8753e37c2eb922b98a88d47451d074b761f1` |
+| `voice_encoder.onnx` | 97.4 MB (102,163,914 B) | `383d398916ac847152e1dd5a75548d29d3f3c7e519465f03923479a26d06b50b` |
 
 ---
 
-## 3. Hosting Custom Exported `.onnx` Files for 1-Tap In-App Download
+## 3. Precision Tradeoffs: INT8 vs. FP16 vs. FP32
 
-Do **not** commit `.onnx` binaries directly into git history (GitHub rejects files > 100 MB and bloats clones). Instead, host them on a dedicated **non-latest GitHub Release** (up to **2 GB per asset**, free CDN, full HTTP Range resume) or a Hugging Face repo:
+| Precision | Size | Best Runtime / EP | Quality & Latency Notes |
+| --- | --- | --- | --- |
+| **INT8** | ~1× baseline | CPU / XNNPACK | Fastest on ARM64 CPUs with lowest RAM pressure; ideal for 4 GB RAM devices and battery life. |
+| **FP16** | ~2× INT8 | NNAPI (GPU/NPU) or modern ARM64 | Higher numerical precision than INT8 at half the footprint of FP32; recommended for Contextual Stress on 6+ GB RAM devices using NNAPI/AUTO. |
+| **FP32** | ~4× INT8 | High-end ARM64 CPU / NNAPI | Reference studio quality (`HolosTTS FP32`); highest RAM and storage usage. |
+
+> **Preserving Installed Precision:** When you run **Verify / Repair**, HolosReader preserves your currently installed Contextual Stress precision (INT8 or FP16) rather than forcing a switch to the hardware recommendation.
+
+---
+
+## 4. Integrity Verification, Selective Repair & Offline Cache Recipes
+
+### Bundle Integrity & Selective Repair (`ModelIntegrityChecker.kt`)
+- Each model and add-on directory maintains a pure-Kotlin `.verified.json` checksum manifest keyed by **bundle-relative paths** (with backward-compatible lookup for older nested records).
+- **Normal readiness** uses fast metadata checks; **Settings → Model Integrity → Verify / Repair Models & Add-ons** runs deep SHA-256 + ONNX header validation off the UI thread, distinguishing `VERIFIED`, `LEGACY_UNVERIFIED`, `CORRUPT`, `MISSING`, and `VARIANT_MISMATCH`.
+- For HolosTTS bundles, repair stages and validates a replacement `manifest.json` *before* rebuilding the list of weights to repair.
+- Only missing, corrupt, or mismatched files are re-downloaded into `.part` staging files and promoted atomically — healthy files and active playback leases remain untouched.
+
+### Strict Resumable Downloads (`VerifiedHttpDownloader.kt`)
+- HTTP 206 resume is permitted **only** when either a strong saved validator (non-weak `ETag` or `Last-Modified`) matches the 206 response or a mandatory `expectedSha256` is supplied. Otherwise `.part` is discarded and a fresh HTTP 200 download is requested so two upstream revisions can never be mixed.
+
+### Offline Chapter Audio Cache (`AudioCacheRecipe.kt` v4 & `OfflineStorageManager.kt`)
+- Offline chapter WAVs are keyed by an immutable **v4 `AudioCacheRecipe`** captured from the **actually leased engine** (`engine.modelId`), active add-on revisions, FlashSR revision, all adaptive role voices and custom voice fingerprints, speed, Supertonic options, stress overrides, and EPUB parser version.
+- Active playback and offline rendering hold live leases in `OfflineStorageManager`, ensuring stale-cache pruning and per-book cleanup never delete an in-use or freshly published chapter.
+
+---
+
+## 5. Advanced / Developer Self-Export Scripts
+
+Ordinary users do **not** need these scripts because all pre-built add-ons are hosted in `onnx-addons-v1`. Developers who want to export custom checkpoints from source can use the bundled tools:
+
+### Contextual Ukrainian Stress (`tools/export_stress_onnx.py`)
+Exports [aloudreader/uk-stress-token-classifier](https://huggingface.co/aloudreader/uk-stress-token-classifier) (`xlm-roberta-base`, 5-class token classifier):
 
 ```bash
-# 1. Create a dedicated asset-only release (make_latest=false so GitHubUpdater APK checks ignore it!)
-gh release create onnx-addons-v1 \
-  --title "HolosReader ONNX Add-ons v1" \
-  --notes "Pre-exported ONNX add-ons for HolosReader 1-tap download." \
-  --latest=false \
-  uk_stress_contextual.onnx
-
-# 2. Direct download URL format:
-# https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/uk_stress_contextual.onnx
+pip install torch transformers optimum onnx onnxruntime
+# INT8 (~111 MB, best for CPU)
+python3 tools/export_stress_onnx.py --quantize int8 --output ./uk_stress_contextual.onnx
+# FP16 (~221 MB, best for GPU/NNAPI)
+python3 tools/export_stress_onnx.py --quantize fp16 --output ./uk_stress_contextual.onnx
 ```
 
-Once uploaded, wire the direct HTTPS URL into `OnnxAddonManager.kt` (`CONTEXTUAL_STRESS_ONNX_URL`) and flip `directDownloadAvailable = true` in `OnnxAddonSpec.kt` to turn **Import .onnx** into a 1-tap **Download** button inside the app.
+### On-Device Voice Cloner (`tools/export_voice_encoder_onnx.py`)
+Exports a pre-traced TorchScript raw-waveform speaker encoder module (accepts `[1, N]` float32 audio at 24 kHz, outputs `[1, 256]` float32 embedding; intentionally exits with code 2 on raw `state_dict` checkpoints):
 
----
+```bash
+pip install torch onnx onnxruntime
+python3 tools/export_voice_encoder_onnx.py --checkpoint voice_encoder_ts.pt --output ./voice_encoder.onnx
+```
 
-## Live Pre-Built Release Assets (`onnx-addons-v1`)
-
-Pre-exported, numerically verified ONNX add-on binaries are published on the non-latest GitHub Release [`onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1) (`--latest=false`, so APK update checks against `/releases/latest` remain unaffected). All four optional ONNX add-ons are **1-tap auto-downloadable** from **Settings -> TTS -> Додаткові ONNX-модулі**:
-
-| Asset | Size | SHA-256 | Parity vs Upstream PyTorch |
-|---|---:|---|---|
-| [`uk_stress_contextual_fp16.onnx`](https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/uk_stress_contextual_fp16.onnx) | 220.5 MB | `41d57395dd5ab2efa4db8640dd2046b8663164eedf9ceb782f5f0a4e01b0db1e` | `max_abs_diff = 0.0064`, 10/10 top-1 Ukrainian homograph agreement (GPU/NNAPI) |
-| [`uk_stress_contextual_int8.onnx`](https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/uk_stress_contextual_int8.onnx) | 110.9 MB | `0487b6bccd7f129a8c36fabcf7b59d5a94017df9750b504cfc3b2af00d25a2c8` | 10/10 top-1 Ukrainian homograph agreement (CPU/XNNPACK) |
-| [`voice_encoder.onnx`](https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/voice_encoder.onnx) | 97.4 MB | `31c2cd3a8b9d7849b7fd9c485f28b469148a71db4ee01362d93e720f5a881fc1` | Cosine similarity `0.99962` vs `patriotyk/HolosTTS` `VoiceEncoder` (3.0s / 6.5s / 11.3s WAVs, exact 24 kHz log-mel frontend baked into ONNX) |
-| [`SHA256SUMS`](https://github.com/smyhlin/HolosReader/releases/download/onnx-addons-v1/SHA256SUMS) | 279 B | — | Verification manifest for all three ONNX assets |
-
-- **Contextual Stress picker in Settings:** Tapping **Контекстні наголоси (омографи) -> Завантажити** lets you pick **FP16 (~221 MB · GPU/NNAPI)** or **INT8 (~111 MB · CPU/XNNPACK)** (auto-recommending FP16 on 6+ GB RAM devices with `AUTO`/`NNAPI` acceleration) or import a custom local `.onnx`. `tokenizer.json` downloads automatically alongside the model.
-- **Voice Cloner in Settings:** Tapping **Клонування голосу на телефоні -> Завантажити** downloads `voice_encoder.onnx` (~97 MB) in one tap, enabling offline 5–15 s WAV voice cloning directly on-device.
+You can also import custom `.onnx` files directly on-device via **Settings → TTS → Optional ONNX Add-ons → Import `.onnx`**.

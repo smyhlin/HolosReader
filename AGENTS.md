@@ -101,3 +101,21 @@ When syncing changes from an isolated sandbox VM to GitHub via `@cloudkey`:
 - **UI, Verified APK Handoff & Release Packaging (H29–H35):**
   - `PillSliderView` reverts on `ACTION_CANCEL`, exact ±0.10 line spacing steps, exact ABI token matching (fail-closed) in `GitHubUpdater`, and `-PrequireReleaseSigning=true` fail-closed Gradle gate.
   - **Verification boundary:** All JVM unit tests, Android Lint, debug APK, and signed R8 + ABI-split release APKs are verified in GitHub Actions (`Build HolosReader APK`); stock API 29 & Android 15 16 KiB physical handset checks remain device-stage checks.
+
+---
+
+## 8. Post-Wave-1 Additions & Testing Gotchas (PRs #29–#130)
+
+- **New Core Components (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full map):**
+  - `ModelDownloadService.kt`: Foreground notification transfer service for non-blocking model & ONNX add-on downloads.
+  - `AdaptiveVoicePlan.kt`: Cross-model adaptive narration routing (Narrator / Dialogue / System) across multiple installed TTS models, with live narrator badge in the player.
+  - `LiveEmotionPacing.kt`: Off-hot-path lookahead emotion classification so live Holos synthesis never stalls waiting on XLM-RoBERTa inference.
+  - `PlaybackGain.kt`: Smooth fade-in/fade-out audio edge ramps and quiet reader comfort controls.
+  - `ChapterEdgeListView.kt` & `TocSheetController.kt`: Pull-to-next-chapter gesture with floating pull chip and fast SQLite TOC search with Clear / Current actions.
+  - `ModelIntegrityChecker.kt` & `VerifiedHttpDownloader.kt`: Pure-Kotlin bundle-relative `.verified.json` checksum manifest (with legacy nested-record lookup), Holos manifest pre-repair, preserved installed INT8/FP16 precision, and strict strong-validator / SHA-256 HTTP 206 resume.
+  - `OfflineStorageManager.kt` & `AudioCacheRecipe.kt` (v4): Per-book offline storage inventory, live playback/render lease protection during cleanup/pruning, and immutable v4 cache recipes keyed to the leased `engine.modelId`.
+  - `PlaybackFocusGate` & `EngineLeasePool` (engine + all 3 add-ons): Generation-aware foreground/focus handshake, paragraph-level `MediaSession` refresh without restarting foreground service, and generation-scoped sleep scheduler shut down on reader disposal.
+  - Virtualized `LibraryActivity.kt`: Framework `GridView`/`ListView` with `BaseAdapter`, 200 ms debounced async search, search-scoped bulk actions, serialized batch import, and deferred update prompts until Library focus.
+- **JVM Unit Test Gotchas (`:app:testDebugUnitTest`):**
+  - Avoid `org.json.JSONObject` in pure-JVM production code (throws `Method ... not mocked` against `android.jar` stubs).
+  - Avoid `com.sun.net.httpserver.HttpServer` in unit tests (hidden by `android.jar` bootclasspath); use `java.net.ServerSocket`.
