@@ -89,14 +89,15 @@ object HolosModelManager {
         onProgress: (message: String, percent: Int) -> Unit,
     ): File {
         val en = AppStrings.isEnglish(context)
+        val concurrency = ReaderPreferences(context).downloadConcurrency
         val spec = TtsModelCatalog.byId(modelId)
         val dir = getBundleDir(context, modelId)
         dir.mkdirs()
 
         return when (modelId) {
-            TtsModelId.HOLOS_INT8 -> downloadHolosBundle(dir, HOLOS_INT8_BASE_URL, spec.displayName(en), en, onProgress)
-            TtsModelId.HOLOS_FP32 -> downloadHolosBundle(dir, HOLOS_FP32_BASE_URL, spec.displayName(en), en, onProgress)
-            TtsModelId.SUPERTONIC_3 -> downloadSupertonicBundle(dir, spec.displayName(en), en, onProgress)
+            TtsModelId.HOLOS_INT8 -> downloadHolosBundle(dir, HOLOS_INT8_BASE_URL, spec.displayName(en), en, concurrency, onProgress)
+            TtsModelId.HOLOS_FP32 -> downloadHolosBundle(dir, HOLOS_FP32_BASE_URL, spec.displayName(en), en, concurrency, onProgress)
+            TtsModelId.SUPERTONIC_3 -> downloadSupertonicBundle(dir, spec.displayName(en), en, concurrency, onProgress)
         }
     }
 
@@ -105,12 +106,13 @@ object HolosModelManager {
         baseUrl: String,
         modelName: String,
         en: Boolean,
+        concurrency: Int,
         onProgress: (message: String, percent: Int) -> Unit,
     ): File {
         val manifestFile = File(dir, HOLOS_MANIFEST_NAME)
         if (!manifestFile.exists() || manifestFile.length() == 0L) {
             onProgress(if (en) "Downloading $modelName manifest…" else "Завантаження маніфесту $modelName…", 0)
-            downloadFile(baseUrl + HOLOS_MANIFEST_NAME, manifestFile) { _, _ -> }
+            downloadFile(baseUrl + HOLOS_MANIFEST_NAME, manifestFile, concurrency = 1) { _ -> }
             ModelIntegrityChecker.recordVerifiedFile(dir, HOLOS_MANIFEST_NAME, manifestFile, baseUrl + HOLOS_MANIFEST_NAME)
         }
         val files = requiredHolosFiles(dir, manifestFile)
@@ -118,7 +120,7 @@ object HolosModelManager {
             val rel = f.relativeTo(dir.canonicalFile).invariantSeparatorsPath
             (baseUrl + rel) to f
         }
-        downloadFileList(dir, items, modelName, en, onProgress)
+        downloadFileList(dir, items, modelName, en, concurrency, onProgress)
         return dir
     }
 
@@ -126,6 +128,7 @@ object HolosModelManager {
         dir: File,
         modelName: String,
         en: Boolean,
+        concurrency: Int,
         onProgress: (message: String, percent: Int) -> Unit,
     ): File {
         val canonicalDir = dir.canonicalFile
@@ -135,7 +138,7 @@ object HolosModelManager {
             require(target.path.startsWith(prefix)) { "Unsafe path in Supertonic bundle: $rel" }
             (SUPERTONIC_3_BASE_URL + rel) to target
         }
-        downloadFileList(dir, items, modelName, en, onProgress)
+        downloadFileList(dir, items, modelName, en, concurrency, onProgress)
         return dir
     }
 
@@ -144,6 +147,7 @@ object HolosModelManager {
         items: List<Pair<String, File>>,
         modelName: String,
         en: Boolean,
+        concurrency: Int,
         onProgress: (message: String, percent: Int) -> Unit,
     ) {
         val totalCount = items.size
@@ -168,16 +172,10 @@ object HolosModelManager {
                 if (en) "Downloading $name (${index + 1}/$totalCount)…" else "Завантаження $name (${index + 1}/$totalCount)…",
                 (index * 100) / totalCount,
             )
-            downloadFile(url, target) { downloaded, total ->
-                val frac = if (total > 0) downloaded.toDouble() / total else 0.0
+            downloadFile(url, target, concurrency = concurrency) { prog ->
+                val frac = if (prog.totalBytes > 0L) prog.downloadedBytes.toDouble() / prog.totalBytes else 0.0
                 val pct = (((index + frac) / totalCount) * 100).toInt().coerceIn(0, 99)
-                val mb = downloaded / (1024.0 * 1024.0)
-                val unit = if (en) "MB" else "МБ"
-                val label = if (total > 0) {
-                    String.format(Locale.US, "%s (%.1f / %.1f %s)", name, mb, total / (1024.0 * 1024.0), unit)
-                } else {
-                    String.format(Locale.US, "%s (%.1f %s)", name, mb, unit)
-                }
+                val label = VerifiedHttpDownloader.formatProgressSummary(name, prog, en)
                 onProgress(label, pct)
             }
             ModelIntegrityChecker.recordVerifiedFile(bundleDir, relKey, target, url)
@@ -207,13 +205,15 @@ object HolosModelManager {
     private fun downloadFile(
         urlStr: String,
         target: File,
-        onBytes: (downloaded: Long, total: Long) -> Unit,
+        concurrency: Int = VerifiedHttpDownloader.DEFAULT_CONCURRENCY,
+        onProgress: (VerifiedHttpDownloader.DownloadProgress) -> Unit = { _ -> },
     ) {
         VerifiedHttpDownloader.download(
             urlStr = urlStr,
             target = target,
             userAgent = USER_AGENT,
-            onBytes = onBytes,
+            concurrency = concurrency,
+            onProgress = onProgress,
         )
     }
 
@@ -284,7 +284,7 @@ object HolosModelManager {
             check(item.relPath != HOLOS_MANIFEST_NAME) { "Holos manifest could not be repaired" }
             done++
             onProgress("Repairing ${item.file.name} ($done/$total)…", ((done - 1) * 100) / total)
-            downloadFile(item.sourceUrl, item.file) { _, _ -> }
+            downloadFile(item.sourceUrl, item.file)
         }
     }
 }

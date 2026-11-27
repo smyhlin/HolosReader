@@ -312,4 +312,10 @@ class ReaderPreferences(context: Context) {
     var dismissedUpdateTag: String?
         get() = prefs.getString("dismissed_update_tag", null)
         set(v) = prefs.edit().putString("dismissed_update_tag", v).apply()
+
+    var downloadConcurrency: Int
+        get() = VerifiedHttpDownloader.normalizeConcurrency(
+            prefs.getInt("download_concurrency", VerifiedHttpDownloader.DEFAULT_CONCURRENCY),
+        )
+        set(v) = prefs.edit().putInt("download_concurrency", VerifiedHttpDownloader.normalizeConcurrency(v)).apply()
 }

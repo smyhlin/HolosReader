@@ -257,14 +257,23 @@ object GitHubUpdater {
             val outFile = File(updatesDir, ApkFileProvider.APK_FILE_NAME)
             val tmpFile = File(updatesDir, ApkFileProvider.APK_FILE_NAME + ".part")
             try {
-                downloadWithRedirects(release.apkUrl, tmpFile, release.apkSizeBytes) { pct ->
-                    activity.runOnUiThread {
-                        if (!activity.isFinishing && !activity.isDestroyed) {
-                            bar.progress = pct
-                            statusTv.text = if (en) "Downloading ${release.tagName}… $pct%" else "Завантаження ${release.tagName}… $pct%"
+                com.holos.reader.tts.VerifiedHttpDownloader.download(
+                    urlStr = release.apkUrl,
+                    target = tmpFile,
+                    userAgent = "HolosReader-Android",
+                    expectedBytes = release.apkSizeBytes,
+                    concurrency = prefs.downloadConcurrency,
+                    onProgress = { prog ->
+                        val pct = if (prog.totalBytes > 0L) ((prog.downloadedBytes * 100L) / prog.totalBytes).toInt().coerceIn(0, 100) else 0
+                        val summary = com.holos.reader.tts.VerifiedHttpDownloader.formatProgressSummary(release.tagName, prog, en)
+                        activity.runOnUiThread {
+                            if (!activity.isFinishing && !activity.isDestroyed) {
+                                bar.progress = pct
+                                statusTv.text = "$summary · $pct%"
+                            }
                         }
-                    }
-                }
+                    },
+                )
                 verifyAndStageApk(
                     tmpFile = tmpFile,
                     outFile = outFile,

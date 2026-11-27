@@ -1048,8 +1048,21 @@ class ReaderSettingsActivity : Activity() {
             quickColorRow(),
         )))
 
-        host.addView(sectionLabel(tr("Цілісність моделей", "Model Integrity")))
+        host.addView(sectionLabel(tr("Завантаження та цілісність моделей", "Downloads & Model Integrity")))
         host.addView(groupedCard(listOf(
+            pickerRow(
+                label = tr("Потоки завантаження (Range)", "Parallel Download Connections"),
+                currentLabel = { "${prefs.downloadConcurrency}×" },
+                options = listOf(
+                    "1" to tr("1 потік (послідовно)", "1 connection (sequential)"),
+                    "2" to tr("2 потоки", "2 connections"),
+                    "4" to tr("4 потоки", "4 connections"),
+                    "6" to tr("6 потоків ★ Рекомендовано", "6 connections ★ Recommended"),
+                    "8" to tr("8 потоків (макс. швидкість)", "8 connections (high speed)"),
+                    "16" to tr("16 потоків (експериментально)", "16 connections (experimental)"),
+                ),
+                onPicked = { v -> prefs.downloadConcurrency = v.toIntOrNull() ?: com.holos.reader.tts.VerifiedHttpDownloader.DEFAULT_CONCURRENCY },
+            ),
             actionRow(
                 label = tr("Перевірити / Відновити моделі", "Verify / Repair Models & Add-ons"),
                 subtitle = tr(

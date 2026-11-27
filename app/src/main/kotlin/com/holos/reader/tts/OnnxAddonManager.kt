@@ -74,6 +74,7 @@ object OnnxAddonManager {
         onProgress: (message: String, percent: Int) -> Unit = { _, _ -> },
     ): File {
         val en = AppStrings.isEnglish(context)
+        val concurrency = ReaderPreferences(context).downloadConcurrency
         val dir = getAddonDir(context, addonId).apply { mkdirs() }
         val targetName = when (addonId) {
             OnnxAddonId.FLASH_SR -> "model.onnx"
@@ -155,16 +156,10 @@ object OnnxAddonManager {
                 if (en) "Downloading ${target.name}…" else "Завантаження ${target.name}…",
                 (index * 100) / totalCount,
             )
-            downloadFile(url, target) { downloaded, total ->
-                val frac = if (total > 0) downloaded.toDouble() / total else 0.0
+            downloadFile(url, target, concurrency = concurrency) { prog ->
+                val frac = if (prog.totalBytes > 0L) prog.downloadedBytes.toDouble() / prog.totalBytes else 0.0
                 val pct = (((index + frac) / totalCount) * 100).toInt().coerceIn(0, 99)
-                val mb = downloaded / (1024.0 * 1024.0)
-                val unit = if (en) "MB" else "МБ"
-                val label = if (total > 0) {
-                    String.format(Locale.US, "%s (%.1f / %.1f %s)", target.name, mb, total / (1024.0 * 1024.0), unit)
-                } else {
-                    String.format(Locale.US, "%s (%.1f %s)", target.name, mb, unit)
-                }
+                val label = VerifiedHttpDownloader.formatProgressSummary(target.name, prog, en)
                 onProgress(label, pct)
             }
             ModelIntegrityChecker.recordVerifiedFile(dir, target.name, target, url, variant, known?.second)
@@ -176,7 +171,8 @@ object OnnxAddonManager {
     private fun downloadFile(
         urlStr: String,
         target: File,
-        onBytes: (downloaded: Long, total: Long) -> Unit,
+        concurrency: Int = VerifiedHttpDownloader.DEFAULT_CONCURRENCY,
+        onProgress: (VerifiedHttpDownloader.DownloadProgress) -> Unit = { _ -> },
     ) {
         val known = KNOWN_VERIFICATIONS[urlStr]
         VerifiedHttpDownloader.download(
@@ -185,7 +181,8 @@ object OnnxAddonManager {
             userAgent = USER_AGENT,
             expectedBytes = known?.first ?: -1L,
             expectedSha256 = known?.second,
-            onBytes = onBytes,
+            concurrency = concurrency,
+            onProgress = onProgress,
         )
     }
 
@@ -247,7 +244,7 @@ object OnnxAddonManager {
     fun repairAddon(context: Context, addonId: OnnxAddonId, preferFp16: Boolean? = null): ModelIntegrityChecker.BundleReport {
         val dir = getAddonDir(context, addonId).apply { mkdirs() }
         return ModelIntegrityChecker.repairBundle(dir, expectedFilesForAddon(context, addonId, preferFp16)) { item ->
-            downloadFile(item.sourceUrl, item.file) { _, _ -> }
+            downloadFile(item.sourceUrl, item.file, concurrency = ReaderPreferences(context).downloadConcurrency)
         }
     }
 }
