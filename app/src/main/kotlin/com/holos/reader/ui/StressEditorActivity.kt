@@ -203,6 +203,13 @@ class StressEditorActivity : Activity() {
                 val voice = prefs.selectedVoice?.takeIf {
                     it.startsWith(com.holos.reader.tts.CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
                 } ?: engine.voices.firstOrNull()
+                val flashSr = if (engine is com.holos.reader.tts.HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(this) else null
+                val outputRate = if (flashSr != null) com.holos.tts.FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
+                val minBuf = AudioTrack.getMinBufferSize(
+                    outputRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_FLOAT,
+                ).coerceAtLeast(outputRate * 4 / 4)
                 val track = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
@@ -213,15 +220,35 @@ class StressEditorActivity : Activity() {
                     .setAudioFormat(
                         AudioFormat.Builder()
                             .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                            .setSampleRate(engine.sampleRate)
+                            .setSampleRate(outputRate)
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                             .build()
                     )
                     .setTransferMode(AudioTrack.MODE_STREAM)
-                    .setBufferSizeInBytes(2 * engine.sampleRate * 4)
+                    .setBufferSizeInBytes(maxOf(minBuf, outputRate * 4))
                     .build()
 
+                var totalFramesWritten = 0L
                 try {
+                    track.play()
+                    fun writeChunkSafe(samples: FloatArray) {
+                        var off = 0
+                        while (off < samples.size && !cancelTest.get()) {
+                            val slice = minOf(4096, samples.size - off)
+                            val written = track.write(samples, off, slice, AudioTrack.WRITE_BLOCKING)
+                            if (written < 0) {
+                                cancelTest.set(true)
+                                return
+                            }
+                            if (written == 0) {
+                                Thread.sleep(10)
+                            } else {
+                                off += written
+                                totalFramesWritten += written.toLong()
+                            }
+                        }
+                    }
+
                     HolosSafeSynthesizer.synthesizeParagraphStreaming(
                         engine = engine,
                         stressifier = stressifier,
@@ -230,14 +257,34 @@ class StressEditorActivity : Activity() {
                         speed = prefs.speechSpeed,
                         cancelled = cancelTest,
                         customVoicesDir = HolosEngineHolder.getCustomVoicesDir(this),
+                        supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
+                        supertonicSteps = prefs.supertonicSteps,
+                        flashSr = flashSr,
                     ) { chunk ->
-                        track.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
-                        if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+                        writeChunkSafe(chunk)
                     }
-                    Thread.sleep(300)
-                    track.stop()
+
+                    if (!cancelTest.get() && totalFramesWritten > 0L) {
+                        writeChunkSafe(FloatArray((outputRate * 80) / 1000))
+                        val startDrainMs = android.os.SystemClock.elapsedRealtime()
+                        val maxWaitMs = ((totalFramesWritten * 1000L) / outputRate).coerceAtLeast(1000L) + 2500L
+                        while (!cancelTest.get()) {
+                            val played = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                            if (played >= totalFramesWritten) break
+                            if (android.os.SystemClock.elapsedRealtime() - startDrainMs > maxWaitMs) break
+                            Thread.sleep(25)
+                        }
+                    }
+                    try {
+                        if (cancelTest.get()) {
+                            track.pause()
+                            track.flush()
+                        } else {
+                            track.stop()
+                        }
+                    } catch (_: Exception) {}
                 } finally {
-                    track.release()
+                    try { track.release() } catch (_: Exception) {}
                 }
             } catch (t: Throwable) {
                 runOnUiThread {

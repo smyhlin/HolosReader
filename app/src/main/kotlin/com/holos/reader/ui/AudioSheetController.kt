@@ -1253,10 +1253,16 @@ class AudioSheetController(
                     setTextColor(p.primaryText)
                 })
                 addView(TextView(activity).apply {
+                    val activeModel = prefs.selectedTtsModelId
+                    val rateLabel = when {
+                        activeModel == com.holos.reader.tts.TtsModelId.SUPERTONIC_3 -> "44,1 кГц офлайн"
+                        prefs.flashSrEnabled && com.holos.reader.tts.OnnxAddonManager.isAddonReady(activity, com.holos.reader.tts.OnnxAddonId.FLASH_SR) -> "48 кГц (FlashSR)"
+                        else -> "24 кГц офлайн"
+                    }
                     text = if (voice.startsWith(CustomVoiceLoader.CUSTOM_PREFIX)) {
-                        "Клонований голос (.pt/.npy · 24 кГц офлайн)"
+                        "Клонований голос (.pt/.npy · $rateLabel)"
                     } else {
-                        "${vInfo.gender.labelUk} · ${vInfo.timbreUk} · 24 кГц офлайн"
+                        "${vInfo.gender.labelUk} · ${vInfo.timbreUk} · $rateLabel"
                     }
                     textSize = 12f
                     setTextColor(p.secondaryText)
@@ -1369,6 +1375,13 @@ class AudioSheetController(
                     return@execute
                 }
                 val stressifier = HolosEngineHolder.getStressifier(activity)
+                val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(activity) else null
+                val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
+                val minBuf = AudioTrack.getMinBufferSize(
+                    outputRate,
+                    AudioFormat.CHANNEL_OUT_MONO,
+                    AudioFormat.ENCODING_PCM_FLOAT,
+                ).coerceAtLeast(outputRate * 4 / 4)
                 val track = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
@@ -1379,15 +1392,36 @@ class AudioSheetController(
                     .setAudioFormat(
                         AudioFormat.Builder()
                             .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                            .setSampleRate(engine.sampleRate)
+                            .setSampleRate(outputRate)
                             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                             .build()
                     )
                     .setTransferMode(AudioTrack.MODE_STREAM)
-                    .setBufferSizeInBytes(2 * engine.sampleRate * 4)
+                    .setBufferSizeInBytes(maxOf(minBuf, outputRate * 4))
                     .build()
                 activePreviewTrack = track
+                var totalFramesWritten = 0L
                 try {
+                    // Start AudioTrack BEFORE writing so full-utterance Supertonic chunks never deadlock WRITE_BLOCKING
+                    track.play()
+                    fun writeChunkSafe(samples: FloatArray) {
+                        var off = 0
+                        while (off < samples.size && previewGen.get() == myGen && !previewCancel.get()) {
+                            val slice = minOf(4096, samples.size - off)
+                            val written = track.write(samples, off, slice, AudioTrack.WRITE_BLOCKING)
+                            if (written < 0) {
+                                previewCancel.set(true)
+                                return
+                            }
+                            if (written == 0) {
+                                Thread.sleep(10)
+                            } else {
+                                off += written
+                                totalFramesWritten += written.toLong()
+                            }
+                        }
+                    }
+
                     HolosSafeSynthesizer.synthesizeParagraphStreaming(
                         engine = engine,
                         stressifier = stressifier,
@@ -1398,16 +1432,32 @@ class AudioSheetController(
                         customVoicesDir = HolosEngineHolder.getCustomVoicesDir(activity),
                         supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
                         supertonicSteps = prefs.supertonicSteps,
+                        flashSr = flashSr,
                     ) { chunk ->
-                        if (previewGen.get() == myGen && !previewCancel.get()) {
-                            track.write(chunk, 0, chunk.size, AudioTrack.WRITE_BLOCKING)
-                            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) track.play()
+                        writeChunkSafe(chunk)
+                    }
+
+                    // Drain buffered audio to the final frame so speech NEVER cuts off mid-sentence
+                    if (previewGen.get() == myGen && !previewCancel.get() && totalFramesWritten > 0L) {
+                        val tailPad = FloatArray((outputRate * 80) / 1000)
+                        writeChunkSafe(tailPad)
+                        val startDrainMs = android.os.SystemClock.elapsedRealtime()
+                        val maxWaitMs = ((totalFramesWritten * 1000L) / outputRate).coerceAtLeast(1000L) + 2500L
+                        while (previewGen.get() == myGen && !previewCancel.get()) {
+                            val played = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+                            if (played >= totalFramesWritten) break
+                            if (android.os.SystemClock.elapsedRealtime() - startDrainMs > maxWaitMs) break
+                            Thread.sleep(25)
                         }
                     }
-                    if (previewGen.get() == myGen && !previewCancel.get()) {
-                        Thread.sleep(260)
-                    }
-                    try { track.stop() } catch (_: Exception) {}
+                    try {
+                        if (previewCancel.get() || previewGen.get() != myGen) {
+                            track.pause()
+                            track.flush()
+                        } else {
+                            track.stop()
+                        }
+                    } catch (_: Exception) {}
                 } finally {
                     if (activePreviewTrack === track) activePreviewTrack = null
                     try { track.release() } catch (_: Exception) {}
