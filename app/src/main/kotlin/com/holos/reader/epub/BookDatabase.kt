@@ -13,7 +13,6 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.security.MessageDigest
@@ -35,12 +34,6 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     private val appCtx = context.applicationContext
     private val booksDir = File(appCtx.filesDir, "books").apply { mkdirs() }
     private val coversDir = File(appCtx.filesDir, "covers").apply { mkdirs() }
-    private val progressExecutor = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "HolosProgress").apply { isDaemon = true }
-    }
-    private val progressGate = Any()
-    private var queuedProgress: ProgressSnapshot? = null
-
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         db.setForeignKeyConstraintsEnabled(true)
@@ -658,6 +651,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         addSeconds: Long = 0L,
         reachedEnd: Boolean = false,
         event: com.holos.reader.tts.ProgressEvent = com.holos.reader.tts.ProgressEvent.CONSUMED_READING,
+        recordedAtMs: Long = System.currentTimeMillis(),
     ) {
         val db = writableDatabase
         db.beginTransaction()
@@ -685,7 +679,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 else -> ReadingStatus.READING
             }
             val safeAddSec = addSeconds.coerceAtLeast(0L)
-            val now = System.currentTimeMillis()
+            val now = recordedAtMs
             db.execSQL(
                 "UPDATE books SET last_chapter=?, last_block=?, status=?, reading_time_sec = reading_time_sec + ?, last_read_at=? WHERE id=?",
                 arrayOf<Any>(chapterIndex, blockIndex, newStatus.code, safeAddSec, now, bookId),
@@ -707,11 +701,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         }
     }
 
-    /**
-     * Coalesces scroll checkpoints onto one background writer.
-     * Seconds are summed and the newest position wins, so a burst of idle-scroll saves
-     * cannot drop reading time or jump the UI thread onto SQLite.
-     */
+    /** Queue progress in event order: navigation, consumption and completion have distinct accounting. */
     fun enqueueProgress(
         bookId: String,
         chapterIndex: Int,
@@ -720,50 +710,33 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         reachedEnd: Boolean = false,
         event: com.holos.reader.tts.ProgressEvent = com.holos.reader.tts.ProgressEvent.CONSUMED_READING,
     ) {
-        val next = ProgressSnapshot(
-            bookId,
-            chapterIndex,
-            blockIndex,
-            addSeconds.coerceAtLeast(0L),
-            reachedEnd,
-            event,
-        )
-        val displaced = synchronized(progressGate) {
-            val prev = queuedProgress
-            if (prev != null && prev.bookId != next.bookId) {
-                queuedProgress = next
-                prev
-            } else {
-                queuedProgress = coalesceProgress(prev, next)
-                null
+        synchronized(progressLock) {
+            val position = PendingPosition(chapterIndex, blockIndex, System.currentTimeMillis())
+            pendingPositions[bookId] = position
+            progressExecutor.execute {
+                try {
+                    updateProgress(bookId, chapterIndex, blockIndex, addSeconds, reachedEnd, event, position.recordedAtMs)
+                } catch (error: android.database.sqlite.SQLiteException) {
+                    android.util.Log.w("BookDatabase", "Progress write failed", error)
+                } finally {
+                    synchronized(progressLock) {
+                        if (pendingPositions[bookId] === position) pendingPositions.remove(bookId)
+                    }
+                }
             }
         }
-        progressExecutor.execute {
-            if (displaced != null) writeSnapshot(displaced)
-            drainProgress()
-        }
     }
 
-    /** Blocks the caller until the queued checkpoint is on disk. Call from the UI thread on pause/destroy, never from [progressExecutor]. */
-    fun flushProgress(timeoutMs: Long = 1_500L) {
-        val done = progressExecutor.submit { drainProgress() }
-        try {
-            done.get(timeoutMs, TimeUnit.MILLISECONDS)
-        } catch (_: Exception) {
-        }
-    }
-
-    private fun drainProgress() {
-        val job = synchronized(progressGate) { queuedProgress.also { queuedProgress = null } } ?: return
-        writeSnapshot(job)
-    }
-
-    private fun writeSnapshot(job: ProgressSnapshot) {
-        try {
-            updateProgress(job.bookId, job.chapterIndex, job.blockIndex, job.addSeconds, job.reachedEnd, job.event)
-        } catch (t: Throwable) {
-            android.util.Log.w("BookDatabase", "Progress write failed", t)
-        }
+    fun getBookForReader(bookId: String): BookRecord? {
+        val pending = synchronized(progressLock) { pendingPositions[bookId] }
+        val book = getBook(bookId) ?: return null
+        return if (pending != null && pending.recordedAtMs >= book.lastReadAtMs) {
+            book.copy(
+                lastChapterIndex = pending.chapter,
+                lastBlockIndex = pending.block,
+                lastReadAtMs = pending.recordedAtMs,
+            )
+        } else book
     }
 
     fun updateStatus(bookIds: Collection<String>, status: ReadingStatus) {
@@ -906,7 +879,14 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     private fun escapeLike(raw: String): String =
         raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
+    private data class PendingPosition(val chapter: Int, val block: Int, val recordedAtMs: Long)
+
     companion object {
+        private val progressExecutor = Executors.newSingleThreadExecutor { work ->
+            Thread(work, "HolosProgress").apply { isDaemon = true }
+        }
+        private val progressLock = Any()
+        private val pendingPositions = HashMap<String, PendingPosition>()
         private val RE_BLANK_LINES = Regex("\r?\n+")
         private const val DB_NAME = "holos_reader.db"
         private const val DB_VERSION = 6

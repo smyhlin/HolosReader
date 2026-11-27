@@ -48,7 +48,7 @@ class ReaderAudioService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 pausedByFocusLoss = false
-                activeController?.pauseIfPlaying()
+                activeController?.pauseIfPlaying(immediate = true)
                 updateMediaSessionState()
                 updateNotification(currentTitle, currentSubtitle)
             }
@@ -59,7 +59,7 @@ class ReaderAudioService : Service() {
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS -> {
                 pausedByFocusLoss = false
-                activeController?.pauseIfPlaying()
+                activeController?.pauseIfPlaying(immediate = true)
                 releaseWakeLock()
                 updateMediaSessionState()
                 updateNotification(currentTitle, currentSubtitle)
@@ -69,7 +69,7 @@ class ReaderAudioService : Service() {
                 val ctrl = activeController
                 if (ctrl != null && ctrl.isPlaying && !ctrl.isPaused) {
                     pausedByFocusLoss = true
-                    ctrl.pauseIfPlaying()
+                    ctrl.pauseIfPlaying(immediate = true)
                     updateMediaSessionState()
                     updateNotification(currentTitle, currentSubtitle)
                 }
