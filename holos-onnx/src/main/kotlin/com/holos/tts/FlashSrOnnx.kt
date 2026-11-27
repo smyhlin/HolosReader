@@ -62,8 +62,13 @@ class FlashSrOnnx @JvmOverloads constructor(
      * Enhances [samples] from [inputSampleRate] (e.g. 24,000 Hz from HolosTTS)
      * to 48,000 Hz studio clarity.
      */
-    fun enhanceTo48k(samples: FloatArray, inputSampleRate: Int): FloatArray = rwLock.read {
-        if (samples.isEmpty()) return FloatArray(0)
+    @JvmOverloads
+    fun enhanceTo48k(
+        samples: FloatArray,
+        inputSampleRate: Int,
+        isCancelled: () -> Boolean = { false },
+    ): FloatArray = rwLock.read {
+        if (samples.isEmpty() || isCancelled()) return FloatArray(0)
         fun fallback() = resampleLinear(samples, inputSampleRate, OUTPUT_RATE)
         if (closed) return fallback()
         val audio16k = when {
@@ -79,6 +84,7 @@ class FlashSrOnnx @JvmOverloads constructor(
         val produced = audio16k.size * RATE_MULTIPLIER
         val enhanced = FloatArray(produced)
         for (start in audio16k.indices step WINDOW_SAMPLES) {
+            if (isCancelled()) return FloatArray(0)
             val end = minOf(start + WINDOW_SAMPLES, audio16k.size)
             val left = maxOf(0, start - CONTEXT_SAMPLES)
             val right = minOf(audio16k.size, end + CONTEXT_SAMPLES)
@@ -89,6 +95,7 @@ class FlashSrOnnx @JvmOverloads constructor(
             val offset = CONTEXT_SAMPLES * RATE_MULTIPLIER
             result.copyInto(enhanced, start * RATE_MULTIPLIER, offset, offset + (end - start) * RATE_MULTIPLIER)
         }
+        if (isCancelled()) return FloatArray(0)
         val dry = fallback()
         if (dry.size != expected || !matchModelLevel(enhanced, dry)) return dry
         // Keep the original speech as an anchor. The network can boost quiet

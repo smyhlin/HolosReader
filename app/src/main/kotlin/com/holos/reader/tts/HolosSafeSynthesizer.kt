@@ -227,7 +227,7 @@ object HolosSafeSynthesizer {
                 position += chunk.size
             }
             val enhanced = try {
-                flashSr.enhanceTo48k(utterance, engine.sampleRate)
+                flashSr.enhanceTo48k(utterance, engine.sampleRate, cancelled::get)
             } catch (e: Exception) {
                 android.util.Log.w("HolosSafeSynthesizer", "FlashSR failed; using original speech", e)
                 FlashSrOnnx.resampleLinear(utterance, engine.sampleRate, FlashSrOnnx.OUTPUT_RATE)
