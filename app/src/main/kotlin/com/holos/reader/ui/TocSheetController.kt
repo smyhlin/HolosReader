@@ -4,6 +4,12 @@ import android.app.Activity
 import android.graphics.Bitmap
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.content.Context
+import android.os.Handler
+import android.os.Looper
+import android.view.inputmethod.InputMethodManager
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import android.text.Editable
 import android.text.TextUtils
 import android.text.TextWatcher
@@ -45,12 +51,20 @@ class TocSheetController(
     private val backBtn: ImageView
     private val jumpCurBtn: ImageView
     private val searchInput: EditText
+    private val clearSearchBtn: ImageView
+    private val emptyState: TextView
     private val coverImg: ImageView
     private val titleTv: TextView
     private val authorTv: TextView
     private val listView: ListView
     private val tocTabBtn: TextView
     private val bmTabBtn: TextView
+
+    private val searchHandler = Handler(Looper.getMainLooper())
+    private val searchWorker = Executors.newSingleThreadExecutor()
+    private var searchTask: Future<*>? = null
+    private var searchGeneration = 0L
+    private val runSearch = Runnable { reloadCurrentFilter() }
 
     private var book: BookRecord? = null
     private var currentChapter: Int = 0
@@ -143,18 +157,40 @@ class TocSheetController(
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    if (activeTab == 0) reloadToc(s?.toString().orEmpty())
+                    if (activeTab == 0 && isVisible()) {
+                        clearSearchBtn.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
+                        invalidateSearch()
+                        listView.isEnabled = false
+                        searchHandler.postDelayed(runSearch, 160L)
+                    }
                 }
                 override fun afterTextChanged(s: Editable?) {}
             })
         }
-        jumpCurBtn = UiTheme.iconView(activity, R.drawable.ic_target, padDp = 10) { scrollToCurrent() }
+        clearSearchBtn = UiTheme.iconView(activity, R.drawable.ic_close, padDp = 11) {
+            searchInput.text.clear()
+        }.apply {
+            contentDescription = AppStrings.t(activity, "Очистити пошук", "Clear search")
+            visibility = View.GONE
+        }
+        jumpCurBtn = UiTheme.iconView(activity, R.drawable.ic_target, padDp = 10) {
+            if (activeTab != 0 || searchInput.text.isNotEmpty()) {
+                searchInput.text.clear()
+                switchTab(0)
+            } else {
+                scrollToCurrent()
+            }
+            hideKeyboard()
+        }.apply {
+            contentDescription = AppStrings.t(activity, "До поточного розділу", "Jump to current chapter")
+        }
         val topBar = LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(d(6), 0, d(6), 0)
             addView(backBtn, LinearLayout.LayoutParams(d(44), d(44)))
             addView(searchInput, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(clearSearchBtn, LinearLayout.LayoutParams(d(44), d(44)))
             addView(jumpCurBtn, LinearLayout.LayoutParams(d(44), d(44)))
         }
 
@@ -234,7 +270,16 @@ class TocSheetController(
 
         sheet.addView(topBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         sheet.addView(bookHeader, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
-        sheet.addView(listView, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        emptyState = TextView(activity).apply {
+            gravity = Gravity.CENTER
+            setPadding(d(20), d(16), d(20), d(16))
+            visibility = View.GONE
+        }
+        val listArea = FrameLayout(activity).apply {
+            addView(listView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(emptyState, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        }
+        sheet.addView(listArea, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         sheet.addView(tabsRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         root.addView(sheet, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
     }
@@ -246,17 +291,37 @@ class TocSheetController(
         currentChapter = activeChapterIndex
         titleTv.text = bookRecord.title
         authorTv.text = "${bookRecord.author}  ·  ${bookRecord.chapterCount} розд."
-        if (coverBmp != null) coverImg.setImageBitmap(coverBmp)
+        coverImg.setImageBitmap(coverBmp)
         searchInput.setText("")
         applyPalette()
-        switchTab(initialTab)
         root.visibility = View.VISIBLE
-        if (initialTab == 0) scrollToCurrent()
+        switchTab(initialTab)
     }
 
     fun hide() {
+        invalidateSearch()
+        hideKeyboard()
         root.visibility = View.GONE
     }
+
+    fun destroy() {
+        invalidateSearch()
+        searchWorker.shutdownNow()
+    }
+
+    private fun hideKeyboard() {
+        val manager = activity.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        manager?.hideSoftInputFromWindow(searchInput.windowToken, 0)
+        searchInput.clearFocus()
+    }
+
+    private fun invalidateSearch() {
+        ++searchGeneration
+        searchHandler.removeCallbacks(runSearch)
+        searchTask?.cancel(false)
+    }
+
+    private fun reloadCurrentFilter() = reloadToc(searchInput.text.toString())
 
     fun applyPalette() {
         val p = UiTheme.palette(prefs.theme)
@@ -264,6 +329,8 @@ class TocSheetController(
         sheet.setBackgroundColor(p.sheetBg)
         backBtn.setColorFilter(p.primaryText)
         jumpCurBtn.setColorFilter(p.primaryText)
+        clearSearchBtn.setColorFilter(p.primaryText)
+        emptyState.setTextColor(p.secondaryText)
         searchInput.setTextColor(p.primaryText)
         searchInput.setHintTextColor(p.mutedText)
         titleTv.setTextColor(p.primaryText)
@@ -275,17 +342,28 @@ class TocSheetController(
     }
 
     private fun switchTab(tab: Int) {
+        invalidateSearch()
         activeTab = tab
         val b = book ?: return
+        searchInput.visibility = if (tab == 0) View.VISIBLE else View.INVISIBLE
+        clearSearchBtn.visibility = if (tab == 0 && searchInput.text.isNotEmpty()) View.VISIBLE else View.GONE
         if (tab == 0) {
-            searchInput.visibility = View.VISIBLE
-            reloadToc(searchInput.text?.toString().orEmpty())
-        } else {
-            searchInput.visibility = View.INVISIBLE
-            bookmarks = db.listBookmarks(b.id)
+            tocRows = emptyList()
             adapter.notifyDataSetChanged()
+            reloadCurrentFilter()
+        } else {
+            hideKeyboard()
+            bookmarks = db.listBookmarks(b.id)
+            listView.isEnabled = true
+            adapter.notifyDataSetChanged()
+            showListMessage(AppStrings.t(activity, "Закладок ще немає", "No bookmarks yet").takeIf { bookmarks.isEmpty() })
         }
         styleTabs(UiTheme.palette(prefs.theme))
+    }
+
+    private fun showListMessage(message: String?) {
+        emptyState.text = message
+        emptyState.visibility = if (message == null) View.GONE else View.VISIBLE
     }
 
     private fun styleTabs(p: UiPalette) {
@@ -297,18 +375,43 @@ class TocSheetController(
 
     private fun reloadToc(filter: String) {
         val b = book ?: return
-        val entries = db.queryToc(b.id, filter)
-        val built = ArrayList<RowItem>(entries.size + 1)
-        var markerInserted = false
-        for (e in entries) {
-            built.add(RowItem.Chapter(e))
-            if (!markerInserted && filter.isBlank() && e.spineIndex == currentChapter) {
-                built.add(RowItem.CurrentMarker(currentChapter))
-                markerInserted = true
+        invalidateSearch()
+        val generation = searchGeneration
+        val chapter = currentChapter
+        listView.isEnabled = false
+        showListMessage(AppStrings.t(activity, "Пошук розділів…", "Finding chapters…").takeIf { tocRows.isEmpty() })
+        searchTask = searchWorker.submit {
+            val result = try {
+                val entries = db.queryToc(b.id, filter)
+                buildList<RowItem> {
+                    var markerInserted = false
+                    for (entry in entries) {
+                        add(RowItem.Chapter(entry))
+                        if (!markerInserted && filter.isBlank() && entry.spineIndex == chapter) {
+                            add(RowItem.CurrentMarker(chapter))
+                            markerInserted = true
+                        }
+                    }
+                }
+            } catch (error: Exception) {
+                android.util.Log.w("TocSheetController", "Could not load chapters", error)
+                null
+            }
+            searchHandler.post {
+                if (generation != searchGeneration || !isVisible() || activeTab != 0) return@post
+                tocRows = result.orEmpty()
+                listView.isEnabled = true
+                adapter.notifyDataSetChanged()
+                showListMessage(
+                    when {
+                        result == null -> AppStrings.t(activity, "Не вдалося завантажити зміст", "Could not load chapters")
+                        result.isEmpty() -> AppStrings.t(activity, "Розділів не знайдено", "No chapters found")
+                        else -> null
+                    }
+                )
+                if (filter.isBlank()) scrollToCurrent() else listView.setSelection(0)
             }
         }
-        tocRows = built
-        adapter.notifyDataSetChanged()
     }
 
     private fun scrollToCurrent() {
