@@ -738,14 +738,14 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 // Commit chapter state atomically only on valid load (H03)
                 chapterIndex = targetChapter
                 chapterTitle = targetTitle
-                currentChapterIsLinear = spineItem.linear
-                nextLinearChapterIndex = nextLinear
                 if (targetChapter != chapterIndex) {
                     controller.clearAbLoop()
                     if (::audioSheet.isInitialized) audioSheet.clearAbLoopUi()
                 }
                 currentBlocks = blocks
                 chapterTimeline = com.holos.reader.tts.ChapterTimeline(blocks)
+                currentChapterIsLinear = spineItem.linear
+                nextLinearChapterIndex = nextLinear
                 if (::audioSheet.isInitialized) audioSheet.onChapterCommitted(chapterTimeline)
                 if (!contentCommitted) {
                     contentCommitted = true
