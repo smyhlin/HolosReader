@@ -1573,6 +1573,7 @@ class AudioSheetController(
             val defaultVoice = snapshot.selectedVoice?.takeIf {
                 it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
             } ?: engine.voices.firstOrNull()
+            com.holos.reader.tts.OfflineStorageManager.markActive(outFile)
             val tmp = File(outFile.path + ".part")
             var totalPcmBytes = 0L
             try {
@@ -1680,6 +1681,7 @@ class AudioSheetController(
                     offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
                 }
             } finally {
+                com.holos.reader.tts.OfflineStorageManager.unmarkActive(outFile)
                 emotionLease?.close()
                 flashSrLease?.close()
             }

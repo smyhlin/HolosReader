@@ -900,24 +900,133 @@ class ReaderSettingsActivity : Activity() {
         val cacheMb = totalBytes / (1024.0 * 1024.0)
         host.addView(groupedCard(listOf(
             actionRow(
-                label = tr("Очистити збережені розділи", "Clear Offline Chapter Audio"),
+                label = tr("Сховище офлайн-аудіо по книгах", "Offline Audio Storage by Book"),
                 subtitle = tr(
-                    String.format(Locale.US, "Зайнято: %.1f МБ", cacheMb),
-                    String.format(Locale.US, "Used: %.1f MB", cacheMb),
+                    String.format(Locale.US, "Зайнято: %.1f МБ · керування по книгах та очищення застарілих", cacheMb),
+                    String.format(Locale.US, "Used: %.1f MB · manage per-book & prune stale caches", cacheMb),
                 ),
-                trailing = tr("Очистити", "Clear"),
-                onClick = {
-                    persistentDir.listFiles()?.forEach { it.delete() }
-                    legacyCacheDir.listFiles()?.forEach { it.delete() }
-                    Toast.makeText(
-                        this,
-                        tr("Офлайн-аудіо очищено", "Offline audio cleared"),
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                    rebuildFullUi()
-                },
+                trailing = tr("Керувати ›", "Manage ›"),
+                onClick = { showOfflineStorageDialog(listOf(persistentDir, legacyCacheDir)) },
             )
         )))
+    }
+
+    private fun showOfflineStorageDialog(dirs: List<File>) {
+        val en = AppStrings.isEnglish(this)
+        val currentRecipeHex = com.holos.reader.tts.TtsPlaybackController.resolveOfflineSnapshot(this, prefs).recipe.cacheKeyHex()
+        Thread({
+            val summaries = com.holos.reader.tts.OfflineStorageManager.scan(dirs, currentRecipeHex)
+            val db = com.holos.reader.epub.BookDatabase(this)
+            val titles = summaries.associate { sum ->
+                val t = if (sum.bookId == "__orphan__") tr("Інші/неповні файли", "Orphan/partial files")
+                else db.getBook(sum.bookId)?.title ?: sum.bookId
+                sum.bookId to t
+            }
+            val totalStaleMb = summaries.sumOf { it.staleBytes } / (1024.0 * 1024.0)
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val labels = summaries.map { sum ->
+                    val mb = sum.totalBytes / (1024.0 * 1024.0)
+                    val staleMb = sum.staleBytes / (1024.0 * 1024.0)
+                    val name = titles[sum.bookId] ?: sum.bookId
+                    if (en) {
+                        String.format(Locale.US, "%s — %.1f MB (%d valid ch, %.1f MB stale)", name, mb, sum.validChapterCount, staleMb)
+                    } else {
+                        String.format(Locale.US, "%s — %.1f МБ (%d розд., %.1f МБ застар.)", name, mb, sum.validChapterCount, staleMb)
+                    }
+                }.toTypedArray()
+
+                val b = UiTheme.dialogBuilder(this, prefs.theme)
+                    .setTitle(tr("Сховище офлайн-аудіо", "Offline Audio Storage"))
+                    .setNegativeButton(tr("Закрити", "Close"), null)
+
+                if (labels.isEmpty()) {
+                    b.setMessage(tr("Збереженого офлайн-аудіо немає.", "No offline chapter audio stored."))
+                } else {
+                    b.setItems(labels) { _, which ->
+                        val picked = summaries[which]
+                        val title = titles[picked.bookId] ?: picked.bookId
+                        UiTheme.showThemedDialog(
+                            UiTheme.dialogBuilder(this, prefs.theme)
+                                .setTitle(title)
+                                .setMessage(
+                                    tr(
+                                        String.format(Locale.US, "Видалити весь офлайн-кеш цієї книги (%.1f МБ)?", picked.totalBytes / (1024.0 * 1024.0)),
+                                        String.format(Locale.US, "Delete all offline audio for this book (%.1f MB)?", picked.totalBytes / (1024.0 * 1024.0)),
+                                    )
+                                )
+                                .setPositiveButton(tr("Видалити", "Delete")) { _, _ ->
+                                    Thread({
+                                        val res = com.holos.reader.tts.OfflineStorageManager.deleteBook(dirs, picked.bookId)
+                                        runOnUiThread {
+                                            val freedMb = res.freedBytes / (1024.0 * 1024.0)
+                                            Toast.makeText(
+                                                this,
+                                                tr(
+                                                    String.format(Locale.US, "Звільнено %.1f МБ (помилок: %d)", freedMb, res.failedFiles),
+                                                    String.format(Locale.US, "Freed %.1f MB (failures: %d)", freedMb, res.failedFiles),
+                                                ),
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                            rebuildFullUi()
+                                        }
+                                    }, "HolosOfflineDelete").start()
+                                }
+                                .setNegativeButton(tr("Скасувати", "Cancel"), null),
+                            prefs.theme,
+                        )
+                    }
+                    b.setNeutralButton(
+                        tr(
+                            String.format(Locale.US, "Застарілі (%.1f МБ)", totalStaleMb),
+                            String.format(Locale.US, "Prune Stale (%.1f MB)", totalStaleMb),
+                        )
+                    ) { _, _ ->
+                        Thread({
+                            val res = com.holos.reader.tts.OfflineStorageManager.pruneStale(dirs, currentRecipeHex)
+                            runOnUiThread {
+                                val freedMb = res.freedBytes / (1024.0 * 1024.0)
+                                Toast.makeText(
+                                    this,
+                                    tr(
+                                        String.format(Locale.US, "Очищено застарілих: %.1f МБ", freedMb),
+                                        String.format(Locale.US, "Pruned stale caches: %.1f MB", freedMb),
+                                    ),
+                                    Toast.LENGTH_SHORT,
+                                ).show()
+                                rebuildFullUi()
+                            }
+                        }, "HolosOfflinePrune").start()
+                    }
+                    b.setPositiveButton(tr("Очистити все", "Clear All")) { _, _ ->
+                        UiTheme.showThemedDialog(
+                            UiTheme.dialogBuilder(this, prefs.theme)
+                                .setTitle(tr("Очистити все офлайн-аудіо?", "Clear all offline audio?"))
+                                .setPositiveButton(tr("Очистити", "Clear")) { _, _ ->
+                                    Thread({
+                                        val res = com.holos.reader.tts.OfflineStorageManager.clearAll(dirs)
+                                        runOnUiThread {
+                                            val freedMb = res.freedBytes / (1024.0 * 1024.0)
+                                            Toast.makeText(
+                                                this,
+                                                tr(
+                                                    String.format(Locale.US, "Очищено %.1f МБ (пропущено активних: %d)", freedMb, res.skippedActiveFiles),
+                                                    String.format(Locale.US, "Cleared %.1f MB (skipped active: %d)", freedMb, res.skippedActiveFiles),
+                                                ),
+                                                Toast.LENGTH_SHORT,
+                                            ).show()
+                                            rebuildFullUi()
+                                        }
+                                    }, "HolosOfflineClearAll").start()
+                                }
+                                .setNegativeButton(tr("Скасувати", "Cancel"), null),
+                            prefs.theme,
+                        )
+                    }
+                }
+                UiTheme.showThemedDialog(b, prefs.theme)
+            }
+        }, "HolosOfflineScan").start()
     }
 
     private fun showModelIntegrityDialog() {

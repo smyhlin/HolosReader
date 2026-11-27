@@ -23,12 +23,18 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.os.Handler
+import android.os.Looper
+import android.view.ViewGroup
+import android.widget.BaseAdapter
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.GridView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ListView
 import android.widget.ProgressBar
-import android.widget.ScrollView
+import java.util.concurrent.atomic.AtomicLong
 import android.widget.TextView
 import android.widget.Toast
 import com.holos.reader.epub.BookDatabase
@@ -54,7 +60,11 @@ import java.util.concurrent.Executors
  */
 class LibraryActivity : Activity() {
 
-    private val worker = Executors.newSingleThreadExecutor()
+    private val worker = Executors.newFixedThreadPool(2)
+    private val queryExecutor = Executors.newSingleThreadExecutor()
+    private val queryGen = AtomicLong(0L)
+    private val searchHandler = Handler(Looper.getMainLooper())
+    private val debouncedSearchRunnable = Runnable { refreshBooks() }
     private lateinit var db: BookDatabase
     private lateinit var prefs: ReaderPreferences
 
@@ -128,7 +138,11 @@ class LibraryActivity : Activity() {
     private lateinit var modelStatusTv: TextView
     private lateinit var modelProgress: ProgressBar
     private lateinit var downloadModelBtn: TextView
-    private lateinit var booksContainer: LinearLayout
+    private lateinit var booksHost: FrameLayout
+    private lateinit var booksGridView: GridView
+    private lateinit var booksListView: ListView
+    private lateinit var gridAdapter: LibraryGridAdapter
+    private lateinit var listAdapter: LibraryListAdapter
     private lateinit var miniPlayerPill: LinearLayout
     private lateinit var miniCover: ImageView
     private lateinit var miniTitle: TextView
@@ -194,6 +208,8 @@ class LibraryActivity : Activity() {
 
     override fun onDestroy() {
         coverCache.evictAll()
+        searchHandler.removeCallbacks(debouncedSearchRunnable)
+        queryExecutor.shutdownNow()
         worker.shutdownNow()
         super.onDestroy()
     }
@@ -215,7 +231,8 @@ class LibraryActivity : Activity() {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
                     searchQuery = s?.toString().orEmpty()
-                    refreshBooks()
+                    searchHandler.removeCallbacks(debouncedSearchRunnable)
+                    searchHandler.postDelayed(debouncedSearchRunnable, 200L)
                 }
                 override fun afterTextChanged(s: Editable?) {}
             })
@@ -290,15 +307,32 @@ class LibraryActivity : Activity() {
             addView(downloadModelBtn, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(8) })
         }
 
-        booksContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
+        gridAdapter = LibraryGridAdapter()
+        listAdapter = LibraryListAdapter()
+        booksGridView = GridView(this).apply {
+            numColumns = prefs.gridColumns
+            horizontalSpacing = d(10)
+            verticalSpacing = d(14)
+            clipToPadding = false
             setPadding(0, d(10), 0, d(110))
+            stretchMode = GridView.STRETCH_COLUMN_WIDTH
+            adapter = gridAdapter
         }
-        val scroll = ScrollView(this).apply { addView(booksContainer) }
+        booksListView = ListView(this).apply {
+            divider = null
+            dividerHeight = 0
+            clipToPadding = false
+            setPadding(0, d(10), 0, d(110))
+            adapter = listAdapter
+        }
+        booksHost = FrameLayout(this).apply {
+            addView(booksGridView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(booksListView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        }
 
         mainCol.addView(topRow, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
         mainCol.addView(modelBanner, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = d(10) })
-        mainCol.addView(scroll, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        mainCol.addView(booksHost, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
 
         // Persistent Floating Mini-Player Pill (bottom)
         miniPlayerPill = buildMiniPlayerPill()
@@ -444,10 +478,21 @@ class LibraryActivity : Activity() {
     }
 
     private fun refreshBooks() {
-        currentBooks = db.listBooks(searchQuery, prefs.sortBy, prefs.statusFilter)
-        searchInput.hint = AppStrings.t(this, "Пошук серед ${currentBooks.size} книг…", "Search ${currentBooks.size} books…")
-        renderBooks()
-        updateMiniPlayer()
+        val gen = queryGen.incrementAndGet()
+        val q = searchQuery
+        val sort = prefs.sortBy
+        val filter = prefs.statusFilter
+        queryExecutor.execute {
+            val loaded = db.listBooks(q, sort, filter)
+            if (queryGen.get() != gen || isFinishing || isDestroyed) return@execute
+            runOnUiThread {
+                if (queryGen.get() != gen || isFinishing || isDestroyed) return@runOnUiThread
+                currentBooks = loaded
+                searchInput.hint = AppStrings.t(this, "Пошук серед ${currentBooks.size} книг…", "Search ${currentBooks.size} books…")
+                renderBooks()
+                updateMiniPlayer()
+            }
+        }
     }
 
     private fun updateMiniPlayer() {
@@ -462,202 +507,267 @@ class LibraryActivity : Activity() {
     }
 
     private fun renderBooks() {
-        booksContainer.removeAllViews()
-        val p = UiTheme.palette(prefs.theme)
-
         if (prefs.isGridView) {
-            renderGridView(p)
+            booksGridView.numColumns = prefs.gridColumns
+            booksGridView.visibility = View.VISIBLE
+            booksListView.visibility = View.GONE
+            gridAdapter.notifyDataSetChanged()
         } else {
-            renderListView(p)
+            booksGridView.visibility = View.GONE
+            booksListView.visibility = View.VISIBLE
+            listAdapter.notifyDataSetChanged()
         }
     }
 
-    private fun renderGridView(p: UiPalette) {
-        val cols = prefs.gridColumns
-        val totalItems = currentBooks.size + 1 // +1 for '+' add tile
-        var idx = 0
-        while (idx < totalItems) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
+    private inner class LibraryGridAdapter : BaseAdapter() {
+        override fun hasStableIds(): Boolean = true
+        override fun getCount(): Int = currentBooks.size + 1
+        override fun getItem(position: Int): Any? = currentBooks.getOrNull(position)
+        override fun getItemId(position: Int): Long =
+            if (position < currentBooks.size) currentBooks[position].id.hashCode().toLong() else Long.MIN_VALUE
+        override fun getViewTypeCount(): Int = 2
+        override fun getItemViewType(position: Int): Int = if (position < currentBooks.size) 0 else 1
+
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val p = UiTheme.palette(prefs.theme)
+            val cols = prefs.gridColumns
+            val coverHeight = when (cols) {
+                2 -> d(230)
+                4 -> d(125)
+                else -> d(162)
             }
-            for (c in 0 until cols) {
-                val cellParams = LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f).apply {
-                    if (c > 0) leftMargin = d(10)
+            if (position >= currentBooks.size) {
+                val addView = (convertView as? TextView) ?: TextView(this@LibraryActivity).apply {
+                    text = "+"
+                    textSize = 36f
+                    gravity = Gravity.CENTER
+                    setOnClickListener { showImportMenu() }
                 }
-                if (idx < currentBooks.size) {
-                    row.addView(buildGridCard(currentBooks[idx], p, cols), cellParams)
-                } else if (idx == currentBooks.size) {
-                    row.addView(buildAddGridTile(p, cols), cellParams)
-                } else {
-                    row.addView(View(this), cellParams)
+                addView.setTextColor(p.mutedText)
+                addView.background = UiTheme.rounded(p.cardBg, d(10).toFloat())
+                addView.height = coverHeight
+                return addView
+            }
+
+            val book = currentBooks[position]
+            val card: LinearLayout
+            val coverImg: ImageView
+            val checkTv: TextView
+            val titleTv: TextView
+            val metaTv: TextView
+            if (convertView is LinearLayout && convertView.tag is Array<*>) {
+                card = convertView
+                @Suppress("UNCHECKED_CAST")
+                val holder = convertView.tag as Array<View>
+                coverImg = holder[0] as ImageView
+                checkTv = holder[1] as TextView
+                titleTv = holder[2] as TextView
+                metaTv = holder[3] as TextView
+            } else {
+                val coverFrame = FrameLayout(this@LibraryActivity)
+                coverImg = ImageView(this@LibraryActivity).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    UiTheme.clipRounded(this, d(10).toFloat())
                 }
-                idx++
+                coverFrame.addView(coverImg, FrameLayout.LayoutParams(MATCH_PARENT, coverHeight))
+                checkTv = TextView(this@LibraryActivity).apply {
+                    textSize = 14f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                }
+                coverFrame.addView(checkTv, FrameLayout.LayoutParams(d(26), d(26), Gravity.BOTTOM or Gravity.END).apply {
+                    rightMargin = d(6); bottomMargin = d(6)
+                })
+                titleTv = TextView(this@LibraryActivity).apply {
+                    textSize = 13f
+                    setTypeface(typeface, Typeface.BOLD)
+                    maxLines = 2
+                    ellipsize = TextUtils.TruncateAt.END
+                    setPadding(d(2), d(6), d(2), 0)
+                }
+                metaTv = TextView(this@LibraryActivity).apply {
+                    textSize = 11f
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    setPadding(d(2), d(2), d(2), 0)
+                }
+                card = LinearLayout(this@LibraryActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(coverFrame)
+                    addView(titleTv)
+                    addView(metaTv)
+                    tag = arrayOf<View>(coverImg, checkTv, titleTv, metaTv)
+                }
             }
-            booksContainer.addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-                bottomMargin = d(14)
-            })
-        }
-    }
 
-    private fun buildGridCard(book: BookRecord, p: UiPalette, cols: Int): View {
-        val coverHeight = when (cols) {
-            2 -> d(230)
-            4 -> d(125)
-            else -> d(162)
-        }
-        val coverFrame = FrameLayout(this)
-        val coverImg = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = UiTheme.rounded(p.cardBg, d(10).toFloat())
-            UiTheme.clipRounded(this, d(10).toFloat())
-            bindCoverAsync(this, db.getCoverFile(book)?.absolutePath, d(240), d(360))
-        }
-        coverFrame.addView(coverImg, FrameLayout.LayoutParams(MATCH_PARENT, coverHeight))
-
-        if (selectionMode) {
-            val isSel = book.id in selectedIds
-            val check = TextView(this).apply {
-                text = if (isSel) "✓" else ""
-                textSize = 14f
-                gravity = Gravity.CENTER
-                setTextColor(Color.WHITE)
-                background = if (isSel) UiTheme.circle(p.accentBlue) else UiTheme.rounded(0x66000000, d(14).toFloat(), Color.WHITE, d(2))
+            val lp = coverImg.layoutParams
+            if (lp.height != coverHeight) {
+                lp.height = coverHeight
+                coverImg.layoutParams = lp
             }
-            coverFrame.addView(check, FrameLayout.LayoutParams(d(26), d(26), Gravity.BOTTOM or Gravity.END).apply {
-                rightMargin = d(6); bottomMargin = d(6)
-            })
-        }
-
-        val titleTv = TextView(this).apply {
-            text = book.title
-            textSize = 13f
-            setTypeface(typeface, Typeface.BOLD)
-            setTextColor(p.primaryText)
-            maxLines = 1
-            ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, d(6), 0, 0)
-        }
-        val pctTv = TextView(this).apply {
-            text = "${book.progressPercent}%"
-            textSize = 12f
-            setTextColor(p.secondaryText)
-        }
-
-        return LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(coverFrame)
-            addView(titleTv)
-            addView(pctTv)
-            setOnClickListener {
+            coverImg.background = UiTheme.rounded(p.cardBg, d(10).toFloat())
+            bindCoverAsync(coverImg, db.getCoverFile(book)?.absolutePath, d(240), d(360))
+            if (selectionMode) {
+                val isSel = book.id in selectedIds
+                checkTv.visibility = View.VISIBLE
+                checkTv.text = if (isSel) "✓" else ""
+                checkTv.background = if (isSel) UiTheme.circle(p.accentBlue) else UiTheme.rounded(0x66000000, d(14).toFloat(), Color.WHITE, d(2))
+            } else {
+                checkTv.visibility = View.GONE
+            }
+            titleTv.text = book.title
+            titleTv.setTextColor(p.primaryText)
+            metaTv.text = "${book.progressPercent}%  ·  ${book.chapterCount} розд."
+            metaTv.setTextColor(p.secondaryText)
+            card.setOnClickListener {
                 if (selectionMode) toggleSelection(book.id) else openBook(book)
             }
-            setOnLongClickListener {
+            card.setOnLongClickListener {
                 enterSelectionMode(book.id)
                 true
             }
+            return card
         }
     }
 
-    private fun buildAddGridTile(p: UiPalette, cols: Int): View {
-        val coverHeight = when (cols) {
-            2 -> d(230); 4 -> d(125); else -> d(162)
-        }
-        return TextView(this).apply {
-            text = "+"
-            textSize = 36f
-            gravity = Gravity.CENTER
-            setTextColor(p.secondaryText)
-            background = UiTheme.rounded(p.cardBg, d(10).toFloat())
-            height = coverHeight
-            setOnClickListener { showImportMenu() }
-        }
-    }
+    private inner class LibraryListAdapter : BaseAdapter() {
+        override fun hasStableIds(): Boolean = true
+        override fun getCount(): Int = currentBooks.size + 1
+        override fun getItem(position: Int): Any? = currentBooks.getOrNull(position)
+        override fun getItemId(position: Int): Long =
+            if (position < currentBooks.size) currentBooks[position].id.hashCode().toLong() else Long.MIN_VALUE
+        override fun getViewTypeCount(): Int = 2
+        override fun getItemViewType(position: Int): Int = if (position < currentBooks.size) 0 else 1
 
-    private fun renderListView(p: UiPalette) {
-        for (book in currentBooks) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(d(4), d(10), d(4), d(10))
-                setOnClickListener {
-                    if (selectionMode) toggleSelection(book.id) else openBook(book)
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+            val p = UiTheme.palette(prefs.theme)
+            if (position >= currentBooks.size) {
+                val wrap = (convertView as? FrameLayout) ?: FrameLayout(this@LibraryActivity).apply {
+                    setPadding(0, d(14), 0, 0)
+                    addView(TextView(this@LibraryActivity).apply {
+                        text = "+  Імпортувати книги"
+                        textSize = 14f
+                        setTypeface(typeface, Typeface.BOLD)
+                        gravity = Gravity.CENTER
+                        setPadding(d(14), d(14), d(14), d(14))
+                        setOnClickListener { showImportMenu() }
+                    }, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
                 }
-                setOnLongClickListener {
-                    enterSelectionMode(book.id)
-                    true
+                val pill = wrap.getChildAt(0) as TextView
+                pill.setTextColor(p.primaryText)
+                pill.background = UiTheme.rounded(p.cardBg, d(16).toFloat())
+                return wrap
+            }
+
+            val book = currentBooks[position]
+            val container: LinearLayout
+            val coverImg: ImageView
+            val titleTv: TextView
+            val authorTv: TextView
+            val descTv: TextView
+            val metaTv: TextView
+            val checkTv: TextView
+            val dividerView: View
+
+            if (convertView is LinearLayout && convertView.tag is Array<*>) {
+                container = convertView
+                @Suppress("UNCHECKED_CAST")
+                val h = convertView.tag as Array<View>
+                coverImg = h[0] as ImageView
+                titleTv = h[1] as TextView
+                authorTv = h[2] as TextView
+                descTv = h[3] as TextView
+                metaTv = h[4] as TextView
+                checkTv = h[5] as TextView
+                dividerView = h[6]
+            } else {
+                val row = LinearLayout(this@LibraryActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(d(4), d(10), d(4), d(10))
                 }
-            }
-            val cover = ImageView(this).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                background = UiTheme.rounded(p.cardBg, d(8).toFloat())
-                UiTheme.clipRounded(this, d(8).toFloat())
-                bindCoverAsync(this, db.getCoverFile(book)?.absolutePath, d(240), d(360))
-            }
-            val info = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(d(12), 0, d(4), 0)
-                addView(TextView(context).apply {
-                    text = book.title
+                coverImg = ImageView(this@LibraryActivity).apply {
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                    UiTheme.clipRounded(this, d(8).toFloat())
+                }
+                titleTv = TextView(this@LibraryActivity).apply {
                     textSize = 16f
                     setTypeface(typeface, Typeface.BOLD)
-                    setTextColor(p.primaryText)
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
-                })
-                addView(TextView(context).apply {
-                    text = book.author
-                    textSize = 13f
-                    setTextColor(p.secondaryText)
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                })
-                if (book.description.isNotBlank()) {
-                    addView(TextView(context).apply {
-                        text = book.description
-                        textSize = 12f
-                        setTextColor(p.mutedText)
-                        maxLines = 1
-                        ellipsize = TextUtils.TruncateAt.END
-                        setPadding(0, d(4), 0, 0)
-                    })
                 }
-                val tagSuffix = if (book.tags.isNotBlank()) "  ·  ${book.tags}" else ""
-                addView(TextView(context).apply {
-                    text = "${book.progressPercent}%  ·  ${book.chapterCount} розд.$tagSuffix"
+                authorTv = TextView(this@LibraryActivity).apply {
+                    textSize = 13f
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                }
+                descTv = TextView(this@LibraryActivity).apply {
                     textSize = 12f
-                    setTextColor(p.secondaryText)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
                     setPadding(0, d(4), 0, 0)
-                })
+                }
+                metaTv = TextView(this@LibraryActivity).apply {
+                    textSize = 12f
+                    setPadding(0, d(4), 0, 0)
+                }
+                val info = LinearLayout(this@LibraryActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(d(12), 0, d(4), 0)
+                    addView(titleTv)
+                    addView(authorTv)
+                    addView(descTv)
+                    addView(metaTv)
+                }
+                checkTv = TextView(this@LibraryActivity).apply {
+                    textSize = 20f
+                }
+                row.addView(coverImg, LinearLayout.LayoutParams(d(66), d(96)))
+                row.addView(info, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+                row.addView(checkTv)
+                dividerView = View(this@LibraryActivity)
+                container = LinearLayout(this@LibraryActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(row, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+                    addView(dividerView, LinearLayout.LayoutParams(MATCH_PARENT, 1))
+                    tag = arrayOf<View>(coverImg, titleTv, authorTv, descTv, metaTv, checkTv, dividerView)
+                }
             }
-            row.addView(cover, LinearLayout.LayoutParams(d(66), d(96)))
-            row.addView(info, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+
+            coverImg.background = UiTheme.rounded(p.cardBg, d(8).toFloat())
+            bindCoverAsync(coverImg, db.getCoverFile(book)?.absolutePath, d(240), d(360))
+            titleTv.text = book.title
+            titleTv.setTextColor(p.primaryText)
+            authorTv.text = book.author
+            authorTv.setTextColor(p.secondaryText)
+            if (book.description.isNotBlank()) {
+                descTv.visibility = View.VISIBLE
+                descTv.text = book.description
+                descTv.setTextColor(p.mutedText)
+            } else {
+                descTv.visibility = View.GONE
+            }
+            val tagSuffix = if (book.tags.isNotBlank()) "  ·  ${book.tags}" else ""
+            metaTv.text = "${book.progressPercent}%  ·  ${book.chapterCount} розд.$tagSuffix"
+            metaTv.setTextColor(p.secondaryText)
             if (selectionMode) {
                 val isSel = book.id in selectedIds
-                row.addView(TextView(this).apply {
-                    text = if (isSel) "✓" else "○"
-                    textSize = 20f
-                    setTextColor(if (isSel) p.accentBlue else p.mutedText)
-                })
+                checkTv.visibility = View.VISIBLE
+                checkTv.text = if (isSel) "✓" else "○"
+                checkTv.setTextColor(if (isSel) p.accentBlue else p.mutedText)
+            } else {
+                checkTv.visibility = View.GONE
             }
-
-            booksContainer.addView(row)
-            booksContainer.addView(View(this).apply { setBackgroundColor(p.divider) }, LinearLayout.LayoutParams(MATCH_PARENT, 1))
+            dividerView.setBackgroundColor(p.divider)
+            container.setOnClickListener {
+                if (selectionMode) toggleSelection(book.id) else openBook(book)
+            }
+            container.setOnLongClickListener {
+                enterSelectionMode(book.id)
+                true
+            }
+            return container
         }
-
-        // Bottom "+ Import Books" pill (matching Screenshot 6!)
-        val importPill = TextView(this).apply {
-            text = "+  Імпортувати книги"
-            textSize = 14f
-            setTypeface(typeface, Typeface.BOLD)
-            gravity = Gravity.CENTER
-            setTextColor(p.primaryText)
-            background = UiTheme.rounded(p.cardBg, d(16).toFloat())
-            setPadding(d(14), d(14), d(14), d(14))
-            setOnClickListener { showImportMenu() }
-        }
-        booksContainer.addView(importPill, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply {
-            topMargin = d(14)
-        })
     }
 
     // --- Selection Mode ---
