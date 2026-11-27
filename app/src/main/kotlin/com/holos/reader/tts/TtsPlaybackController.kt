@@ -7,7 +7,6 @@ import android.media.AudioTrack
 import android.os.SystemClock
 import android.util.Log
 import com.holos.reader.epub.ReaderBlock
-import com.holos.tts.FlashSrOnnx
 import com.holos.reader.ui.AppStrings
 import com.holos.reader.ui.BionicTextHelper
 import java.io.File
@@ -294,20 +293,30 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                 return@Thread
             }
 
+            val voicePlan = AdaptiveVoicePlan.capture(appContext, prefs)
+            val roleEngines = try {
+                AdaptiveEngineSet.acquire(appContext, engine, voicePlan)
+            } catch (t: Throwable) {
+                engineLease.close()
+                if (isCurrent(gen, sessionCancel)) {
+                    playingFlag.set(false)
+                    listener?.onError(t.message ?: t.javaClass.simpleName)
+                }
+                return@Thread
+            }
             val customDir = HolosEngineHolder.getCustomVoicesDir(appContext)
-            val flashSrLease = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.acquireFlashSrLease(appContext) else null
+            val flashSrLease = if (roleEngines.hasHolos) HolosEngineHolder.acquireFlashSrLease(appContext) else null
             val emotionLease = HolosEngineHolder.acquireEmotionLease(appContext)
             val flashSr = flashSrLease?.engine
             val emotionClassifier = emotionLease?.engine
             val releaseAllLeases = {
                 emotionLease?.close()
                 flashSrLease?.close()
+                roleEngines.close()
                 engineLease.close()
             }
-            val outputSampleRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
-            val defaultVoice = prefs.selectedVoice?.takeIf {
-                it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
-            } ?: engine.voices.firstOrNull()
+            val outputSampleRate = roleEngines.outputRate(flashSr != null)
+            val defaultVoice = roleEngines.route(VoiceRole.NARRATOR).voice
 
             val hasSpeakable = (startIdx until blocks.size).any { blocks[it].isSpeakable }
             if (!hasSpeakable) {
@@ -338,16 +347,16 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                         if (block.isSpeakable) {
                             var speechFrames = 0L
                             try {
-                                if (prefs.adaptiveVoicesEnabled) {
+                                if (voicePlan.enabled) {
                                     val segments = AdaptiveVoiceRouter.segmentParagraph(block.text)
                                     for ((segIdx, seg) in segments.withIndex()) {
                                         if (!isCurrent(gen, sessionCancel)) return@Thread
-                                        val segVoice = AdaptiveVoiceRouter.resolveVoice(seg.role, prefs, engine.voices)
+                                        val route = roleEngines.route(seg.role)
                                         HolosSafeSynthesizer.synthesizeParagraphStreaming(
-                                            engine = engine,
+                                            engine = route.engine,
                                             stressifier = stressifier,
                                             rawParagraph = seg.text,
-                                            voice = segVoice,
+                                            voice = route.voice,
                                             speed = speed,
                                             cancelled = sessionCancel,
                                             customVoicesDir = customDir,
@@ -356,8 +365,9 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                                             flashSr = flashSr,
                                             emotionClassifier = emotionClassifier,
                                         ) { chunk ->
-                                            speechFrames += chunk.size.toLong()
-                                            offerBlocking(queue, Packet.Audio(i, chunk), gen, sessionCancel)
+                                            val output = roleEngines.toOutput(chunk, route, flashSr != null, outputSampleRate)
+                                            speechFrames += output.size.toLong()
+                                            offerBlocking(queue, Packet.Audio(i, output), gen, sessionCancel)
                                         }
                                         if (segIdx < segments.lastIndex && isCurrent(gen, sessionCancel)) {
                                             val rolePause = FloatArray((outputSampleRate * 135) / 1000)
@@ -1008,13 +1018,14 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
             }
         }
 
-        fun resolveOfflineSnapshot(
+        internal fun resolveOfflineSnapshot(
             context: Context,
             prefs: ReaderPreferences,
             effectiveModelOverride: TtsModelId? = null,
             flashSrActiveOverride: Boolean? = null,
             emotionActiveOverride: Boolean? = null,
             contextualStressActiveOverride: Boolean? = null,
+            voicePlan: AdaptiveVoicePlan = AdaptiveVoicePlan.capture(context, prefs),
         ): AudioCacheRecipe.ResolvedSynthesisSnapshot {
             val appCtx = context.applicationContext
             val requestedModel = prefs.selectedTtsModelId
@@ -1022,7 +1033,8 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                 ?: if (HolosModelManager.isModelReady(appCtx, requestedModel)) requestedModel
                 else HolosModelManager.downloadedModels(appCtx).firstOrNull() ?: requestedModel
 
-            val isHolosFamily = effectiveModel != TtsModelId.SUPERTONIC_3
+            val isHolosFamily = effectiveModel != TtsModelId.SUPERTONIC_3 ||
+                voicePlan.assignments.values.any { it.model != TtsModelId.SUPERTONIC_3 }
             val flashSrActive = flashSrActiveOverride
                 ?: (isHolosFamily && prefs.flashSrEnabled && OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.FLASH_SR))
             val emotionActive = emotionActiveOverride
@@ -1038,14 +1050,14 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                     if (f.isFile) "${f.length()}:${f.lastModified()}" else "missing"
                 } else ""
             }
-            return AudioCacheRecipe.resolve(
+            val snapshot = AudioCacheRecipe.resolve(
                 parserVersion = com.holos.reader.epub.EpubStreamingParser.PARSER_VERSION,
                 requestedModelId = requestedModel.id,
                 effectiveModelId = effectiveModel.id,
-                selectedVoice = prefs.selectedVoice,
-                adaptiveVoicesEnabled = prefs.adaptiveVoicesEnabled,
-                systemVoice = prefs.systemVoice,
-                dialogueVoice = prefs.dialogueVoice,
+                selectedVoice = voicePlan.narrator,
+                adaptiveVoicesEnabled = voicePlan.enabled,
+                systemVoice = voicePlan.system,
+                dialogueVoice = voicePlan.dialogue,
                 voiceFingerprintProvider = voiceFp,
                 speechSpeed = prefs.speechSpeed,
                 supertonicSteps = prefs.supertonicSteps,
@@ -1059,6 +1071,11 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                 stressOverridesMtime = stressFile.lastModified(),
                 stressOverridesSize = stressFile.length(),
             )
+            val roleIdentity = voicePlan.assignments.entries.joinToString("|") { (role, assignment) ->
+                val voice = assignment.voice
+                "${role.name}:${assignment.model.id}:${voice.length}:$voice:${voiceFp(voice)}"
+            }
+            return snapshot.copy(recipe = snapshot.recipe.copy(adaptiveRoleAssignments = roleIdentity))
         }
 
         fun offlineChapterFile(context: Context, bookId: String, chapterIndex: Int, recipe: AudioCacheRecipe): File {

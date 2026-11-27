@@ -55,6 +55,10 @@ object HolosEngineHolder {
         }, "HolosEngineRetire").start()
     }
 
+    private val alternateEnginePool = EngineLeasePool<HolosTtsEngine> { retired ->
+        Thread({ retired.close() }, "HolosAlternateRetire").start()
+    }
+
     @Volatile
     private var engine: HolosTtsEngine? = null
     @Volatile
@@ -241,6 +245,7 @@ object HolosEngineHolder {
             loadedRequestedModel = null
         }
         enginePool.retireCurrent()
+        alternateEnginePool.retireCurrent()
     }
 
     fun getStressStatusSummary(context: Context): String {
@@ -326,17 +331,23 @@ object HolosEngineHolder {
      * generation across the entire synthesis operation (#15). Callers MUST close the lease in
      * `finally` (e.g. `.use { lease -> ... }`).
      */
-    fun acquireEngineLease(context: Context): EngineLeasePool.Lease<HolosTtsEngine>? {
+    fun acquireEngineLease(
+        context: Context,
+        modelOverride: TtsModelId? = null,
+    ): EngineLeasePool.Lease<HolosTtsEngine>? {
         val appCtx = context.applicationContext
         val prefs = ReaderPreferences(appCtx)
         val wantThreads = prefs.cpuThreads
         val wantAccel = prefs.onnxAccelerator
-        val wantModel = prefs.selectedTtsModelId
+        val wantModel = modelOverride ?: prefs.selectedTtsModelId
         val effectiveModel = if (HolosModelManager.isModelReady(appCtx, wantModel)) wantModel
+        else if (modelOverride != null) return null
         else HolosModelManager.downloadedModels(appCtx).firstOrNull() ?: return null
         val leaseKey = "${effectiveModel.id}|$wantAccel|$wantThreads"
 
-        return enginePool.acquire(leaseKey) {
+        val isAlternate = modelOverride != null && modelOverride != prefs.selectedTtsModelId
+        val pool = if (isAlternate) alternateEnginePool else enginePool
+        return pool.acquire(leaseKey) {
             val bundleDir = HolosModelManager.getBundleDir(appCtx, effectiveModel)
             val candidates: List<String> = when (wantAccel) {
                 EP_NNAPI -> listOf(EP_NNAPI, EP_XNNPACK, EP_CPU)
@@ -347,6 +358,7 @@ object HolosEngineHolder {
             for (ep in candidates) {
                 val created = tryCreateEngine(effectiveModel, bundleDir, wantThreads, ep)
                 if (created != null) {
+                    if (isAlternate) return@acquire created
                     synchronized(engineLock) {
                         engine = created
                         loadedThreads = wantThreads
