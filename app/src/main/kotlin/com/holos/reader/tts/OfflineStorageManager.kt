@@ -1,7 +1,7 @@
 package com.holos.reader.tts
 
 import java.io.File
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Per-book offline audio storage inventory and safe, generation-aware cache pruning (#53).
@@ -13,17 +13,35 @@ object OfflineStorageManager {
 
     private val CACHE_FILE_RE = Regex("""^(.+)_ch(\d+)_([0-9a-fA-F]+)\.wav(?:\.(?:idx|ready|part|idx\.part|ready\.part))?$""")
 
-    private val activePaths = ConcurrentHashMap.newKeySet<String>()
+    private val lock = Any()
+    private val readers = HashMap<String, Int>()
+    private val writers = HashSet<String>()
 
-    fun markActive(wavFile: File) {
-        activePaths.add(wavFile.absolutePath)
+    class Lease internal constructor(private val release: () -> Unit) : AutoCloseable {
+        private val closed = AtomicBoolean(false)
+
+        override fun close() {
+            if (closed.compareAndSet(false, true)) release()
+        }
     }
 
-    fun unmarkActive(wavFile: File) {
-        activePaths.remove(wavFile.absolutePath)
+    fun acquireRead(wavFile: File): Lease? = synchronized(lock) {
+        val path = wavFile.absolutePath
+        if (path in writers) return@synchronized null
+        readers[path] = (readers[path] ?: 0) + 1
+        Lease {
+            synchronized(lock) {
+                val count = readers.getValue(path)
+                if (count == 1) readers.remove(path) else readers[path] = count - 1
+            }
+        }
     }
 
-    fun snapshotActivePaths(): Set<String> = HashSet(activePaths)
+    fun acquireWrite(wavFile: File): Lease? = synchronized(lock) {
+        val path = wavFile.absolutePath
+        if (path in readers || !writers.add(path)) return@synchronized null
+        Lease { synchronized(lock) { writers.remove(path) } }
+    }
 
     data class GenerationGroup(
         val bookId: String,
@@ -144,7 +162,7 @@ object OfflineStorageManager {
     fun deleteBook(
         directories: List<File>,
         bookId: String,
-        protectedWavPaths: Set<String> = snapshotActivePaths(),
+        protectedWavPaths: Set<String> = emptySet(),
         deleter: (File) -> Boolean = { it.delete() },
     ): DeletionResult {
         val summary = scan(directories).firstOrNull { it.bookId == bookId }
@@ -160,7 +178,7 @@ object OfflineStorageManager {
         directories: List<File>,
         currentRecipeHex: String? = null,
         maxStaleBytes: Long = 0L,
-        protectedWavPaths: Set<String> = snapshotActivePaths(),
+        protectedWavPaths: Set<String> = emptySet(),
         deleter: (File) -> Boolean = { it.delete() },
     ): DeletionResult {
         val allStale = scan(directories, currentRecipeHex)
@@ -169,7 +187,7 @@ object OfflineStorageManager {
             .sortedBy { it.lastModified }
 
         if (maxStaleBytes <= 0L) {
-            return deleteGenerations(allStale, protectedWavPaths, deleter)
+            return deleteGenerations(allStale, protectedWavPaths, deleter, preserveNewlyValid = true)
         }
 
         var remainingStale = allStale.sumOf { it.totalBytes }
@@ -179,12 +197,12 @@ object OfflineStorageManager {
             toDelete.add(g)
             remainingStale -= g.totalBytes
         }
-        return deleteGenerations(toDelete, protectedWavPaths, deleter)
+        return deleteGenerations(toDelete, protectedWavPaths, deleter, preserveNewlyValid = true)
     }
 
     fun clearAll(
         directories: List<File>,
-        protectedWavPaths: Set<String> = snapshotActivePaths(),
+        protectedWavPaths: Set<String> = emptySet(),
         deleter: (File) -> Boolean = { it.delete() },
     ): DeletionResult {
         val allGens = scan(directories).flatMap { it.generations }
@@ -195,23 +213,30 @@ object OfflineStorageManager {
         generations: List<GenerationGroup>,
         protectedWavPaths: Set<String>,
         deleter: (File) -> Boolean,
+        preserveNewlyValid: Boolean = false,
     ): DeletionResult {
         var freed = 0L
         var deleted = 0
         var skipped = 0
         var failed = 0
         for (g in generations) {
-            if (g.wavFile.absolutePath in protectedWavPaths) {
-                skipped += g.files.size
-                continue
-            }
-            for (f in g.files) {
-                val len = f.length()
-                if (deleter(f)) {
-                    freed += len
-                    deleted++
-                } else {
-                    failed++
+            synchronized(lock) {
+                val path = g.wavFile.absolutePath
+                if (path in readers || path in writers || path in protectedWavPaths) {
+                    skipped += g.files.size
+                    return@synchronized
+                }
+                if (preserveNewlyValid && g.isCurrentRecipe && OfflineAudioCache.validate(g.wavFile) != null) {
+                    return@synchronized
+                }
+                for (f in g.files) {
+                    val len = f.length()
+                    if (deleter(f)) {
+                        freed += len
+                        deleted++
+                    } else {
+                        failed++
+                    }
                 }
             }
         }

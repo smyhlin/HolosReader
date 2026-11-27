@@ -75,14 +75,11 @@ class Batch3Milestone4Test {
         assertFalse(b2Broken.exists())
 
         // Mark b2Valid as active -> clearAll must skip it and delete only b1Valid
-        OfflineStorageManager.markActive(b2Valid)
-        try {
+        OfflineStorageManager.acquireRead(b2Valid)!!.use {
             val cleared = OfflineStorageManager.clearAll(listOf(dir))
             assertFalse(b1Valid.exists())
             assertTrue("Active file must NOT be deleted", b2Valid.exists())
             assertEquals(3, cleared.skippedActiveFiles)
-        } finally {
-            OfflineStorageManager.unmarkActive(b2Valid)
         }
 
         // Simulated deletion failure must be reported accurately
@@ -91,4 +88,50 @@ class Batch3Milestone4Test {
         assertEquals(3, failRes.failedFiles)
         assertTrue(b2Valid.exists())
     }
+    @Test
+    fun activeGenerationSurvivesRemovalUntilTheLastReaderCloses() {
+        val dir = tmp.newFolder()
+        val wav = createValidChapter(dir, "book", 0, "abcdef")
+        val first = OfflineStorageManager.acquireRead(wav)!!
+        val second = OfflineStorageManager.acquireRead(wav)!!
+        try {
+            first.close()
+            first.close()
+            assertEquals(null, OfflineStorageManager.acquireWrite(wav))
+            val result = OfflineStorageManager.deleteBook(listOf(dir), "book", protectedWavPaths = emptySet())
+            assertEquals(3, result.skippedActiveFiles)
+            assertTrue(wav.isFile)
+        } finally {
+            first.close()
+            second.close()
+        }
+        OfflineStorageManager.acquireWrite(wav)!!.use {
+            assertEquals(null, OfflineStorageManager.acquireRead(wav))
+            assertEquals(null, OfflineStorageManager.acquireWrite(wav))
+            assertEquals(3, OfflineStorageManager.clearAll(listOf(dir)).skippedActiveFiles)
+        }
+        assertEquals(3, OfflineStorageManager.clearAll(listOf(dir)).deletedFiles)
+        assertFalse(wav.exists())
+    }
+
+    @Test
+    fun prunePreservesCurrentGenerationThatCompletesAfterScan() {
+        val dir = tmp.newFolder()
+        val malformed = File(dir, "book_ch0_abcdef.wav").apply { writeText("old incomplete") }
+        val publishing = File(dir, "book_ch1_abcdef.wav").apply { writeText("incomplete") }
+        assertTrue(malformed.setLastModified(1_000L))
+        assertTrue(publishing.setLastModified(2_000L))
+
+        val result = OfflineStorageManager.pruneStale(listOf(dir), currentRecipeHex = "abcdef", deleter = { file ->
+            if (file == malformed) {
+                OfflineStorageManager.acquireWrite(publishing)!!.use {
+                    createValidChapter(dir, "book", 1, "abcdef")
+                }
+            }
+            file.delete()
+        })
+        assertEquals(1, result.deletedFiles)
+        assertTrue(OfflineAudioCache.validate(publishing) != null)
+    }
+
 }
