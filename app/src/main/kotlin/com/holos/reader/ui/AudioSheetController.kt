@@ -166,6 +166,13 @@ class AudioSheetController(
     private val previewRowViews = LinkedHashMap<String, Pair<LinearLayout, ImageView>>()
 
     private var activeBlockText: String = ""
+    private var lyricBlockIndex = -1
+    private var renderedLyricText = ""
+    private var renderedLyricBionic = false
+    private var lyricColorSpan: ForegroundColorSpan? = null
+    private var lyricWordStart = -1
+    private var lyricWordEnd = -1
+    private var lastLyricScrollLine = -1
     private var voiceFilter: String = "ALL" // ALL, FEMALE, MALE
     private var editingRole: VoiceRole = VoiceRole.NARRATOR
     private var abLoopStart: Int = -1
@@ -176,6 +183,7 @@ class AudioSheetController(
 
     fun onChapterCommitted(timeline: com.holos.reader.tts.ChapterTimeline) {
         cachedTimeline = timeline
+        lyricBlockIndex = -1
         cachedOfflineKey = ""
         cachedOfflineReady = false
     }
@@ -352,9 +360,13 @@ class AudioSheetController(
         lyricPrev2.text = blocks.getOrNull(idx - 2)?.text.orEmpty()
         lyricPrev1.text = blocks.getOrNull(idx - 1)?.text.orEmpty()
         val rawActive = blocks.getOrNull(idx)?.text?.ifBlank { "…" } ?: "Оберіть абзац для читання"
-        val blockChanged = rawActive != activeBlockText
+        val blockChanged = idx != lyricBlockIndex || rawActive != activeBlockText
+        lyricBlockIndex = idx
         activeBlockText = rawActive
-        renderActiveLyricCard(-1, -1)
+        if (blockChanged) {
+            lastLyricScrollLine = -1
+            renderActiveLyricCard(-1, -1)
+        }
         if (blockChanged && ::lyricActiveScroll.isInitialized) {
             lyricActiveScroll.post { lyricActiveScroll.scrollTo(0, 0) }
         }
@@ -408,34 +420,61 @@ class AudioSheetController(
 
     private fun renderActiveLyricCard(wordStart: Int, wordEnd: Int) {
         val raw = activeBlockText.ifBlank { "…" }
-        val p = UiTheme.palette(prefs.theme)
-        val ssb = SpannableStringBuilder(raw)
-        if (prefs.bionicReading) {
-            BionicTextHelper.applyBionic(ssb)
+        val bionic = prefs.bionicReading
+        if (raw != renderedLyricText || bionic != renderedLyricBionic) {
+            val base = SpannableStringBuilder(raw)
+            if (bionic) BionicTextHelper.applyBionic(base)
+            lyricActiveCard.setText(base, TextView.BufferType.SPANNABLE)
+            renderedLyricText = raw
+            renderedLyricBionic = bionic
+            lyricColorSpan = null
+            lastLyricScrollLine = -1
         }
-        val hasWord = prefs.ttsHighlightGranularity == "WORD" && wordStart in 0 until ssb.length && wordEnd in (wordStart + 1)..ssb.length
-        if (hasWord) {
-            val hlColor = prefs.ttsHighlightColor
-            if (prefs.ttsHighlightStyle == "TEXT_COLOR") {
-                ssb.setSpan(ForegroundColorSpan(hlColor), wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
-                lyricActiveCard.clearWordHighlight()
-            } else {
-                lyricActiveCard.setWordHighlight(wordStart, wordEnd, prefs.ttsHighlightStyle, hlColor, 1f)
-            }
+        val text = lyricActiveCard.text as? Spannable ?: return
+        lyricWordStart = wordStart
+        lyricWordEnd = wordEnd
+        val hasWord = prefs.ttsHighlightGranularity == "WORD" && wordStart in 0 until text.length &&
+            wordEnd in (wordStart + 1)..text.length
+        val style = prefs.ttsHighlightStyle
+        val color = prefs.ttsHighlightColor
+        val previousColor = lyricColorSpan
+        if (hasWord && style == "TEXT_COLOR") {
+            val span = if (previousColor?.foregroundColor == color) previousColor else ForegroundColorSpan(color)
+            if (previousColor != null && previousColor !== span) text.removeSpan(previousColor)
+            text.setSpan(span, wordStart, wordEnd, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            lyricColorSpan = span
+        } else if (previousColor != null) {
+            text.removeSpan(previousColor)
+            lyricColorSpan = null
+        }
+
+        if (hasWord && style != "TEXT_COLOR") {
+            lyricActiveCard.setWordHighlight(wordStart, wordEnd, style, color, 1f)
         } else {
             lyricActiveCard.clearWordHighlight()
         }
-        lyricActiveCard.text = ssb
-        if (wordStart in 0 until ssb.length && ::lyricActiveScroll.isInitialized) {
-            lyricActiveCard.post {
-                val layout = lyricActiveCard.layout ?: return@post
-                val safeOffset = wordStart.coerceIn(0, (lyricActiveCard.text?.length ?: 1) - 1)
-                val line = layout.getLineForOffset(safeOffset)
-                val centerY = (layout.getLineTop(line) + layout.getLineBottom(line)) / 2
-                val targetY = (centerY - lyricActiveScroll.height / 2).coerceAtLeast(0)
-                lyricActiveScroll.smoothScrollTo(0, targetY)
+        if (hasWord) {
+            if (lyricActiveCard.isLayoutRequested) {
+                lyricActiveCard.post {
+                    if (raw == renderedLyricText && wordStart == lyricWordStart) scrollLyricsToWord(wordStart)
+                }
+            } else {
+                scrollLyricsToWord(wordStart)
             }
         }
+    }
+
+    private fun scrollLyricsToWord(wordStart: Int) {
+        val layout = lyricActiveCard.layout ?: return
+        if (wordStart !in 0 until layout.text.length) return
+        val line = layout.getLineForOffset(wordStart)
+        if (line == lastLyricScrollLine) return
+        lastLyricScrollLine = line
+        val centerY = (layout.getLineTop(line) + layout.getLineBottom(line)) / 2
+        val targetY = (centerY - lyricActiveScroll.height / 2).coerceIn(
+            0, (lyricActiveCard.height - lyricActiveScroll.height).coerceAtLeast(0),
+        )
+        if (lyricActiveScroll.scrollY != targetY) lyricActiveScroll.smoothScrollTo(0, targetY)
     }
 
     fun applyPalette() {
@@ -452,6 +491,8 @@ class AudioSheetController(
         lyricPrev1.setTextColor(p.secondaryText)
         lyricActiveCard.setTextColor(p.primaryText)
         lyricActiveCard.background = null
+        lastLyricScrollLine = -1
+        renderActiveLyricCard(lyricWordStart, lyricWordEnd)
         lyricActiveScroll.background = UiTheme.rounded(p.activeCardBg, d(16).toFloat())
         applyLyricFontSize()
         lyricNext1.setTextColor(p.secondaryText)
