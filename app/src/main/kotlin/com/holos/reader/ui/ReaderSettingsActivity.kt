@@ -60,6 +60,8 @@ class ReaderSettingsActivity : Activity() {
     private var activeTabIndex: Int = 0
     private var asBottomSheet: Boolean = false
     private var sheetExpanded: Boolean = false
+    private val tabScrollPositions = IntArray(tabs.size)
+    private var renderedTabIndex = -1
 
     private lateinit var rootFrame: FrameLayout
     private lateinit var rootScroll: ScrollView
@@ -79,6 +81,10 @@ class ReaderSettingsActivity : Activity() {
             activeTabIndex = (savedInstanceState?.getInt(STATE_TAB_INDEX)
                 ?: intent?.getIntExtra(EXTRA_TAB_INDEX, 0)
                 ?: 0).coerceIn(0, tabs.lastIndex)
+            sheetExpanded = savedInstanceState?.getBoolean(STATE_SHEET_EXPANDED) ?: false
+            savedInstanceState?.getIntArray(STATE_TAB_SCROLL_POSITIONS)?.let { restored ->
+                restored.copyInto(tabScrollPositions, endIndex = minOf(restored.size, tabScrollPositions.size))
+            }
             rebuildFullUi()
         } catch (t: Throwable) {
             val tv = TextView(this).apply {
@@ -94,9 +100,13 @@ class ReaderSettingsActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt(STATE_TAB_INDEX, activeTabIndex)
+        if (renderedTabIndex >= 0) tabScrollPositions[renderedTabIndex] = rootScroll.scrollY
+        outState.putIntArray(STATE_TAB_SCROLL_POSITIONS, tabScrollPositions.copyOf())
+        outState.putBoolean(STATE_SHEET_EXPANDED, sheetExpanded)
     }
 
     private fun rebuildFullUi() {
+        if (renderedTabIndex >= 0) tabScrollPositions[renderedTabIndex] = rootScroll.scrollY
         val pal = p
         if (!asBottomSheet) {
             UiTheme.applySystemBars(this, prefs.theme)
@@ -277,6 +287,14 @@ class ReaderSettingsActivity : Activity() {
             rootFrame.addView(rootScroll, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         }
         setContentView(rootFrame)
+        renderedTabIndex = activeTabIndex
+        val restoredScroll = tabScrollPositions[renderedTabIndex]
+        val renderedScroll = rootScroll
+        if (restoredScroll > 0) {
+            renderedScroll.post {
+                if (rootScroll === renderedScroll) renderedScroll.scrollTo(0, restoredScroll)
+            }
+        }
     }
 
     // ==================== TAB 0: FONT ====================
@@ -1600,6 +1618,8 @@ class ReaderSettingsActivity : Activity() {
         private const val REQ_CLONE_WAV = 9403
                 const val EXTRA_TAB_INDEX = "tab_index"
         const val EXTRA_AS_SHEET = "as_sheet"
+        private const val STATE_TAB_SCROLL_POSITIONS = "tab_scroll_positions"
+        private const val STATE_SHEET_EXPANDED = "sheet_expanded"
         private const val STATE_TAB_INDEX = "state_tab_index"
 
         private val fontCache = ConcurrentHashMap<String, Typeface>()
