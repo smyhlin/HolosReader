@@ -16,6 +16,8 @@ import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -306,10 +308,23 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
             }
             val customDir = HolosEngineHolder.getCustomVoicesDir(appContext)
             val flashSrLease = if (roleEngines.hasHolos) HolosEngineHolder.acquireFlashSrLease(appContext) else null
-            val emotionLease = HolosEngineHolder.acquireEmotionLease(appContext)
+            val liveEmotion = if (roleEngines.hasHolos && prefs.emotionPacingEnabled) {
+                LiveEmotionPacing(emotionWorker, { !isCurrent(gen, sessionCancel) }) { text ->
+                    try {
+                        HolosEngineHolder.acquireEmotionLease(appContext)?.use { lease ->
+                            if (isCurrent(gen, sessionCancel)) lease.engine.classify(text) else null
+                        }
+                    } catch (error: Exception) {
+                        Log.w(TAG, "Live emotion inference failed", error)
+                        null
+                    }
+                }
+            } else null
+            val emotionLease = if (roleEngines.hasHolos) null else HolosEngineHolder.acquireEmotionLease(appContext)
             val flashSr = flashSrLease?.engine
             val emotionClassifier = emotionLease?.engine
             val releaseAllLeases = {
+                liveEmotion?.close()
                 emotionLease?.close()
                 flashSrLease?.close()
                 roleEngines.close()
@@ -345,6 +360,18 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                     while (i < blocks.size && isCurrent(gen, sessionCancel)) {
                         val block = blocks[i]
                         if (block.isSpeakable) {
+                            val pacing = liveEmotion?.readyEmotion(block.text)
+                            if (liveEmotion != null && totalProducedFrames > 0L) {
+                                // Aim past the next block so slow inference has time to finish.
+                                val end = abLoopEnd.takeIf { abLoopStart >= 0 && it >= i } ?: blocks.lastIndex
+                                val upcoming = blocks.subList(i + 1, end.coerceAtMost(blocks.lastIndex) + 1)
+                                    .asSequence()
+                                    .filter { it.isSpeakable }
+                                    .take(2)
+                                    .map { it.text }
+                                    .toList()
+                                liveEmotion.prefetch(upcoming.asReversed())
+                            }
                             var speechFrames = 0L
                             try {
                                 if (voicePlan.enabled) {
@@ -364,6 +391,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                                             supertonicSteps = prefs.supertonicSteps,
                                             flashSr = flashSr,
                                             emotionClassifier = emotionClassifier,
+                                            readyEmotion = pacing,
                                         ) { chunk ->
                                             val output = roleEngines.toOutput(chunk, route, flashSr != null, outputSampleRate)
                                             speechFrames += output.size.toLong()
@@ -388,6 +416,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                                         supertonicSteps = prefs.supertonicSteps,
                                         flashSr = flashSr,
                                         emotionClassifier = emotionClassifier,
+                                        readyEmotion = pacing,
                                     ) { chunk ->
                                         speechFrames += chunk.size.toLong()
                                         offerBlocking(queue, Packet.Audio(i, chunk), gen, sessionCancel)
@@ -1000,6 +1029,20 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
     }
 
     companion object {
+        private val emotionWorker = ThreadPoolExecutor(
+            0, 1, 20L, TimeUnit.SECONDS, SynchronousQueue(),
+            { task ->
+                Thread({
+                    try {
+                        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
+                    } catch (_: SecurityException) {
+                        // Continue with the default priority if the device forbids changing it.
+                    }
+                    task.run()
+                }, "HolosLiveEmotion")
+            },
+        )
+
         private const val TAG = "TtsPlaybackController"
 
         fun offlineDir(context: Context): File =

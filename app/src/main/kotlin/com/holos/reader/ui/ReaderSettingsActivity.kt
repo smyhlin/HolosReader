@@ -769,8 +769,8 @@ class ReaderSettingsActivity : Activity() {
                 toggleRow(
                     label = tr("Емоційна динаміка (7 емоцій)", "Ukrainian Emotion Pacing (7 Emotions)"),
                     subtitle = tr(
-                        "Автоматично регулює темп і паузи у бойових, сумних та радісних сценах",
-                        "Dynamically adjusts speech speed & pauses for anger, sadness, joy, and fear",
+                        "Регулює темп і паузи. Під час читання Holos аналізує текст наперед, коли встигає.",
+                        "Adjusts speed and pauses. During Holos playback, analyzes upcoming text when it can.",
                     ),
                     initial = prefs.emotionPacingEnabled,
                     onChanged = {
