@@ -11,6 +11,7 @@ internal class ChapterEdgeListView(context: Context) : ListView(context) {
     var hasChapter: (Int) -> Boolean = { false }
     var showPull: (Int, Float) -> Unit = { _, _ -> }
     var navigate: (Int) -> Unit = {}
+    var hapticsEnabled: Boolean = true
 
     private val slop = ViewConfiguration.get(context).scaledTouchSlop
     private val threshold = 96f * resources.displayMetrics.density
@@ -55,7 +56,9 @@ internal class ChapterEdgeListView(context: Context) : ListView(context) {
                     val progress = (-direction * dy - slop).coerceAtLeast(0f) / threshold
                     val wasArmed = armed
                     armed = progress >= 1f
-                    if (armed && !wasArmed) performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    if (armed && !wasArmed && hapticsEnabled) {
+                        performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                    }
                     showPull(direction, progress)
                     return true
                 }

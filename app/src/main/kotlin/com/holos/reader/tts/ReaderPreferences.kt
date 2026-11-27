@@ -248,6 +248,42 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getBoolean("auto_chapter", true)
         set(v) = prefs.edit().putBoolean("auto_chapter", v).apply()
 
+    var sleepFadeEnabled: Boolean
+        get() = prefs.getBoolean("sleep_fade", true)
+        set(v) = prefs.edit().putBoolean("sleep_fade", v).apply()
+
+    var audioEdgeFadeEnabled: Boolean
+        get() = prefs.getBoolean("audio_edge_fade", true)
+        set(v) = prefs.edit().putBoolean("audio_edge_fade", v).apply()
+
+    var smartResumeEnabled: Boolean
+        get() = prefs.getBoolean("smart_resume", true)
+        set(v) = prefs.edit().putBoolean("smart_resume", v).apply()
+
+    var chapterPauseEnabled: Boolean
+        get() = prefs.getBoolean("chapter_pause", true)
+        set(v) = prefs.edit().putBoolean("chapter_pause", v).apply()
+
+    var chapterToneEnabled: Boolean
+        get() = prefs.getBoolean("chapter_tone", false)
+        set(v) = prefs.edit().putBoolean("chapter_tone", v).apply()
+
+    var hapticFeedback: Boolean
+        get() = prefs.getBoolean("haptic_feedback", true)
+        set(v) = prefs.edit().putBoolean("haptic_feedback", v).apply()
+
+    var showChapterTimeLeft: Boolean
+        get() = prefs.getBoolean("chapter_time_left", true)
+        set(v) = prefs.edit().putBoolean("chapter_time_left", v).apply()
+
+    var warmNightTint: Boolean
+        get() = prefs.getBoolean("warm_night_tint", false)
+        set(v) = prefs.edit().putBoolean("warm_night_tint", v).apply()
+
+    var continuePulse: Boolean
+        get() = prefs.getBoolean("continue_pulse", true)
+        set(v) = prefs.edit().putBoolean("continue_pulse", v).apply()
+
     // --- Library ---
     var isGridView: Boolean
         get() = prefs.getBoolean("lib_grid", true)

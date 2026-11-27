@@ -12,6 +12,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.security.MessageDigest
@@ -33,7 +34,6 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     private val appCtx = context.applicationContext
     private val booksDir = File(appCtx.filesDir, "books").apply { mkdirs() }
     private val coversDir = File(appCtx.filesDir, "covers").apply { mkdirs() }
-
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         db.setForeignKeyConstraintsEnabled(true)
@@ -86,6 +86,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             )
         """)
         db.execSQL("CREATE INDEX idx_toc_spine ON toc(book_id, spine_idx)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_recent ON books(MAX(last_read_at, added_at))")
         db.execSQL("""
             CREATE TABLE bookmarks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +175,9 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             if ("fragment" !in tocCols) {
                 db.execSQL("ALTER TABLE toc ADD COLUMN fragment TEXT")
             }
+        }
+        if (oldVersion < 6) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_recent ON books(MAX(last_read_at, added_at))")
         }
     }
 
@@ -715,6 +719,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         addSeconds: Long = 0L,
         reachedEnd: Boolean = false,
         event: com.holos.reader.tts.ProgressEvent = com.holos.reader.tts.ProgressEvent.CONSUMED_READING,
+        recordedAtMs: Long = System.currentTimeMillis(),
     ) {
         val db = writableDatabase
         db.beginTransaction()
@@ -742,7 +747,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
                 else -> ReadingStatus.READING
             }
             val safeAddSec = addSeconds.coerceAtLeast(0L)
-            val now = System.currentTimeMillis()
+            val now = recordedAtMs
             db.execSQL(
                 "UPDATE books SET last_chapter=?, last_block=?, status=?, reading_time_sec = reading_time_sec + ?, last_read_at=? WHERE id=?",
                 arrayOf<Any>(chapterIndex, blockIndex, newStatus.code, safeAddSec, now, bookId),
@@ -762,6 +767,44 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         } finally {
             db.endTransaction()
         }
+    }
+
+    /** Queue progress in event order: navigation, consumption and completion have distinct accounting. */
+    fun enqueueProgress(
+        bookId: String,
+        chapterIndex: Int,
+        blockIndex: Int,
+        addSeconds: Long = 0L,
+        reachedEnd: Boolean = false,
+        event: com.holos.reader.tts.ProgressEvent = com.holos.reader.tts.ProgressEvent.CONSUMED_READING,
+    ) {
+        synchronized(progressLock) {
+            val position = PendingPosition(chapterIndex, blockIndex, System.currentTimeMillis())
+            pendingPositions[bookId] = position
+            progressExecutor.execute {
+                try {
+                    updateProgress(bookId, chapterIndex, blockIndex, addSeconds, reachedEnd, event, position.recordedAtMs)
+                } catch (error: android.database.sqlite.SQLiteException) {
+                    android.util.Log.w("BookDatabase", "Progress write failed", error)
+                } finally {
+                    synchronized(progressLock) {
+                        if (pendingPositions[bookId] === position) pendingPositions.remove(bookId)
+                    }
+                }
+            }
+        }
+    }
+
+    fun getBookForReader(bookId: String): BookRecord? {
+        val pending = synchronized(progressLock) { pendingPositions[bookId] }
+        val book = getBook(bookId) ?: return null
+        return if (pending != null && pending.recordedAtMs >= book.lastReadAtMs) {
+            book.copy(
+                lastChapterIndex = pending.chapter,
+                lastBlockIndex = pending.block,
+                lastReadAtMs = pending.recordedAtMs,
+            )
+        } else book
     }
 
     fun updateStatus(bookIds: Collection<String>, status: ReadingStatus) {
@@ -904,16 +947,24 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     private fun escapeLike(raw: String): String =
         raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
+    private data class PendingPosition(val chapter: Int, val block: Int, val recordedAtMs: Long)
+
     companion object {
+        private val progressExecutor = Executors.newSingleThreadExecutor { work ->
+            Thread(work, "HolosProgress").apply { isDaemon = true }
+        }
+        private val progressLock = Any()
+        private val pendingPositions = HashMap<String, PendingPosition>()
+        private val RE_BLANK_LINES = Regex("\r?\n+")
         private const val DB_NAME = "holos_reader.db"
-        private const val DB_VERSION = 5
+        private const val DB_VERSION = 6
         private const val MAX_IMPORT_BYTES = 512L * 1024L * 1024L
         const val CURRENT_PARSER_VERSION = 3
         private val importIndexLock = Any()
 
         fun buildSingleChapterEpub(outFile: File, title: String, bodyText: String) {
             fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            val paras = bodyText.split(Regex("\\r?\\n+"))
+            val paras = bodyText.split(RE_BLANK_LINES)
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .joinToString("\n") { "<p>${esc(it)}</p>" }
