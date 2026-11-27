@@ -329,25 +329,38 @@ class ReaderSettingsActivity : Activity() {
         )))
 
         host.addView(sectionLabel(tr("Книжкові шрифти та читання", "Reading Fonts")))
-        val fontOptions = listOf(
-            "NOTO_SERIF" to tr("Noto Serif (книжковий)", "Noto Serif (Book)"),
-            "NOTO_SERIF_DISPLAY" to tr("Noto Serif Display (літературний)", "Noto Serif Display (Editorial)"),
-            "DEJAVU_SERIF" to tr("DejaVu Serif (e-ink стиль)", "DejaVu Serif (E-Ink)"),
-            "LIBERATION_SERIF" to tr("Liberation Serif (друкована книга)", "Liberation Serif (Classic Print)"),
-            "CARLITO" to tr("Carlito (м’який без засічок)", "Carlito (Soft Sans)"),
-            "NOTO_SANS" to tr("Noto Sans (сучасний)", "Noto Sans (Modern)"),
-            "DEJAVU_SANS" to tr("DejaVu Sans (широкий)", "DejaVu Sans (Wide)"),
-            "NOTO_MONO" to tr("Noto Sans Mono (моноширинний)", "Noto Sans Mono (Monospace)"),
+        val packagedFonts = try { assets.list("fonts")?.toSet() ?: emptySet() } catch (_: Exception) { emptySet() }
+        val candidateBundled = listOf(
+            Triple("NOTO_SERIF", "NotoSerif-Regular.ttf", tr("Noto Serif (книжковий)", "Noto Serif (Book)")),
+            Triple("NOTO_SERIF_DISPLAY", "NotoSerifDisplay-Regular.ttf", tr("Noto Serif Display (літературний)", "Noto Serif Display (Editorial)")),
+            Triple("DEJAVU_SERIF", "DejaVuSerif.ttf", tr("DejaVu Serif (e-ink стиль)", "DejaVu Serif (E-Ink)")),
+            Triple("LIBERATION_SERIF", "LiberationSerif-Regular.ttf", tr("Liberation Serif (друкована книга)", "Liberation Serif (Classic Print)")),
+            Triple("CARLITO", "Carlito-Regular.ttf", tr("Carlito (м’який без засічок)", "Carlito (Soft Sans)")),
+            Triple("NOTO_SANS", "NotoSans-Regular.ttf", tr("Noto Sans (сучасний)", "Noto Sans (Modern)")),
+            Triple("DEJAVU_SANS", "DejaVuSans.ttf", tr("DejaVu Sans (широкий)", "DejaVu Sans (Wide)")),
+            Triple("NOTO_MONO", "NotoSansMono-Regular.ttf", tr("Noto Sans Mono (моноширинний)", "Noto Sans Mono (Monospace)")),
         )
+        val platformOptions = listOf(
+            "SANS" to tr("Системний без засічок (Sans)", "System Sans-Serif"),
+            "SERIF" to tr("Системний із засічками (Serif)", "System Serif"),
+            "MONO" to tr("Системний моноширинний (Mono)", "System Monospace"),
+        )
+        val availableBundled = candidateBundled.filter { it.second in packagedFonts }.map { it.first to it.third }
+        val fontOptions = availableBundled + platformOptions
         val familyLabels = fontOptions.toMap() + mapOf(
-            "SERIF" to tr("Noto Serif (книжковий)", "Noto Serif (Book)"),
-            "SANS" to tr("Carlito (м’який без засічок)", "Carlito (Soft Sans)"),
-            "MONO" to tr("Noto Sans Mono (моноширинний)", "Noto Sans Mono (Monospace)"),
-        )
+            "NOTO_SERIF" to tr("Системний із засічками (Serif)", "System Serif"),
+            "NOTO_SERIF_DISPLAY" to tr("Системний із засічками (Serif)", "System Serif"),
+            "DEJAVU_SERIF" to tr("Системний із засічками (Serif)", "System Serif"),
+            "LIBERATION_SERIF" to tr("Системний із засічками (Serif)", "System Serif"),
+            "CARLITO" to tr("Системний без засічок (Sans)", "System Sans-Serif"),
+            "NOTO_SANS" to tr("Системний без засічок (Sans)", "System Sans-Serif"),
+            "DEJAVU_SANS" to tr("Системний без засічок (Sans)", "System Sans-Serif"),
+            "NOTO_MONO" to tr("Системний моноширинний (Mono)", "System Monospace"),
+        ) + availableBundled.toMap()
         host.addView(groupedCard(listOf(
             pickerRow(
                 label = tr("Основний шрифт", "Preferred Font"),
-                currentLabel = { familyLabels[prefs.fontFamily] ?: tr("Carlito (м’який без засічок)", "Carlito (Soft Sans)") },
+                currentLabel = { familyLabels[prefs.fontFamily] ?: tr("Системний без засічок (Sans)", "System Sans-Serif") },
                 options = fontOptions,
                 itemTypeface = { key -> resolveFontAsset(this, key) },
                 currentTypeface = { resolveFontAsset(this, prefs.fontFamily) },

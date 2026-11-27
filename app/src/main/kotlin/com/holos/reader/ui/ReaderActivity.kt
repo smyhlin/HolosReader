@@ -2046,9 +2046,71 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             canvas.drawText("$pct%", cx, textY, thumbTextPaint)
         }
 
+        private var indexAtDown: Int = 0
+
+        init {
+            isFocusable = true
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+
+        override fun performClick(): Boolean = super.performClick()
+
+        private fun stepTo(target: Int) {
+            val clamped = target.coerceIn(0, (totalCount - 1).coerceAtLeast(0))
+            if (clamped != currentIndex) {
+                currentIndex = clamped
+                invalidate()
+                onChapterLive?.invoke(currentIndex, totalCount)
+                onChapterCommitted?.invoke(currentIndex)
+            }
+        }
+
+        override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean = when (keyCode) {
+            KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MINUS -> { stepTo(currentIndex - 1); true }
+            KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_PLUS -> { stepTo(currentIndex + 1); true }
+            else -> super.onKeyDown(keyCode, event)
+        }
+
+        override fun onInitializeAccessibilityNodeInfo(info: android.view.accessibility.AccessibilityNodeInfo) {
+            super.onInitializeAccessibilityNodeInfo(info)
+            info.className = android.widget.SeekBar::class.java.name
+            info.rangeInfo = android.view.accessibility.AccessibilityNodeInfo.RangeInfo.obtain(
+                android.view.accessibility.AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_INT,
+                0f,
+                (totalCount - 1).coerceAtLeast(0).toFloat(),
+                currentIndex.toFloat(),
+            )
+            info.isScrollable = totalCount > 1
+            if (currentIndex < totalCount - 1) info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)
+            if (currentIndex > 0) info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)
+            info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS)
+        }
+
+        override fun performAccessibilityAction(action: Int, arguments: Bundle?): Boolean = when (action) {
+            android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> { stepTo(currentIndex + 1); true }
+            android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> { stepTo(currentIndex - 1); true }
+            android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id -> {
+                val target = arguments?.getFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, currentIndex.toFloat()) ?: currentIndex.toFloat()
+                stepTo(target.roundToInt())
+                true
+            }
+            else -> super.performAccessibilityAction(action, arguments)
+        }
+
         override fun onTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                MotionEvent.ACTION_DOWN -> {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    indexAtDown = currentIndex
+                    val idx = indexForX(event.x)
+                    if (idx != currentIndex) {
+                        currentIndex = idx
+                        invalidate()
+                        onChapterLive?.invoke(currentIndex, totalCount)
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
                     parent?.requestDisallowInterceptTouchEvent(true)
                     val idx = indexForX(event.x)
                     if (idx != currentIndex) {
@@ -2058,11 +2120,21 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     }
                     return true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                MotionEvent.ACTION_UP -> {
                     parent?.requestDisallowInterceptTouchEvent(false)
                     currentIndex = indexForX(event.x)
                     invalidate()
+                    performClick()
                     onChapterCommitted?.invoke(currentIndex)
+                    return true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    if (currentIndex != indexAtDown) {
+                        currentIndex = indexAtDown
+                        invalidate()
+                        onChapterLive?.invoke(currentIndex, totalCount)
+                    }
                     return true
                 }
             }

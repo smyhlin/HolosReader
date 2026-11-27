@@ -1772,9 +1772,71 @@ class AudioSheetController(
             canvas.drawText(String.format(Locale.US, "%.2f×", currentSpeed).replace("0×", "×"), cx, topLabelY, activeLabelPaint)
         }
 
+        private var speedAtDown: Float = 1.0f
+
+        init {
+            isFocusable = true
+            importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
+
+        override fun performClick(): Boolean = super.performClick()
+
+        private fun stepSpeed(target: Float) {
+            val s = snap(target.coerceIn(minSpeed, maxSpeed))
+            if (abs(s - currentSpeed) >= 0.001f) {
+                currentSpeed = s
+                invalidate()
+                onSpeedLive?.invoke(currentSpeed)
+                onSpeedCommitted?.invoke(currentSpeed)
+            }
+        }
+
+        override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean = when (keyCode) {
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT, android.view.KeyEvent.KEYCODE_MINUS -> { stepSpeed(currentSpeed - step); true }
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT, android.view.KeyEvent.KEYCODE_PLUS -> { stepSpeed(currentSpeed + step); true }
+            else -> super.onKeyDown(keyCode, event)
+        }
+
+        override fun onInitializeAccessibilityNodeInfo(info: android.view.accessibility.AccessibilityNodeInfo) {
+            super.onInitializeAccessibilityNodeInfo(info)
+            info.className = android.widget.SeekBar::class.java.name
+            info.rangeInfo = android.view.accessibility.AccessibilityNodeInfo.RangeInfo.obtain(
+                android.view.accessibility.AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_FLOAT,
+                minSpeed,
+                maxSpeed,
+                currentSpeed,
+            )
+            info.isScrollable = true
+            if (currentSpeed < maxSpeed) info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)
+            if (currentSpeed > minSpeed) info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)
+            info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS)
+        }
+
+        override fun performAccessibilityAction(action: Int, arguments: android.os.Bundle?): Boolean = when (action) {
+            android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> { stepSpeed(currentSpeed + step); true }
+            android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> { stepSpeed(currentSpeed - step); true }
+            android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id -> {
+                val target = arguments?.getFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, currentSpeed) ?: currentSpeed
+                stepSpeed(target)
+                true
+            }
+            else -> super.performAccessibilityAction(action, arguments)
+        }
+
         override fun onTouchEvent(event: MotionEvent): Boolean {
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                MotionEvent.ACTION_DOWN -> {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    speedAtDown = currentSpeed
+                    val s = speedForX(event.x)
+                    if (abs(s - currentSpeed) >= 0.001f) {
+                        currentSpeed = s
+                        invalidate()
+                        onSpeedLive?.invoke(currentSpeed)
+                    }
+                    return true
+                }
+                MotionEvent.ACTION_MOVE -> {
                     parent?.requestDisallowInterceptTouchEvent(true)
                     val s = speedForX(event.x)
                     if (abs(s - currentSpeed) >= 0.001f) {
@@ -1784,11 +1846,21 @@ class AudioSheetController(
                     }
                     return true
                 }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                MotionEvent.ACTION_UP -> {
                     parent?.requestDisallowInterceptTouchEvent(false)
                     currentSpeed = speedForX(event.x)
                     invalidate()
+                    performClick()
                     onSpeedCommitted?.invoke(currentSpeed)
+                    return true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    if (abs(currentSpeed - speedAtDown) >= 0.001f) {
+                        currentSpeed = speedAtDown
+                        invalidate()
+                        onSpeedLive?.invoke(currentSpeed)
+                    }
                     return true
                 }
             }

@@ -188,6 +188,7 @@ class PillSliderView(context: Context) : View(context) {
                 val v = valueForX(event.x)
                 value = v
                 invalidate()
+                performClick()
                 onValueCommitted?.invoke(value)
                 return true
             }
@@ -202,5 +203,62 @@ class PillSliderView(context: Context) : View(context) {
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    init {
+        isFocusable = true
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
+    }
+
+    override fun performClick(): Boolean = super.performClick()
+
+    private fun applySteppedValue(target: Float) {
+        val clamped = snap(target.coerceIn(minValue, maxValue))
+        if (clamped != value) {
+            value = clamped
+            invalidate()
+            onValueLive?.invoke(value)
+            onValueCommitted?.invoke(value)
+        }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        return when (keyCode) {
+            android.view.KeyEvent.KEYCODE_DPAD_LEFT, android.view.KeyEvent.KEYCODE_MINUS -> {
+                applySteppedValue(value - step); true
+            }
+            android.view.KeyEvent.KEYCODE_DPAD_RIGHT, android.view.KeyEvent.KEYCODE_PLUS -> {
+                applySteppedValue(value + step); true
+            }
+            else -> super.onKeyDown(keyCode, event)
+        }
+    }
+
+    override fun onInitializeAccessibilityNodeInfo(info: android.view.accessibility.AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = android.widget.SeekBar::class.java.name
+        info.rangeInfo = android.view.accessibility.AccessibilityNodeInfo.RangeInfo.obtain(
+            android.view.accessibility.AccessibilityNodeInfo.RangeInfo.RANGE_TYPE_FLOAT,
+            minValue,
+            maxValue,
+            value,
+        )
+        info.isScrollable = true
+        if (value < maxValue) info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)
+        if (value > minValue) info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)
+        info.addAction(android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS)
+    }
+
+    override fun performAccessibilityAction(action: Int, arguments: android.os.Bundle?): Boolean {
+        return when (action) {
+            android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> { applySteppedValue(value + step); true }
+            android.view.accessibility.AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> { applySteppedValue(value - step); true }
+            android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id -> {
+                val target = arguments?.getFloat(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, value) ?: value
+                applySteppedValue(target)
+                true
+            }
+            else -> super.performAccessibilityAction(action, arguments)
+        }
     }
 }
