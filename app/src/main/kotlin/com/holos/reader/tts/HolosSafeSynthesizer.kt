@@ -43,18 +43,6 @@ object HolosSafeSynthesizer {
         }
         val effectiveSpeed = if (emotion != null) (speed * emotion.speedMultiplier).coerceIn(0.5f, 2.5f) else speed
         val pauseMs = emotion?.pauseMs ?: INTER_SENTENCE_PAUSE_MS
-        val emitChunk: (FloatArray) -> Unit = if (flashSr != null && engine is HolosTtsEngine.Holos) {
-            { raw ->
-                val enhanced = try {
-                    flashSr.enhanceTo48k(raw, engine.sampleRate)
-                } catch (_: Throwable) {
-                    FlashSrOnnx.resampleLinear(raw, engine.sampleRate, FlashSrOnnx.OUTPUT_RATE)
-                }
-                if (enhanced.isNotEmpty()) onChunk(enhanced)
-            }
-        } else {
-            onChunk
-        }
         val outputRate = if (flashSr != null && engine is HolosTtsEngine.Holos) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
         when (engine) {
             is HolosTtsEngine.Holos -> synthesizeHolos(
@@ -67,8 +55,8 @@ object HolosSafeSynthesizer {
                 outputSampleRate = outputRate,
                 cancelled = cancelled,
                 customVoicesDir = customVoicesDir,
-                onChunk = emitChunk,
-                onRawPause = onChunk,
+                flashSr = flashSr,
+                onChunk = onChunk,
             )
             is HolosTtsEngine.Supertonic -> synthesizeSupertonic(
                 engine = engine.onnx,
@@ -144,8 +132,8 @@ object HolosSafeSynthesizer {
         outputSampleRate: Int,
         cancelled: AtomicBoolean,
         customVoicesDir: File?,
+        flashSr: FlashSrOnnx?,
         onChunk: (FloatArray) -> Unit,
-        onRawPause: (FloatArray) -> Unit,
     ) {
         val normalized = UkrainianTextNormalizer.normalize(rawParagraph, ensureTerminalPunctuation = true)
         if (normalized.isBlank()) return
@@ -162,9 +150,9 @@ object HolosSafeSynthesizer {
             if (cancelled.get()) return
             val trimmedSent = sentence.trimEnd(',', ';', ' ')
             val cleanSent = if (trimmedSent.isNotEmpty() && trimmedSent.last() !in ".?!:…") "$trimmedSent." else trimmedSent
-            synthesizeSafeUtterance(engine, stressifier, cleanSent, voice, customVec, speed, cancelled, depth = 0, onChunk)
+            synthesizeSafeUtterance(engine, stressifier, cleanSent, voice, customVec, speed, cancelled, depth = 0, flashSr, onChunk)
             if (!cancelled.get() && idx < sentences.lastIndex) {
-                onRawPause(pauseSamples)
+                onChunk(pauseSamples)
             }
         }
     }
@@ -178,6 +166,7 @@ object HolosSafeSynthesizer {
         speed: Float,
         cancelled: AtomicBoolean,
         depth: Int,
+        flashSr: FlashSrOnnx?,
         onChunk: (FloatArray) -> Unit,
     ) {
         if (cancelled.get() || text.isBlank()) return
@@ -197,8 +186,8 @@ object HolosSafeSynthesizer {
             if (depth < 4 && (msg.contains("outside 1..") || msg.contains("frames"))) {
                 val (left, right) = bisectText(text)
                 if (left.isNotEmpty() && right.isNotEmpty()) {
-                    synthesizeSafeUtterance(engine, stressifier, left, voiceName, customVector, speed, cancelled, depth + 1, onChunk)
-                    synthesizeSafeUtterance(engine, stressifier, right, voiceName, customVector, speed, cancelled, depth + 1, onChunk)
+                    synthesizeSafeUtterance(engine, stressifier, left, voiceName, customVector, speed, cancelled, depth + 1, flashSr, onChunk)
+                    synthesizeSafeUtterance(engine, stressifier, right, voiceName, customVector, speed, cancelled, depth + 1, flashSr, onChunk)
                     return
                 }
             }
@@ -206,6 +195,10 @@ object HolosSafeSynthesizer {
         }
 
         if (cancelled.get()) return
+        val utteranceChunks = flashSr?.let { ArrayList<FloatArray>() }
+        fun emit(samples: FloatArray) {
+            if (utteranceChunks == null) onChunk(samples) else utteranceChunks.add(samples)
+        }
         var pending: FloatArray? = null
         engine.stream(
             encoded = encoded,
@@ -217,13 +210,31 @@ object HolosSafeSynthesizer {
                 val v = audio[k]
                 if (v > 0.98f) audio[k] = 0.98f else if (v < -0.98f) audio[k] = -0.98f
             }
-            pending?.let { prev -> onChunk(prev) }
+            pending?.let { prev -> emit(prev) }
             pending = audio
         }
         pending?.let { last ->
             if (!cancelled.get()) {
                 softClampAndFadeTail(last, fadeSamples = minOf(72, last.size))
-                onChunk(last)
+                emit(last)
+            }
+        }
+        if (flashSr != null && !cancelled.get() && !utteranceChunks.isNullOrEmpty()) {
+            val utterance = FloatArray(utteranceChunks.sumOf { it.size })
+            var position = 0
+            for (chunk in utteranceChunks) {
+                chunk.copyInto(utterance, position)
+                position += chunk.size
+            }
+            val enhanced = try {
+                flashSr.enhanceTo48k(utterance, engine.sampleRate)
+            } catch (e: Exception) {
+                android.util.Log.w("HolosSafeSynthesizer", "FlashSR failed; using original speech", e)
+                FlashSrOnnx.resampleLinear(utterance, engine.sampleRate, FlashSrOnnx.OUTPUT_RATE)
+            }
+            if (!cancelled.get() && enhanced.isNotEmpty()) {
+                softClampAndFadeTail(enhanced, fadeSamples = minOf(144, enhanced.size))
+                onChunk(enhanced)
             }
         }
     }

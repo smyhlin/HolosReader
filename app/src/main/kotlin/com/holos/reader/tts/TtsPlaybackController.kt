@@ -1051,7 +1051,9 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                 supertonicSteps = prefs.supertonicSteps,
                 supertonicEnglishPronunciation = prefs.supertonicEnglishPronunciation,
                 flashSrActive = flashSrActive,
-                flashSrRevision = if (flashSrActive) addonRevisionFingerprint(appCtx, OnnxAddonId.FLASH_SR) else "",
+                flashSrRevision = if (flashSrActive) {
+                    "${FlashSrOnnx.PROCESSING_REVISION}:${addonRevisionFingerprint(appCtx, OnnxAddonId.FLASH_SR)}"
+                } else "",
                 emotionActive = emotionActive,
                 emotionRevision = if (emotionActive) addonRevisionFingerprint(appCtx, OnnxAddonId.UK_EMOTION) else "",
                 contextualStressActive = contextualActive,

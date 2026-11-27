@@ -38,4 +38,18 @@ class FlashSrOnnxTest {
         assertEquals(3, out.size)
         assertEquals(-0.2f, out[1], 1e-6f)
     }
+
+    @org.junit.Test
+    fun flashSrInputResamplerSuppressesEnergyAboveTheTargetNyquistRate() {
+        fun rms(frequency: Double): Double {
+            val samples = FloatArray(2400) { i -> kotlin.math.sin(2.0 * Math.PI * frequency * i / 24_000).toFloat() }
+            val filtered = FlashSrOnnx.downsampleForModel(samples, 24_000)
+            assertEquals(1600, filtered.size)
+            val steadyState = filtered.copyOfRange(40, filtered.lastIndex - 40)
+            return kotlin.math.sqrt(steadyState.sumOf { (it * it).toDouble() } / steadyState.size)
+        }
+
+        org.junit.Assert.assertTrue(rms(1_000.0) > 0.65)
+        org.junit.Assert.assertTrue(rms(10_000.0) < 0.02)
+    }
 }
