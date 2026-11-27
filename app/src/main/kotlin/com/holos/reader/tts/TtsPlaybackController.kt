@@ -38,7 +38,7 @@ class TtsPlaybackController(context: Context) {
         fun onPlaybackStateChanged(isPlaying: Boolean, isPaused: Boolean, statusText: String)
         fun onActiveBlockChanged(blockIndex: Int)
         fun onActiveWordChanged(blockIndex: Int, wordStart: Int, wordEnd: Int) {}
-        fun onChapterFinished()
+        fun onChapterFinished(stopForSleepTimer: Boolean = false)
         fun onError(message: String)
     }
 
@@ -156,8 +156,15 @@ class TtsPlaybackController(context: Context) {
             val prefs = ReaderPreferences(appContext)
             val speed = prefs.speechSpeed
 
-            val speakableIds = blocks.filter { it.isSpeakable }.map { it.index }
-            val validatedOffline = offlineWavFile?.let { OfflineAudioCache.validate(it, speakableIds) }
+            val spokenIds = NarrationPlan.spokenBlockIds(blocks)
+            if (spokenIds.isEmpty() || spokenIds.none { it >= startIdx }) {
+                if (isCurrent(gen, sessionCancel)) {
+                    playingFlag.set(false)
+                    listener?.onPlaybackStateChanged(false, false, AppStrings.t(appContext, "Немає тексту для озвучення", "No text to read"))
+                }
+                return@Thread
+            }
+            val validatedOffline = offlineWavFile?.let { OfflineAudioCache.validate(it, spokenIds) }
             if (validatedOffline != null && validatedOffline.entries.any { it.blockIndex >= startIdx }) {
                 startOfflineWavPipeline(gen, sessionCancel, blocks, startIdx, speed, validatedOffline)
                 return@Thread
@@ -358,6 +365,7 @@ class TtsPlaybackController(context: Context) {
                 producer = prod,
                 prebufferMs = 1200,
                 playingLabel = AppStrings.t(appContext, "Озвучення…", "Playing…"),
+                onProducerNotStarted = { engineLease.close() },
             )
         }, "HolosBootstrap")
 
@@ -480,6 +488,7 @@ class TtsPlaybackController(context: Context) {
         producer: Thread,
         prebufferMs: Int,
         playingLabel: String,
+        onProducerNotStarted: (() -> Unit)? = null,
     ) {
         val cons = Thread({
             val track = try {
@@ -755,15 +764,15 @@ class TtsPlaybackController(context: Context) {
                     playingFlag.set(false)
                     pausedFlag.set(false)
                     if (chapterEndedNaturally && !sessionCancel.get()) {
-                        if (sleepAtChapterEnd.getAndSet(false)) {
+                        val stopForSleep = sleepAtChapterEnd.getAndSet(false)
+                        if (stopForSleep) {
                             listener?.onPlaybackStateChanged(
                                 false,
                                 false,
                                 AppStrings.t(appContext, "Зупинено наприкінці розділу", "Stopped at end of chapter"),
                             )
-                        } else {
-                            listener?.onChapterFinished()
                         }
+                        listener?.onChapterFinished(stopForSleepTimer = stopForSleep)
                     } else {
                         listener?.onPlaybackStateChanged(
                             false,
@@ -775,7 +784,10 @@ class TtsPlaybackController(context: Context) {
             }
         }, "HolosConsumer")
 
-        if (!isCurrent(gen, sessionCancel)) return
+        if (!isCurrent(gen, sessionCancel)) {
+            onProducerNotStarted?.invoke()
+            return
+        }
         producer.priority = (Thread.NORM_PRIORITY + 1).coerceAtMost(Thread.MAX_PRIORITY)
         cons.priority = (Thread.MAX_PRIORITY - 1).coerceAtLeast(Thread.NORM_PRIORITY)
         producerThread = producer

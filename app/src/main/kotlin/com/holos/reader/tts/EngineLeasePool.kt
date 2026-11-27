@@ -38,28 +38,31 @@ class EngineLeasePool<T : AutoCloseable>(
 
     fun acquire(key: String, factory: () -> T?): Lease<T>? {
         var staleToClose: T? = null
-        val leasedEntry: Entry<T> = synchronized(lock) {
-            val cur = current
-            if (cur != null && !cur.retired && cur.key == key) {
-                cur.activeLeases++
-                return@synchronized cur
-            }
-            if (cur != null) {
-                cur.retired = true
-                if (cur.activeLeases == 0 && !cur.closed) {
-                    cur.closed = true
-                    staleToClose = cur.engine
+        val leasedEntry: Entry<T>? = try {
+            synchronized(lock) {
+                val cur = current
+                if (cur != null && !cur.retired && cur.key == key) {
+                    cur.activeLeases++
+                    return@synchronized cur
                 }
-                current = null
+                if (cur != null) {
+                    cur.retired = true
+                    if (cur.activeLeases == 0 && !cur.closed) {
+                        cur.closed = true
+                        staleToClose = cur.engine
+                    }
+                    current = null
+                }
+                val created = factory() ?: return@synchronized null
+                val fresh = Entry(key, created)
+                fresh.activeLeases = 1
+                current = fresh
+                fresh
             }
-            val created = factory() ?: return null
-            val fresh = Entry(key, created)
-            fresh.activeLeases = 1
-            current = fresh
-            fresh
+        } finally {
+            staleToClose?.let { closer(it) }
         }
-        staleToClose?.let { closer(it) }
-        return Lease(leasedEntry.engine) { releaseEntry(leasedEntry) }
+        return leasedEntry?.let { entry -> Lease(entry.engine) { releaseEntry(entry) } }
     }
 
     fun retireCurrent() {

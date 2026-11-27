@@ -130,6 +130,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private var chapterIndex: Int = 0
     private var chapterTitle: String = ""
     private var currentBlocks: List<ReaderBlock> = emptyList()
+    private var chapterTimeline = com.holos.reader.tts.ChapterTimeline(emptyList())
     private var activeBlockIndex: Int = -1
     private var activeWordStart: Int = -1
     private var activeWordEnd: Int = -1
@@ -201,7 +202,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             ReaderAudioService.onSeekFractionAction = { frac ->
                 runOnUiThread {
                     if (currentBlocks.isNotEmpty()) {
-                        val target = (frac * (currentBlocks.size - 1)).roundToInt().coerceIn(0, currentBlocks.lastIndex)
+                        val target = chapterTimeline.blockIndexForFraction(frac)
                         startPlaybackAt(target)
                     }
                 }
@@ -438,7 +439,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             override fun onSeekBlock(blockIndex: Int) = startPlaybackAt(blockIndex)
             override fun onJumpChapter(delta: Int) = jumpChapter(chapterIndex + delta, autoPlay = controller.isPlaying)
             override fun onVoiceSelected(voice: String) {
-                if (controller.isPlaying) startPlaybackAt(currentAnchorBlock())
+                if (controller.isPlaying && !controller.isPaused) {
+                    startPlaybackAt(currentAnchorBlock())
+                } else if (controller.isPlaying && controller.isPaused) {
+                    controller.stop()
+                }
             }
             override fun onImportCustomVoice() {
                 startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -449,7 +454,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             override fun onSpeedCycle() = showSpeedDialog()
             override fun onSpeedChanged(speed: Float) {
                 prefs.speechSpeed = speed
-                if (controller.isPlaying) startPlaybackAt(activeBlockIndex.coerceAtLeast(0))
+                if (controller.isPlaying && !controller.isPaused) {
+                    startPlaybackAt(activeBlockIndex.coerceAtLeast(0))
+                } else if (controller.isPlaying && controller.isPaused) {
+                    controller.stop()
+                }
             }
             override fun onSleepTimerClick() = showSleepDialog()
             override fun onSleepTimerMinutesSelected(minutes: Int) {
@@ -726,7 +735,13 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 // Commit chapter state atomically only on valid load (H03)
                 chapterIndex = targetChapter
                 chapterTitle = targetTitle
+                if (targetChapter != chapterIndex) {
+                    controller.clearAbLoop()
+                    if (::audioSheet.isInitialized) audioSheet.clearAbLoopUi()
+                }
                 currentBlocks = blocks
+                chapterTimeline = com.holos.reader.tts.ChapterTimeline(blocks)
+                if (::audioSheet.isInitialized) audioSheet.onChapterCommitted(chapterTimeline)
                 if (!contentCommitted) {
                     contentCommitted = true
                 }
@@ -932,15 +947,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         }
     }
 
-    private fun estimateChapterAudioTiming(blockIdx: Int): Pair<Long, Long> {
-        val charsPerSec = 14.0 * prefs.speechSpeed.coerceAtLeast(0.5f)
-        val totalChars = currentBlocks.sumOf { if (it.isSpeakable) it.text.length else 0 }.coerceAtLeast(1)
-        val doneChars = currentBlocks.take(blockIdx.coerceIn(0, currentBlocks.size))
-            .sumOf { if (it.isSpeakable) it.text.length else 0 }
-        val durMs = ((totalChars / charsPerSec) * 1000.0).toLong().coerceAtLeast(1000L)
-        val posMs = ((doneChars / charsPerSec) * 1000.0).toLong().coerceIn(0L, durMs)
-        return posMs to durMs
-    }
+    private fun estimateChapterAudioTiming(blockIdx: Int): Pair<Long, Long> =
+        chapterTimeline.estimateTimingMs(blockIdx, prefs.speechSpeed)
 
     override fun onActiveWordChanged(blockIndex: Int, wordStart: Int, wordEnd: Int) {
         runOnUiThread {
@@ -1031,12 +1039,15 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         return ssb
     }
 
-    override fun onChapterFinished() {
+    override fun onChapterFinished(stopForSleepTimer: Boolean) {
         runOnUiThread {
             saveProgress(activeBlockIndex.coerceAtLeast(0), com.holos.reader.tts.ProgressEvent.AUDIO_CHAPTER_COMPLETE)
-            val total = book?.chapterCount ?: 0
-            if (prefs.autoAdvanceChapter && chapterIndex < total - 1) {
-                loadChapter(chapterIndex + 1, scrollToBlock = 0, autoPlay = true)
+            val b = book
+            val nextLinear = if (!stopForSleepTimer && prefs.autoAdvanceChapter && b != null) {
+                db.findNextLinearChapter(b.id, chapterIndex, +1)
+            } else null
+            if (nextLinear != null) {
+                loadChapter(nextLinear, scrollToBlock = 0, autoPlay = true)
             } else {
                 ReaderAudioService.stop(this)
                 miniPlayBtn.setImageResource(R.drawable.ic_play)
@@ -1207,7 +1218,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             .setItems(labels) { _, which ->
                 prefs.speechSpeed = speeds[which]
                 audioSheet.updateState(activeBlockIndex, controller.isPlaying, controller.isPaused)
-                if (controller.isPlaying) startPlaybackAt(activeBlockIndex.coerceAtLeast(0))
+                if (controller.isPlaying && !controller.isPaused) startPlaybackAt(activeBlockIndex.coerceAtLeast(0)) else if (controller.isPlaying && controller.isPaused) controller.stop()
             }
             .showThemed()
     }

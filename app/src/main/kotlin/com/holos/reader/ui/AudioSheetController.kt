@@ -164,6 +164,24 @@ class AudioSheetController(
     private var editingRole: VoiceRole = VoiceRole.NARRATOR
     private var abLoopStart: Int = -1
     private var abLoopEnd: Int = -1
+    private var cachedTimeline = com.holos.reader.tts.ChapterTimeline(emptyList())
+    @Volatile private var cachedOfflineKey: String = ""
+    @Volatile private var cachedOfflineReady: Boolean = false
+
+    fun onChapterCommitted(timeline: com.holos.reader.tts.ChapterTimeline) {
+        cachedTimeline = timeline
+        cachedOfflineKey = ""
+        cachedOfflineReady = false
+    }
+
+    fun clearAbLoopUi() {
+        abLoopStart = -1
+        abLoopEnd = -1
+        if (::abBtn.isInitialized) {
+            abBtn.text = "A–B"
+            abBtn.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
+        }
+    }
 
     private val dp = activity.resources.displayMetrics.density
     private fun d(v: Int): Int = (v * dp).toInt()
@@ -342,12 +360,8 @@ class AudioSheetController(
         voiceValTv.text = HolosVoiceCatalog.displayName(prefs.selectedVoice).take(16)
         voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
 
-        // Scrubber & estimated reading time (~14 chars/sec * speed)
-        val totalChars = blocks.sumOf { if (it.isSpeakable) it.text.length else 0 }.coerceAtLeast(1)
-        val doneChars = blocks.take(idx).sumOf { if (it.isSpeakable) it.text.length else 0 }
-        val charsPerSec = 14.0 * prefs.speechSpeed
-        val elapsedSec = (doneChars / charsPerSec).toInt()
-        val remainSec = ((totalChars - doneChars) / charsPerSec).toInt().coerceAtLeast(0)
+        val tl = if (cachedTimeline.blocks === blocks) cachedTimeline else com.holos.reader.tts.ChapterTimeline(blocks).also { cachedTimeline = it }
+        val (elapsedSec, remainSec) = tl.estimateElapsedRemainingSec(idx, prefs.speechSpeed)
         elapsedTv.text = formatTime(elapsedSec)
         remainingTv.text = "-${formatTime(remainSec)}"
 
@@ -355,9 +369,28 @@ class AudioSheetController(
         scrubber.progress = idx
 
         if (!offlineRendering.get()) {
-            val cached = OfflineAudioCache.validate(getChapterWavFile(), blocks.filter { it.isSpeakable }.map { it.index }) != null
-            offlineSubTv.text = if (cached) "Розділ збережено локально (0% CPU)" else "Зберегти аудіо розділу локально"
-            offlineBadgeTv.text = if (cached) "Готово" else "Офлайн ›"
+            val wavFile = getChapterWavFile()
+            val cacheKey = "${callbacks.getBookId()}:${callbacks.getChapterIndex()}:${wavFile.name}:${wavFile.lastModified()}"
+            if (cacheKey != cachedOfflineKey) {
+                cachedOfflineKey = cacheKey
+                cachedOfflineReady = false
+                previewWorker.execute {
+                    val spokenIds = com.holos.reader.tts.NarrationPlan.spokenBlockIds(blocks)
+                    val ok = spokenIds.isNotEmpty() && OfflineAudioCache.validate(wavFile, spokenIds) != null
+                    if (cachedOfflineKey == cacheKey) {
+                        cachedOfflineReady = ok
+                        activity.runOnUiThread {
+                            if (!offlineRendering.get() && cachedOfflineKey == cacheKey) {
+                                offlineSubTv.text = if (ok) "Розділ збережено локально (0% CPU)" else "Зберегти аудіо розділу локально"
+                                offlineBadgeTv.text = if (ok) "Готово" else "Офлайн ›"
+                                offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
+                            }
+                        }
+                    }
+                }
+            }
+            offlineSubTv.text = if (cachedOfflineReady) "Розділ збережено локально (0% CPU)" else "Зберегти аудіо розділу локально"
+            offlineBadgeTv.text = if (cachedOfflineReady) "Готово" else "Офлайн ›"
             offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
         }
     }
@@ -1491,7 +1524,9 @@ class AudioSheetController(
             Toast.makeText(activity, "Генерацію офлайн-аудіо зупинено", Toast.LENGTH_SHORT).show()
             return
         }
-        val blocks = callbacks.getCurrentBlocks().filter { it.isSpeakable }
+        val allBlocks = callbacks.getCurrentBlocks()
+        val spokenSet = com.holos.reader.tts.NarrationPlan.spokenBlockIds(allBlocks).toHashSet()
+        val blocks = allBlocks.filter { it.index in spokenSet }
         if (blocks.isEmpty()) return
         val outFile = getChapterWavFile()
         offlineRenderCancel.set(false)
@@ -1598,6 +1633,8 @@ class AudioSheetController(
                         targetWav = outFile,
                     )
                     activity.runOnUiThread {
+                        cachedOfflineKey = ""
+                        cachedOfflineReady = true
                         offlineSubTv.text = "Розділ збережено локально (0% CPU)"
                         offlineBadgeTv.text = "Готово"
                         offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).accentBlue)
