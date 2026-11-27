@@ -56,7 +56,13 @@ object HolosEngineHolder {
     }
 
     private val alternateEnginePool = EngineLeasePool<HolosTtsEngine> { retired ->
-        Thread({ retired.close() }, "HolosAlternateRetire").start()
+        Thread({
+            try {
+                retired.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing retired alternate TTS engine", e)
+            }
+        }, "HolosAlternateRetire").start()
     }
 
     @Volatile

@@ -363,7 +363,7 @@ class AudioSheetController(
 
         playCircleBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
         speedValTv.text = String.format(Locale.US, "%.2f×", prefs.speechSpeed).replace(".00×", ".0×")
-        voiceValTv.text = HolosVoiceCatalog.displayName(prefs.selectedVoice).take(16)
+        voiceValTv.text = HolosVoiceCatalog.displayName(displayedNarratorVoice()).take(16)
         voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
 
         val tl = if (cachedTimeline.blocks === blocks) cachedTimeline else com.holos.reader.tts.ChapterTimeline(blocks).also { cachedTimeline = it }
@@ -896,7 +896,7 @@ class AudioSheetController(
             stopPreview()
             voicePage.visibility = View.GONE
             playerPage.visibility = View.VISIBLE
-            voiceValTv.text = HolosVoiceCatalog.displayName(prefs.selectedVoice).take(16)
+            voiceValTv.text = HolosVoiceCatalog.displayName(displayedNarratorVoice()).take(16)
             voiceSubTv.text = if (prefs.adaptiveVoicesEnabled) "Адаптивна (3)" else "Диктор"
         }
         voiceHeaderTv = TextView(activity).apply {
@@ -1238,6 +1238,13 @@ class AudioSheetController(
         }
     }
 
+    private fun displayedNarratorVoice(): String? {
+        val model = prefs.roleModel(VoiceRole.NARRATOR)
+        return if (prefs.adaptiveVoicesEnabled && model != null && HolosModelManager.isModelReady(activity, model)) {
+            prefs.roleVoice(VoiceRole.NARRATOR) ?: prefs.selectedVoice
+        } else prefs.selectedVoice
+    }
+
     private fun pickerDefaultModel(downloaded: List<TtsModelId>): TtsModelId =
         prefs.selectedTtsModelId.takeIf { it in downloaded } ?: downloaded.firstOrNull() ?: prefs.selectedTtsModelId
 
@@ -1390,6 +1397,7 @@ class AudioSheetController(
         if (prefs.adaptiveVoicesEnabled) prefs.assignRoleVoice(role, model, voice)
         else prefs.assignNarratorVoice(model, voice)
         callbacks.onVoiceSelected(voice)
+        voiceValTv.text = HolosVoiceCatalog.displayName(displayedNarratorVoice()).take(16)
 
         if (prefs.adaptiveVoicesEnabled) {
             styleAdaptiveCard(UiTheme.palette(prefs.theme))
@@ -1403,7 +1411,6 @@ class AudioSheetController(
             stopPreview()
             voicePage.visibility = View.GONE
             playerPage.visibility = View.VISIBLE
-            voiceValTv.text = HolosVoiceCatalog.displayName(voice).take(16)
         }
     }
 
