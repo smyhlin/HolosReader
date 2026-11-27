@@ -68,7 +68,7 @@ class ChapterTimeline(val blocks: List<ReaderBlock>) {
         if (total <= 0L) return speakableIndices[0]
         val f = fraction.coerceIn(0f, 1f)
         if (f >= 1f) return speakableIndices.last()
-        val targetChar = (f.toDouble() * total.toDouble()).toLong().coerceIn(0L, total - 1L)
+        val targetChar = (f.toDouble() * total.toDouble()).roundToLong().coerceIn(0L, total - 1L)
         // Binary search for largest speakable index i where prefixChars[i] <= targetChar
         var lo = 0
         var hi = speakableIndices.lastIndex

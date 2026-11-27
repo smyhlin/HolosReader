@@ -624,7 +624,8 @@ object EpubStreamingParser {
                     if (label.isEmpty() || rawPath.isEmpty()) continue
                     val resolved = resolvePath(navDir, rawPath)
                     val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHrefLower[resolved.lowercase()] ?: -1
-                    result.add(TocEntry(label, resolved, spineIdx, depth.coerceAtLeast(0), fragment = fragment))
+                    val fullHref = if (fragment != null) "$resolved#$fragment" else resolved
+                    result.add(TocEntry(label, fullHref, spineIdx, depth.coerceAtLeast(0), fragment = fragment))
                 }
             }
         }
@@ -661,7 +662,8 @@ object EpubStreamingParser {
                         val (rawPath, fragment) = splitRawHref(rawSrc)
                         val resolved = resolvePath(ncxDir, rawPath)
                         val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHrefLower[resolved.lowercase()] ?: -1
-                        result.add(TocEntry(label, resolved, spineIdx, (depth - 1).coerceAtLeast(0), fragment = fragment))
+                        val fullHref = if (fragment != null) "$resolved#$fragment" else resolved
+                        result.add(TocEntry(label, fullHref, spineIdx, (depth - 1).coerceAtLeast(0), fragment = fragment))
                     }
                     pendingLabel = null
                 }
