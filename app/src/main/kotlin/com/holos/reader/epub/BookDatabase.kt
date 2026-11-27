@@ -571,21 +571,16 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         }
     }
 
-    fun getAllSpineItems(bookId: String): List<SpineItem> {
-        val out = ArrayList<SpineItem>()
-        readableDatabase.rawQuery(
-            "SELECT idx, item_id, href, media_type, linear FROM spine WHERE book_id=? ORDER BY idx ASC",
-            arrayOf(bookId)
-        ).use { c ->
-            while (c.moveToNext()) {
-                out.add(SpineItem(c.getInt(0), c.getString(1), c.getString(2), c.getString(3), linear = c.getInt(4) != 0))
-            }
+    fun findNextLinearChapter(bookId: String, currentIndex: Int, delta: Int): Int? {
+        val sql = when {
+            delta > 0 -> "SELECT idx FROM spine WHERE book_id=? AND idx>? AND linear=1 ORDER BY idx ASC LIMIT 1"
+            delta < 0 -> "SELECT idx FROM spine WHERE book_id=? AND idx<? AND linear=1 ORDER BY idx DESC LIMIT 1"
+            else -> return null
         }
-        return out
+        return readableDatabase.rawQuery(sql, arrayOf(bookId, currentIndex.toString())).use {
+            if (it.moveToFirst()) it.getInt(0) else null
+        }
     }
-
-    fun findNextLinearChapter(bookId: String, currentIndex: Int, delta: Int): Int? =
-        BookmarkRemapper.nextLinearIndex(getAllSpineItems(bookId), currentIndex, delta)
 
     fun getChapterTitle(bookId: String, spineIdx: Int, totalChapters: Int): String {
         readableDatabase.rawQuery(

@@ -128,6 +128,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private var epubSession: EpubSession? = null
     private var coverBitmap: Bitmap? = null
     private var chapterIndex: Int = 0
+    private var currentChapterIsLinear = true
+    private var nextLinearChapterIndex: Int? = null
     private var chapterTitle: String = ""
     private var currentBlocks: List<ReaderBlock> = emptyList()
     private var chapterTimeline = com.holos.reader.tts.ChapterTimeline(emptyList())
@@ -722,6 +724,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             }
             val blocks = parsedChapter?.blocks
             val anchorMap = parsedChapter?.anchorToBlock ?: emptyMap()
+            val nextLinear = if (parsedChapter == null) null else db.findNextLinearChapter(b.id, targetChapter, +1)
             runOnUiThread {
                 if (chapterLoadGen.get() != loadGen || isFinishing || isDestroyed) return@runOnUiThread
                 if (blocks == null) {
@@ -741,6 +744,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 chapterTitle = targetTitle
                 currentBlocks = blocks
                 chapterTimeline = com.holos.reader.tts.ChapterTimeline(blocks)
+                currentChapterIsLinear = spineItem.linear
+                nextLinearChapterIndex = nextLinear
                 if (::audioSheet.isInitialized) audioSheet.onChapterCommitted(chapterTimeline)
                 if (!contentCommitted) {
                     contentCommitted = true
@@ -882,7 +887,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val b = book ?: return
         if (!contentCommitted) return
         val deltaSec = sessionTracker.flushSeconds()
-        val isFinalLinear = db.findNextLinearChapter(b.id, chapterIndex, +1) == null
+        val isFinalLinear = currentChapterIsLinear && nextLinearChapterIndex == null
         val reachedEnd = com.holos.reader.tts.ReadingProgressPolicy.shouldMarkFinished(
             event = event,
             chapterIndex = chapterIndex,
@@ -1067,10 +1072,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         sessionTracker.setAudioPlaying(false)
         runOnUiThread {
             saveProgress(activeBlockIndex.coerceAtLeast(0), com.holos.reader.tts.ProgressEvent.AUDIO_CHAPTER_COMPLETE)
-            val b = book
-            val nextLinear = if (!stopForSleepTimer && prefs.autoAdvanceChapter && b != null) {
-                db.findNextLinearChapter(b.id, chapterIndex, +1)
-            } else null
+            val nextLinear = nextLinearChapterIndex.takeIf { !stopForSleepTimer && prefs.autoAdvanceChapter }
             if (nextLinear != null) {
                 loadChapter(nextLinear, scrollToBlock = 0, autoPlay = true)
             } else {
@@ -1311,12 +1313,12 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     setTypeface(typeface, Typeface.BOLD)
                     setPadding(d(16), d(14), d(16), d(14))
                 }
-                val hasNext = chapterIndex < (book?.chapterCount ?: 1) - 1
-                btn.text = if (hasNext) "Наступний розділ →" else "Кінець книги"
+                val next = nextLinearChapterIndex
+                btn.text = if (next != null) "Наступний розділ →" else "Кінець книги"
                 btn.background = UiTheme.rounded(p.cardBg, d(14).toFloat())
                 btn.setTextColor(p.primaryText)
                 btn.setOnClickListener {
-                    if (hasNext) jumpChapter(chapterIndex + 1, autoPlay = controller.isPlaying)
+                    if (next != null) loadChapter(next, autoPlay = controller.isPlaying && !controller.isPaused)
                 }
                 return btn
             }
@@ -1933,8 +1935,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val prevBtn = UiTheme.iconView(this, R.drawable.ic_chevron_left, padDp = 8, tagName = "scrub_nav") {
             if (blocksListView.firstVisiblePosition > 0) {
                 blocksListView.smoothScrollBy(-(blocksListView.height * 0.85f).toInt(), 180)
-            } else if (chapterIndex > 0) {
-                navigateWithHistory(chapterIndex - 1, 0, targetFraction = 1f)
+            } else {
+                book?.let { db.findNextLinearChapter(it.id, chapterIndex, -1) }?.let {
+                    navigateWithHistory(it, 0, targetFraction = 1f)
+                }
             }
         }
         scrubUndoBtn = UiTheme.iconView(this, R.drawable.ic_undo, padDp = 8, tagName = "scrub_undo") {
@@ -1956,8 +1960,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             if (blocksListView.lastVisiblePosition < maxPos) {
                 blocksListView.smoothScrollBy((blocksListView.height * 0.85f).toInt(), 180)
             } else {
-                val maxCh = ((book?.chapterCount ?: 1) - 1).coerceAtLeast(0)
-                if (chapterIndex < maxCh) navigateWithHistory(chapterIndex + 1, 0)
+                nextLinearChapterIndex?.let { navigateWithHistory(it, 0) }
             }
         }
         val lastBtn = UiTheme.iconView(this, R.drawable.ic_fast_forward, padDp = 8, tagName = "scrub_nav") {
