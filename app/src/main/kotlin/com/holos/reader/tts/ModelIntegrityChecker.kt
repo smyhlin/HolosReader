@@ -1,6 +1,5 @@
 package com.holos.reader.tts
 
-import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
 import java.nio.file.Files
@@ -63,18 +62,20 @@ object ModelIntegrityChecker {
         val out = LinkedHashMap<String, VerifiedEntry>()
         if (!mf.isFile) return out
         return try {
-            val root = JSONObject(mf.readText(Charsets.UTF_8))
-            val filesObj = root.optJSONObject("files") ?: return out
-            val keys = filesObj.keys()
-            while (keys.hasNext()) {
-                val k = keys.next()
-                val item = filesObj.optJSONObject(k) ?: continue
-                out[k] = VerifiedEntry(
-                    size = item.optLong("size", -1L),
-                    sha256 = item.optString("sha256", ""),
-                    sourceUrl = item.optString("sourceUrl", ""),
-                    variant = item.optString("variant", ""),
-                )
+            for (raw in mf.readLines(Charsets.UTF_8)) {
+                val line = raw.trimEnd('\r', '\n')
+                if (line.isEmpty() || line.startsWith("#") || line.startsWith("version=")) continue
+                val parts = line.split('\t')
+                if (parts.size >= 5) {
+                    val key = parts[0]
+                    val size = parts[1].toLongOrNull() ?: -1L
+                    val sha = parts[2]
+                    val variant = parts[3]
+                    val url = parts[4]
+                    if (key.isNotEmpty()) {
+                        out[key] = VerifiedEntry(size = size, sha256 = sha, sourceUrl = url, variant = variant)
+                    }
+                }
             }
             out
         } catch (_: Exception) {
@@ -104,21 +105,18 @@ object ModelIntegrityChecker {
     }
 
     private fun writeManifestAtomically(bundleDir: File, entries: Map<String, VerifiedEntry>) {
-        val root = JSONObject()
-        root.put("version", 1)
-        val filesObj = JSONObject()
+        val sb = StringBuilder(256)
+        sb.append("version=1\n")
         for ((k, v) in entries) {
-            val item = JSONObject()
-            item.put("size", v.size)
-            item.put("sha256", v.sha256)
-            item.put("sourceUrl", v.sourceUrl)
-            item.put("variant", v.variant)
-            filesObj.put(k, item)
+            sb.append(k.replace('\t', ' ').replace('\n', ' ')).append('\t')
+                .append(v.size).append('\t')
+                .append(v.sha256).append('\t')
+                .append(v.variant.replace('\t', ' ').replace('\n', ' ')).append('\t')
+                .append(v.sourceUrl.replace('\t', ' ').replace('\n', ' ')).append('\n')
         }
-        root.put("files", filesObj)
         val target = manifestFile(bundleDir)
         val tmp = File(target.path + ".tmp")
-        tmp.writeText(root.toString(), Charsets.UTF_8)
+        tmp.writeText(sb.toString(), Charsets.UTF_8)
         try {
             Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         } catch (_: Exception) {
