@@ -189,9 +189,17 @@ object OnnxAddonManager {
         )
     }
 
-    fun expectedFilesForAddon(context: Context, addonId: OnnxAddonId, preferFp16: Boolean = recommendFp16Stress(context)): List<ModelIntegrityChecker.ExpectedFile> {
+    fun expectedFilesForAddon(
+        context: Context,
+        addonId: OnnxAddonId,
+        preferFp16: Boolean? = null,
+    ): List<ModelIntegrityChecker.ExpectedFile> {
         val dir = getAddonDir(context, addonId)
-        val variant = if (addonId == OnnxAddonId.CONTEXTUAL_STRESS) (if (preferFp16) "fp16" else "int8") else addonId.id
+        val useFp16 = addonId == OnnxAddonId.CONTEXTUAL_STRESS &&
+            (preferFp16 ?: installedContextualPrecision(dir) ?: recommendFp16Stress(context))
+        val variant = if (addonId == OnnxAddonId.CONTEXTUAL_STRESS) {
+            if (useFp16) "fp16" else "int8"
+        } else addonId.id
         val pairs: List<Pair<String, File>> = when (addonId) {
             OnnxAddonId.FLASH_SR -> listOf(FLASH_SR_ONNX_URL to File(dir, "model.onnx"))
             OnnxAddonId.UK_EMOTION -> listOf(
@@ -200,7 +208,7 @@ object OnnxAddonManager {
             )
             OnnxAddonId.CONTEXTUAL_STRESS -> listOf(
                 CONTEXTUAL_STRESS_TOKENIZER_URL to File(dir, "tokenizer.json"),
-                (if (preferFp16) CONTEXTUAL_STRESS_FP16_ONNX_URL else CONTEXTUAL_STRESS_INT8_ONNX_URL) to File(dir, "uk_stress_contextual.onnx"),
+                (if (useFp16) CONTEXTUAL_STRESS_FP16_ONNX_URL else CONTEXTUAL_STRESS_INT8_ONNX_URL) to File(dir, "uk_stress_contextual.onnx"),
             )
             OnnxAddonId.VOICE_ENCODER -> listOf(VOICE_ENCODER_ONNX_URL to File(dir, "voice_encoder.onnx"))
         }
@@ -210,19 +218,33 @@ object OnnxAddonManager {
                 relPath = f.name,
                 file = f,
                 sourceUrl = url,
-                variant = variant,
+                variant = if (addonId == OnnxAddonId.CONTEXTUAL_STRESS && f.name == "tokenizer.json") "" else variant,
                 expectedBytes = known?.first ?: -1L,
                 expectedSha256 = known?.second,
             )
         }
     }
 
-    fun diagnoseAddon(context: Context, addonId: OnnxAddonId, preferFp16: Boolean = recommendFp16Stress(context), deepHashCheck: Boolean = true): ModelIntegrityChecker.BundleReport {
+    internal fun installedContextualPrecision(dir: File): Boolean? {
+        val model = File(dir, "uk_stress_contextual.onnx")
+        val recorded = ModelIntegrityChecker.readManifest(dir)[model.name]
+        return when (recorded?.sourceUrl) {
+            CONTEXTUAL_STRESS_FP16_ONNX_URL -> true
+            CONTEXTUAL_STRESS_INT8_ONNX_URL -> false
+            else -> when (model.length()) {
+                KNOWN_VERIFICATIONS.getValue(CONTEXTUAL_STRESS_FP16_ONNX_URL).first -> true
+                KNOWN_VERIFICATIONS.getValue(CONTEXTUAL_STRESS_INT8_ONNX_URL).first -> false
+                else -> null
+            }
+        }
+    }
+
+    fun diagnoseAddon(context: Context, addonId: OnnxAddonId, preferFp16: Boolean? = null, deepHashCheck: Boolean = true): ModelIntegrityChecker.BundleReport {
         val dir = getAddonDir(context, addonId)
         return ModelIntegrityChecker.diagnoseBundle(dir, expectedFilesForAddon(context, addonId, preferFp16), deepHashCheck)
     }
 
-    fun repairAddon(context: Context, addonId: OnnxAddonId, preferFp16: Boolean = recommendFp16Stress(context)): ModelIntegrityChecker.BundleReport {
+    fun repairAddon(context: Context, addonId: OnnxAddonId, preferFp16: Boolean? = null): ModelIntegrityChecker.BundleReport {
         val dir = getAddonDir(context, addonId).apply { mkdirs() }
         return ModelIntegrityChecker.repairBundle(dir, expectedFilesForAddon(context, addonId, preferFp16)) { item ->
             downloadFile(item.sourceUrl, item.file) { _, _ -> }
