@@ -32,8 +32,9 @@ object GitHubUpdater {
     private const val RELEASES_LATEST_API = "https://api.github.com/repos/smyhlin/HolosReader/releases/latest"
     private val worker = Executors.newSingleThreadExecutor()
 
-    @Volatile
-    private var checkedThisSession = false
+    private val backgroundCheck = java.util.concurrent.atomic.AtomicReference(CheckState.IDLE)
+
+    private enum class CheckState { IDLE, RUNNING, COMPLETE }
 
     data class ReleaseInfo(
         val tagName: String,
@@ -47,8 +48,7 @@ object GitHubUpdater {
     )
 
     fun checkInBackground(activity: Activity, prefs: ReaderPreferences) {
-        if (checkedThisSession) return
-        checkedThisSession = true
+        if (!backgroundCheck.compareAndSet(CheckState.IDLE, CheckState.RUNNING)) return
         check(activity, prefs, silent = true)
     }
 
@@ -67,6 +67,7 @@ object GitHubUpdater {
             val release = try {
                 fetchLatestRelease()
             } catch (e: Exception) {
+                if (silent) backgroundCheck.set(CheckState.IDLE)
                 if (!silent) {
                     activity.runOnUiThread {
                         if (!activity.isFinishing && !activity.isDestroyed) {
@@ -81,6 +82,7 @@ object GitHubUpdater {
                 return@execute
             }
 
+            if (silent) backgroundCheck.set(CheckState.COMPLETE)
             if (release == null) {
                 if (!silent) {
                     activity.runOnUiThread {
@@ -268,12 +270,15 @@ object GitHubUpdater {
                     fetchManifest = { url -> fetchTextWithRedirects(url) },
                 )
                 activity.runOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                    val canLaunch = dlg.window?.decorView?.hasWindowFocus() == true
                     if (dlg.isShowing) dlg.dismiss()
-                    launchInstaller(activity)
+                    if (canLaunch) launchInstaller(activity)
                 }
             } catch (e: Exception) {
                 tmpFile.delete()
                 activity.runOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
                     if (dlg.isShowing) dlg.dismiss()
                     Toast.makeText(
                         activity,

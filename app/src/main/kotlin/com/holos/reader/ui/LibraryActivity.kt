@@ -163,7 +163,6 @@ class LibraryActivity : Activity() {
         // Open EPUB directly if launched via "Open with" or "Share / Send a copy" (e.g. from Google Drive)
         handleIncomingIntent(intent)
         checkModelStatus()
-        GitHubUpdater.checkInBackground(this, prefs)
     }
 
     override fun onNewIntent(newIntent: Intent?) {
@@ -197,6 +196,7 @@ class LibraryActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        GitHubUpdater.checkInBackground(this, prefs)
         applyTheme()
         refreshBooks()
         if (!autoOpenedOnce && !externalOpenPending && prefs.openLastBookOnStart && intent?.data == null && intent?.action != Intent.ACTION_SEND) {
