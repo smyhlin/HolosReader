@@ -51,6 +51,7 @@ internal class ChapterEdgeListView(context: Context) : ListView(context) {
                     canPullNext = false
                 }
                 if (claimed) {
+                    if (direction == 0 && event.actionMasked == MotionEvent.ACTION_MOVE) return true
                     val progress = (-direction * dy - slop).coerceAtLeast(0f) / threshold
                     val wasArmed = armed
                     armed = progress >= 1f
