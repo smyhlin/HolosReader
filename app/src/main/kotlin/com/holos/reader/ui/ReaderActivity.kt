@@ -738,13 +738,19 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         chapterLoadPending = true
         val loadGen = chapterLoadGen.incrementAndGet()
         bgExecutor.execute {
-            val parsedChapter = session.borrowZip { z ->
-                EpubStreamingParser.parseChapterWithAnchors(z, spineItem)
+            val (parsedChapter, nextLinear, previousLinear) = try {
+                val parsed = session.borrowZip { z ->
+                    EpubStreamingParser.parseChapterWithAnchors(z, spineItem)
+                }
+                val next = parsed?.let { db.findNextLinearChapter(b.id, targetChapter, +1) }
+                val previous = parsed?.let { db.findNextLinearChapter(b.id, targetChapter, -1) }
+                Triple(parsed, next, previous)
+            } catch (error: Exception) {
+                android.util.Log.w("ReaderActivity", "Failed to load chapter $targetChapter", error)
+                Triple(null, null, null)
             }
             val blocks = parsedChapter?.blocks
             val anchorMap = parsedChapter?.anchorToBlock ?: emptyMap()
-            val nextLinear = if (parsedChapter == null) null else db.findNextLinearChapter(b.id, targetChapter, +1)
-            val previousLinear = if (parsedChapter == null) null else db.findNextLinearChapter(b.id, targetChapter, -1)
             runOnUiThread {
                 if (chapterLoadGen.get() != loadGen || isFinishing || isDestroyed) return@runOnUiThread
                 chapterLoadPending = false
