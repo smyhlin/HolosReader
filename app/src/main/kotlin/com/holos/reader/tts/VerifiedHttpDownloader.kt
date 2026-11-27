@@ -5,16 +5,17 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 
 /**
- * Shared, strict resumable HTTP downloader used by [HolosModelManager] and [OnnxAddonManager] (#11).
- * - Stores source URL and strong validator (`ETag`/`Last-Modified`) in a `.meta` sidecar beside `.part`
- *   so switching model variants (e.g. INT8 -> FP16 sharing one local filename) or upstream revisions
- *   never mixes bytes from two different files.
- * - Accepts HTTP 200 only as a complete replacement, and HTTP 206 only with strictly parsed
- *   `Content-Range: bytes start-end/total` matching the partial offset, exact body length, and complete total.
- * - Verifies optional expected byte size and SHA-256 before checked atomic promotion.
+ * Shared, strict resumable HTTP downloader used by [HolosModelManager] and [OnnxAddonManager] (#11, #43).
+ * - Stores source URL and strong validator (`ETag` without `W/`, or `Last-Modified`) in a crash-safe
+ *   `.meta` sidecar beside `.part`.
+ * - Only allows HTTP 206 resume when either a strong saved validator is present (and matches the 206
+ *   response validator) OR a mandatory [expectedSha256] is supplied. Without either, `.part` is
+ *   discarded and a full HTTP 200 download is requested so two upstream revisions can never be mixed.
  */
 object VerifiedHttpDownloader {
 
@@ -32,6 +33,11 @@ object VerifiedHttpDownloader {
         val total = m.groupValues[3].toLongOrNull() ?: return null
         if (start < 0L || end < start || total <= end) return null
         return ParsedRange(start, end, total)
+    }
+
+    fun isStrongValidator(v: String?): Boolean {
+        val t = v?.trim().orEmpty()
+        return t.isNotEmpty() && !t.startsWith("W/", ignoreCase = true)
     }
 
     fun sha256Hex(file: File): String {
@@ -55,7 +61,7 @@ object VerifiedHttpDownloader {
         expectedSha256: String? = null,
         onBytes: (downloaded: Long, total: Long) -> Unit = { _, _ -> },
     ) {
-        downloadAttempt(urlStr, target, userAgent, expectedBytes, expectedSha256, onBytes, allowRetry416 = true)
+        downloadAttempt(urlStr, target, userAgent, expectedBytes, expectedSha256, onBytes, allowRetry = true)
     }
 
     private fun downloadAttempt(
@@ -65,21 +71,26 @@ object VerifiedHttpDownloader {
         expectedBytes: Long,
         expectedSha256: String?,
         onBytes: (downloaded: Long, total: Long) -> Unit,
-        allowRetry416: Boolean,
+        allowRetry: Boolean,
     ) {
         target.parentFile?.mkdirs()
         val partial = File(target.path + ".part")
         val metaFile = File(target.path + ".part.meta")
 
-        // If partial exists for a DIFFERENT URL/variant (e.g. INT8 -> FP16), discard it cleanly
+        val hasTrustedHash = !expectedSha256.isNullOrBlank()
         val savedMeta = readMeta(metaFile)
-        if (partial.exists() && savedMeta?.first != urlStr) {
+        val savedValidator = savedMeta?.second?.takeIf { isStrongValidator(it) }
+        val canResumePartial = partial.exists() &&
+            partial.length() > 0L &&
+            savedMeta?.first == urlStr &&
+            (savedValidator != null || hasTrustedHash)
+
+        if (partial.exists() && !canResumePartial) {
             partial.delete()
             metaFile.delete()
         }
 
-        val existingBytes = if (partial.exists() && partial.length() > 0L) partial.length() else 0L
-        val savedValidator = savedMeta?.second?.takeIf { it.isNotBlank() }
+        val existingBytes = if (canResumePartial) partial.length() else 0L
 
         val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
             instanceFollowRedirects = true
@@ -96,17 +107,18 @@ object VerifiedHttpDownloader {
 
         try {
             val code = conn.responseCode
-            if (code == 416 && existingBytes > 0L && allowRetry416) {
+            if (code == 416 && existingBytes > 0L && allowRetry) {
                 partial.delete()
                 metaFile.delete()
                 conn.disconnect()
-                downloadAttempt(urlStr, target, userAgent, expectedBytes, expectedSha256, onBytes, allowRetry416 = false)
+                downloadAttempt(urlStr, target, userAgent, expectedBytes, expectedSha256, onBytes, allowRetry = false)
                 return
             }
 
-            val validator = conn.getHeaderField("ETag")?.takeIf { it.isNotBlank() && !it.startsWith("W/") }
-                ?: conn.getHeaderField("Last-Modified")?.takeIf { it.isNotBlank() }
-                ?: ""
+            val rawEtag = conn.getHeaderField("ETag")?.trim()
+            val strongEtag = rawEtag?.takeIf { isStrongValidator(it) }
+            val lastMod = conn.getHeaderField("Last-Modified")?.trim()?.takeIf { it.isNotEmpty() }
+            val validator = strongEtag ?: lastMod ?: ""
 
             val resuming: Boolean
             val expectedChunkLen: Long
@@ -124,13 +136,13 @@ object VerifiedHttpDownloader {
                         expectedBytes > 0L -> expectedBytes
                         else -> -1L
                     }
-                    writeMeta(metaFile, urlStr, validator)
+                    writeMetaAtomically(metaFile, urlStr, validator)
                 }
                 HttpURLConnection.HTTP_PARTIAL -> {
                     if (existingBytes <= 0L) {
                         partial.delete()
                         metaFile.delete()
-                        throw IllegalStateException("Unexpected HTTP 206 without existing partial for ${target.name}")
+                        throw IllegalStateException("Unexpected HTTP 206 without resumable partial for ${target.name}")
                     }
                     val parsed = parseContentRange(conn.getHeaderField("Content-Range"))
                         ?: run {
@@ -148,7 +160,18 @@ object VerifiedHttpDownloader {
                         metaFile.delete()
                         throw IllegalStateException("Content-Range total ${parsed.total} != expected $expectedBytes for ${target.name}")
                     }
-                    if (savedValidator != null && validator.isNotBlank() && validator != savedValidator) {
+                    if (!hasTrustedHash) {
+                        if (savedValidator == null || validator.isBlank() || validator != savedValidator) {
+                            partial.delete()
+                            metaFile.delete()
+                            if (allowRetry) {
+                                conn.disconnect()
+                                downloadAttempt(urlStr, target, userAgent, expectedBytes, expectedSha256, onBytes, allowRetry = false)
+                                return
+                            }
+                            throw IllegalStateException("Missing or mismatched strong validator during resume for ${target.name}")
+                        }
+                    } else if (savedValidator != null && validator.isNotBlank() && validator != savedValidator) {
                         partial.delete()
                         metaFile.delete()
                         throw IllegalStateException("Upstream validator changed during resume for ${target.name}")
@@ -156,7 +179,7 @@ object VerifiedHttpDownloader {
                     resuming = true
                     expectedChunkLen = parsed.expectedChunkBytes
                     expectedFinalTotal = parsed.total
-                    writeMeta(metaFile, urlStr, validator.ifBlank { savedValidator ?: "" })
+                    writeMetaAtomically(metaFile, urlStr, validator.ifBlank { savedValidator ?: "" })
                 }
                 else -> throw IllegalStateException("HTTP $code downloading $urlStr")
             }
@@ -198,17 +221,31 @@ object VerifiedHttpDownloader {
                 }
             }
 
-            if (target.exists()) target.delete()
-            check(partial.renameTo(target)) { "Failed to promote ${target.name}" }
+            promoteAtomically(partial, target)
             metaFile.delete()
         } finally {
             conn.disconnect()
         }
     }
 
-    private fun writeMeta(file: File, url: String, validator: String) {
+    private fun promoteAtomically(src: File, dst: File) {
         try {
-            file.writeText("$url\n$validator\n", Charsets.UTF_8)
+            Files.move(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: Exception) {
+            try {
+                Files.move(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: Exception) {
+                if (dst.exists()) dst.delete()
+                check(src.renameTo(dst)) { "Failed to promote ${dst.name}" }
+            }
+        }
+    }
+
+    private fun writeMetaAtomically(file: File, url: String, validator: String) {
+        try {
+            val tmp = File(file.path + ".tmp")
+            tmp.writeText("$url\n$validator\n", Charsets.UTF_8)
+            promoteAtomically(tmp, file)
         } catch (_: Exception) {}
     }
 

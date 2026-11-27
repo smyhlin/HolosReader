@@ -205,7 +205,9 @@ class StressEditorActivity : Activity() {
                 val voice = prefs.selectedVoice?.takeIf {
                     it.startsWith(com.holos.reader.tts.CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
                 } ?: engine.voices.firstOrNull()
-                val flashSr = if (engine is com.holos.reader.tts.HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(this) else null
+                val flashSrLease = if (engine is com.holos.reader.tts.HolosTtsEngine.Holos) HolosEngineHolder.acquireFlashSrLease(this) else null
+                try {
+                val flashSr = flashSrLease?.engine
                 val outputRate = if (flashSr != null) com.holos.tts.FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
                 val minBuf = AudioTrack.getMinBufferSize(
                     outputRate,
@@ -287,6 +289,9 @@ class StressEditorActivity : Activity() {
                     } catch (_: Exception) {}
                 } finally {
                     try { track.release() } catch (_: Exception) {}
+                }
+                } finally {
+                    flashSrLease?.close()
                 }
                 }
             } catch (t: Throwable) {

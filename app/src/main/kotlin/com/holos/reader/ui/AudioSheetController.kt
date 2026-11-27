@@ -1411,7 +1411,9 @@ class AudioSheetController(
                 lease.use { activeLease ->
                 val engine = activeLease.engine
                 val stressifier = HolosEngineHolder.getStressifier(activity)
-                val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(activity) else null
+                val flashSrLease = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.acquireFlashSrLease(activity) else null
+                try {
+                val flashSr = flashSrLease?.engine
                 val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
                 val minBuf = AudioTrack.getMinBufferSize(
                     outputRate,
@@ -1498,6 +1500,9 @@ class AudioSheetController(
                     if (activePreviewTrack === track) activePreviewTrack = null
                     try { track.release() } catch (_: Exception) {}
                 }
+                } finally {
+                    flashSrLease?.close()
+                }
                 }
             } catch (t: Throwable) {
                 activity.runOnUiThread {
@@ -1528,8 +1533,8 @@ class AudioSheetController(
         val spokenSet = com.holos.reader.tts.NarrationPlan.spokenBlockIds(allBlocks).toHashSet()
         val blocks = allBlocks.filter { it.index in spokenSet }
         if (blocks.isEmpty()) return
-        val renderBookId = callbacks.getCurrentBookId()
-        val renderChapterIdx = callbacks.getCurrentChapterIndex()
+        val renderBookId = callbacks.getBookId()
+        val renderChapterIdx = callbacks.getChapterIndex()
         offlineRenderCancel.set(false)
         offlineRendering.set(true)
         offlineSubTv.text = "Генерація офлайн-аудіо розділу (0/${blocks.size})…"
@@ -1549,8 +1554,10 @@ class AudioSheetController(
             }
             lease.use { activeLease ->
             val engine = activeLease.engine
-            val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(activity) else null
-            val emotionClassifier = HolosEngineHolder.getEmotionClassifier(activity)
+            val flashSrLease = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.acquireFlashSrLease(activity) else null
+            val emotionLease = HolosEngineHolder.acquireEmotionLease(activity)
+            val flashSr = flashSrLease?.engine
+            val emotionClassifier = emotionLease?.engine
             val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
             val stressifier = HolosEngineHolder.getStressifier(activity)
             val activeModelId = HolosEngineHolder.currentLoadedModelId()
@@ -1672,6 +1679,9 @@ class AudioSheetController(
                     offlineBadgeTv.text = "Офлайн ›"
                     offlineBadgeTv.setTextColor(UiTheme.palette(prefs.theme).secondaryText)
                 }
+            } finally {
+                emotionLease?.close()
+                flashSrLease?.close()
             }
                         }
             } finally {

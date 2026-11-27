@@ -879,6 +879,19 @@ class ReaderSettingsActivity : Activity() {
             quickColorRow(),
         )))
 
+        host.addView(sectionLabel(tr("Цілісність моделей", "Model Integrity")))
+        host.addView(groupedCard(listOf(
+            actionRow(
+                label = tr("Перевірити / Відновити моделі", "Verify / Repair Models & Add-ons"),
+                subtitle = tr(
+                    "Перевірка SHA-256 і заголовків ONNX та вибіркове відновлення пошкоджених файлів",
+                    "Verify SHA-256 & ONNX headers and selectively re-download corrupt or mismatched files",
+                ),
+                trailing = tr("Перевірити ›", "Verify ›"),
+                onClick = { showModelIntegrityDialog() },
+            )
+        )))
+
         host.addView(sectionLabel(tr("Кеш офлайн-аудіо", "Offline Audio Cache")))
         val persistentDir = File(filesDir, "offline_chapters")
         val legacyCacheDir = File(cacheDir, "offline_chapters")
@@ -905,6 +918,75 @@ class ReaderSettingsActivity : Activity() {
                 },
             )
         )))
+    }
+
+    private fun showModelIntegrityDialog() {
+        val en = AppStrings.isEnglish(this)
+        val statusTv = TextView(this).apply {
+            text = tr("Перевірка файлів моделей та ONNX-модулів…", "Verifying model and ONNX add-on bundles…")
+            textSize = 13.5f
+            setTextColor(p.primaryText)
+            setPadding(d(20), d(14), d(20), d(14))
+        }
+        val progressDlg = UiTheme.showThemedDialog(
+            UiTheme.dialogBuilder(this, prefs.theme)
+                .setTitle(tr("Перевірка цілісності", "Integrity Diagnostics"))
+                .setView(statusTv)
+                .setCancelable(false),
+            prefs.theme,
+        )
+        Thread({
+            val lines = ArrayList<String>()
+            val repairableModels = ArrayList<TtsModelId>()
+            val repairableAddons = ArrayList<OnnxAddonId>()
+            for (m in TtsModelId.entries) {
+                val dir = HolosModelManager.getBundleDir(this, m)
+                if (!dir.exists()) continue
+                val rep = HolosModelManager.diagnoseModel(this, m, deepHashCheck = true)
+                lines.add("${TtsModelCatalog.byId(m).displayName(en)}: ${rep.status.name} (${rep.verifiedCount}/${rep.files.size})")
+                if (rep.repairableCount > 0) repairableModels.add(m)
+            }
+            for (a in OnnxAddonId.entries) {
+                val dir = OnnxAddonManager.getAddonDir(this, a)
+                if (!dir.exists()) continue
+                val rep = OnnxAddonManager.diagnoseAddon(this, a, deepHashCheck = true)
+                lines.add("${OnnxAddonCatalog.byId(a).displayName(en)}: ${rep.status.name} (${rep.verifiedCount}/${rep.files.size})")
+                if (rep.repairableCount > 0) repairableAddons.add(a)
+            }
+            val summary = if (lines.isEmpty()) {
+                tr("Немає встановлених моделей або ONNX-модулів.", "No installed models or ONNX add-ons found.")
+            } else {
+                lines.joinToString("\n")
+            }
+            runOnUiThread {
+                if (progressDlg.isShowing) progressDlg.dismiss()
+                val b = UiTheme.dialogBuilder(this, prefs.theme)
+                    .setTitle(tr("Діагностика моделей", "Model Diagnostics"))
+                    .setMessage(summary)
+                    .setNegativeButton(tr("Закрити", "Close"), null)
+                if (repairableModels.isNotEmpty() || repairableAddons.isNotEmpty()) {
+                    b.setPositiveButton(tr("Відновити пошкоджені", "Repair Broken")) { _, _ ->
+                        Thread({
+                            try {
+                                for (m in repairableModels) HolosModelManager.repairModel(this, m)
+                                for (a in repairableAddons) OnnxAddonManager.repairAddon(this, a)
+                                HolosEngineHolder.resetEngine()
+                                HolosEngineHolder.resetAddons()
+                                runOnUiThread {
+                                    Toast.makeText(this, tr("Відновлення завершено", "Repair complete"), Toast.LENGTH_SHORT).show()
+                                    rebuildFullUi()
+                                }
+                            } catch (e: Exception) {
+                                runOnUiThread {
+                                    Toast.makeText(this, tr("Помилка відновлення: ${e.message}", "Repair failed: ${e.message}"), Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }, "HolosModelRepair").start()
+                    }
+                }
+                UiTheme.showThemedDialog(b, prefs.theme)
+            }
+        }, "HolosModelVerify").start()
     }
 
     private fun downloadModelFromSettings(modelId: TtsModelId) {

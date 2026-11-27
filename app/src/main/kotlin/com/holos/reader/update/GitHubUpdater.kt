@@ -259,22 +259,14 @@ object GitHubUpdater {
                         }
                     }
                 }
-                if (release.apkSizeBytes > 0L && tmpFile.length() != release.apkSizeBytes) {
-                    throw IllegalStateException("APK size mismatch: got ${tmpFile.length()}, expected ${release.apkSizeBytes}")
-                }
-                if (!release.sha256SumsUrl.isNullOrBlank() && release.apkFileName.isNotBlank()) {
-                    val manifestText = fetchTextWithRedirects(release.sha256SumsUrl)
-                    val expectedSha = parseSha256ForAsset(manifestText, release.apkFileName)
-                        ?: throw IllegalStateException("Missing SHA-256 entry for ${release.apkFileName} in SHA256SUMS")
-                    val actualSha = com.holos.reader.tts.VerifiedHttpDownloader.sha256Hex(tmpFile)
-                    if (!actualSha.equals(expectedSha, ignoreCase = true)) {
-                        throw IllegalStateException("APK SHA-256 mismatch: got $actualSha, expected $expectedSha")
-                    }
-                }
-                if (outFile.exists() && !outFile.delete()) {
-                    throw IllegalStateException("Failed to replace old staged APK")
-                }
-                check(tmpFile.renameTo(outFile)) { "Failed to promote verified APK" }
+                verifyAndStageApk(
+                    tmpFile = tmpFile,
+                    outFile = outFile,
+                    expectedBytes = release.apkSizeBytes,
+                    apkFileName = release.apkFileName,
+                    sha256SumsUrl = release.sha256SumsUrl,
+                    fetchManifest = { url -> fetchTextWithRedirects(url) },
+                )
                 activity.runOnUiThread {
                     if (dlg.isShowing) dlg.dismiss()
                     launchInstaller(activity)
@@ -291,6 +283,52 @@ object GitHubUpdater {
                 }
             }
         }
+    }
+
+    internal fun verifyAndStageApk(
+        tmpFile: File,
+        outFile: File,
+        expectedBytes: Long,
+        apkFileName: String,
+        sha256SumsUrl: String?,
+        fetchManifest: (String) -> String,
+        mover: (File, File) -> Unit = { src, dst ->
+            try {
+                java.nio.file.Files.move(
+                    src.toPath(),
+                    dst.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                java.nio.file.Files.move(
+                    src.toPath(),
+                    dst.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                )
+            }
+        },
+    ) {
+        if (!tmpFile.isFile || tmpFile.length() <= 0L) {
+            throw IllegalStateException("Downloaded APK is missing or empty")
+        }
+        if (expectedBytes > 0L && tmpFile.length() != expectedBytes) {
+            throw IllegalStateException("APK size mismatch: got ${tmpFile.length()}, expected $expectedBytes")
+        }
+        if (sha256SumsUrl.isNullOrBlank()) {
+            throw IllegalStateException("Release is missing SHA256SUMS checksum manifest; refusing unverified APK")
+        }
+        if (apkFileName.isBlank()) {
+            throw IllegalStateException("Missing APK asset filename for SHA-256 verification")
+        }
+        val manifestText = fetchManifest(sha256SumsUrl)
+        val expectedSha = parseSha256ForAsset(manifestText, apkFileName)
+            ?: throw IllegalStateException("Missing SHA-256 entry for $apkFileName in SHA256SUMS")
+        val actualSha = com.holos.reader.tts.VerifiedHttpDownloader.sha256Hex(tmpFile)
+        if (!actualSha.equals(expectedSha, ignoreCase = true)) {
+            throw IllegalStateException("APK SHA-256 mismatch: got $actualSha, expected $expectedSha")
+        }
+        mover(tmpFile, outFile)
     }
 
     internal fun parseSha256ForAsset(manifestText: String, fileName: String): String? {

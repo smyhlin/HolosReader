@@ -144,7 +144,14 @@ object HolosModelManager {
         for ((index, pair) in items.withIndex()) {
             val (url, target) = pair
             val name = target.name
-            if (target.exists() && target.length() > 0L) {
+            val bundleDir = target.parentFile ?: target
+            val relKey = target.name
+            val existingDiag = ModelIntegrityChecker.diagnoseBundle(
+                bundleDir = bundleDir,
+                expected = listOf(ModelIntegrityChecker.ExpectedFile(relKey, target, url)),
+                deepHashCheck = false,
+            ).files.firstOrNull()?.status
+            if (existingDiag == ModelIntegrityChecker.FileStatus.VERIFIED) {
                 onProgress(
                     if (en) "$name ready (${index + 1}/$totalCount)" else "$name вже готовий (${index + 1}/$totalCount)",
                     ((index + 1) * 100) / totalCount,
@@ -168,6 +175,7 @@ object HolosModelManager {
                 }
                 onProgress(label, pct)
             }
+            ModelIntegrityChecker.recordVerifiedFile(bundleDir, relKey, target, url)
         }
         onProgress(if (en) "$modelName is ready!" else "Модель $modelName готова!", 100)
     }
@@ -202,5 +210,49 @@ object HolosModelManager {
             userAgent = USER_AGENT,
             onBytes = onBytes,
         )
+    }
+
+    fun expectedFilesForModel(context: Context, modelId: TtsModelId): List<ModelIntegrityChecker.ExpectedFile> {
+        val dir = getBundleDir(context, modelId)
+        return when (modelId) {
+            TtsModelId.HOLOS_INT8, TtsModelId.HOLOS_FP32 -> {
+                val baseUrl = if (modelId == TtsModelId.HOLOS_INT8) HOLOS_INT8_BASE_URL else HOLOS_FP32_BASE_URL
+                val manifestFile = File(dir, HOLOS_MANIFEST_NAME)
+                val out = ArrayList<ModelIntegrityChecker.ExpectedFile>()
+                out.add(ModelIntegrityChecker.ExpectedFile(HOLOS_MANIFEST_NAME, manifestFile, baseUrl + HOLOS_MANIFEST_NAME, modelId.id))
+                if (manifestFile.isFile && manifestFile.length() > 0L) {
+                    try {
+                        for (f in requiredHolosFiles(dir, manifestFile)) {
+                            out.add(ModelIntegrityChecker.ExpectedFile(f.name, f, baseUrl + f.name, modelId.id))
+                        }
+                    } catch (_: Exception) {}
+                }
+                out
+            }
+            TtsModelId.SUPERTONIC_3 -> SUPERTONIC_REQUIRED_REL_PATHS.map { rel ->
+                ModelIntegrityChecker.ExpectedFile(rel, File(dir, rel), SUPERTONIC_3_BASE_URL + rel, modelId.id)
+            }
+        }
+    }
+
+    fun diagnoseModel(context: Context, modelId: TtsModelId, deepHashCheck: Boolean = true): ModelIntegrityChecker.BundleReport {
+        val dir = getBundleDir(context, modelId)
+        return ModelIntegrityChecker.diagnoseBundle(dir, expectedFilesForModel(context, modelId), deepHashCheck)
+    }
+
+    fun repairModel(
+        context: Context,
+        modelId: TtsModelId,
+        onProgress: (String, Int) -> Unit = { _, _ -> },
+    ): ModelIntegrityChecker.BundleReport {
+        val dir = getBundleDir(context, modelId).apply { mkdirs() }
+        val expected = expectedFilesForModel(context, modelId)
+        val total = expected.size.coerceAtLeast(1)
+        var done = 0
+        return ModelIntegrityChecker.repairBundle(dir, expected) { item ->
+            done++
+            onProgress("Repairing ${item.file.name} ($done/$total)…", ((done - 1) * 100) / total)
+            downloadFile(item.sourceUrl, item.file) { _, _ -> }
+        }
     }
 }

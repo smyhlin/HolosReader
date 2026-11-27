@@ -114,28 +114,21 @@ object HolosEngineHolder {
      */
 
     private val addonLock = Any()
-    @Volatile
-    private var flashSr: FlashSrOnnx? = null
-    @Volatile
-    private var emotionClassifier: UkrainianEmotionOnnx? = null
-    @Volatile
-    private var contextualStress: ContextualStressOnnx? = null
+    private val flashSrPool = EngineLeasePool<FlashSrOnnx> { old ->
+        Thread({ try { old.close() } catch (_: Throwable) {} }, "HolosFlashSrRetire").start()
+    }
+    private val emotionPool = EngineLeasePool<UkrainianEmotionOnnx> { old ->
+        Thread({ try { old.close() } catch (_: Throwable) {} }, "HolosEmotionRetire").start()
+    }
+    private val contextualStressPool = EngineLeasePool<ContextualStressOnnx> { old ->
+        Thread({ try { old.close() } catch (_: Throwable) {} }, "HolosCtxStressRetire").start()
+    }
 
     fun resetAddons() {
+        flashSrPool.retireCurrent()
+        emotionPool.retireCurrent()
+        contextualStressPool.retireCurrent()
         synchronized(addonLock) {
-            val oldFsr = flashSr
-            val oldEmo = emotionClassifier
-            val oldCtx = contextualStress
-            flashSr = null
-            emotionClassifier = null
-            contextualStress = null
-            if (oldFsr != null || oldEmo != null || oldCtx != null) {
-                Thread({
-                    try { oldFsr?.close() } catch (_: Throwable) {}
-                    try { oldEmo?.close() } catch (_: Throwable) {}
-                    try { oldCtx?.close() } catch (_: Throwable) {}
-                }, "HolosAddonRetire").start()
-            }
             stressifier?.contextualResolver = null
         }
     }
@@ -171,18 +164,17 @@ object HolosEngineHolder {
         return null
     }
 
-    fun getFlashSr(context: Context): FlashSrOnnx? {
+    fun acquireFlashSrLease(context: Context): EngineLeasePool.Lease<FlashSrOnnx>? {
         val appCtx = context.applicationContext
         val prefs = ReaderPreferences(appCtx)
         if (!prefs.flashSrEnabled || !OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.FLASH_SR)) {
             return null
         }
-        flashSr?.let { return it }
-        synchronized(addonLock) {
-            flashSr?.let { return it }
-            val modelFile = File(OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.FLASH_SR), "model.onnx")
-            return try {
-                tryCreateAddon(prefs, "FlashSR") { opts -> FlashSrOnnx(modelFile, options = opts, closeOptionsOnClose = true) }?.also { flashSr = it }
+        val modelFile = File(OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.FLASH_SR), "model.onnx")
+        val key = "fsr|${prefs.onnxAccelerator}|${prefs.cpuThreads}|${modelFile.length()}|${modelFile.lastModified()}"
+        return flashSrPool.acquire(key) {
+            try {
+                tryCreateAddon(prefs, "FlashSR") { opts -> FlashSrOnnx(modelFile, options = opts, closeOptionsOnClose = true) }
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to load FlashSR ONNX", t)
                 null
@@ -190,20 +182,39 @@ object HolosEngineHolder {
         }
     }
 
-    fun getEmotionClassifier(context: Context): UkrainianEmotionOnnx? {
+    fun acquireEmotionLease(context: Context): EngineLeasePool.Lease<UkrainianEmotionOnnx>? {
         val appCtx = context.applicationContext
         val prefs = ReaderPreferences(appCtx)
         if (!prefs.emotionPacingEnabled || !OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.UK_EMOTION)) {
             return null
         }
-        emotionClassifier?.let { return it }
-        synchronized(addonLock) {
-            emotionClassifier?.let { return it }
-            val dir = OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.UK_EMOTION)
-            return try {
-                tryCreateAddon(prefs, "Emotion") { opts -> UkrainianEmotionOnnx(dir, options = opts, closeOptionsOnClose = true) }?.also { emotionClassifier = it }
+        val dir = OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.UK_EMOTION)
+        val modelFile = File(dir, "model_quantized.onnx")
+        val key = "emo|${prefs.onnxAccelerator}|${prefs.cpuThreads}|${modelFile.length()}|${modelFile.lastModified()}"
+        return emotionPool.acquire(key) {
+            try {
+                tryCreateAddon(prefs, "Emotion") { opts -> UkrainianEmotionOnnx(dir, options = opts, closeOptionsOnClose = true) }
             } catch (t: Throwable) {
                 Log.w(TAG, "Failed to load UkrainianEmotionOnnx", t)
+                null
+            }
+        }
+    }
+
+    fun acquireContextualStressLease(context: Context): EngineLeasePool.Lease<ContextualStressOnnx>? {
+        val appCtx = context.applicationContext
+        val prefs = ReaderPreferences(appCtx)
+        if (!prefs.contextualStressEnabled || !OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.CONTEXTUAL_STRESS)) {
+            return null
+        }
+        val dir = OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.CONTEXTUAL_STRESS)
+        val modelFile = File(dir, "uk_stress_contextual.onnx")
+        val key = "ctx|${prefs.onnxAccelerator}|${prefs.cpuThreads}|${modelFile.length()}|${modelFile.lastModified()}"
+        return contextualStressPool.acquire(key) {
+            try {
+                tryCreateAddon(prefs, "ContextualStress") { opts -> ContextualStressOnnx(dir, options = opts, closeOptionsOnClose = true) }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to load ContextualStressOnnx", t)
                 null
             }
         }
@@ -216,25 +227,9 @@ object HolosEngineHolder {
             target.contextualResolver = null
             return
         }
-        val existing = contextualStress
-        if (existing != null) {
-            target.contextualResolver = ContextualHomographResolver { txt, s, e, cands ->
-                existing.predictVowelOrdinal(txt, s, e, cands)
-            }
-            return
-        }
-        synchronized(addonLock) {
-            val loaded = contextualStress ?: try {
-                val dir = OnnxAddonManager.getAddonDir(appCtx, OnnxAddonId.CONTEXTUAL_STRESS)
-                tryCreateAddon(prefs, "ContextualStress") { opts -> ContextualStressOnnx(dir, options = opts, closeOptionsOnClose = true) }?.also { contextualStress = it }
-            } catch (t: Throwable) {
-                Log.w(TAG, "Failed to load ContextualStressOnnx", t)
-                null
-            }
-            target.contextualResolver = loaded?.let { onnx ->
-                ContextualHomographResolver { txt, s, e, cands ->
-                    onnx.predictVowelOrdinal(txt, s, e, cands)
-                }
+        target.contextualResolver = ContextualHomographResolver { txt, s, e, cands ->
+            acquireContextualStressLease(appCtx)?.use { lease ->
+                lease.engine.predictVowelOrdinal(txt, s, e, cands)
             }
         }
     }

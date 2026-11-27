@@ -219,8 +219,15 @@ class TtsPlaybackController(context: Context) {
             }
 
             val customDir = HolosEngineHolder.getCustomVoicesDir(appContext)
-            val flashSr = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.getFlashSr(appContext) else null
-            val emotionClassifier = HolosEngineHolder.getEmotionClassifier(appContext)
+            val flashSrLease = if (engine is HolosTtsEngine.Holos) HolosEngineHolder.acquireFlashSrLease(appContext) else null
+            val emotionLease = HolosEngineHolder.acquireEmotionLease(appContext)
+            val flashSr = flashSrLease?.engine
+            val emotionClassifier = emotionLease?.engine
+            val releaseAllLeases = {
+                emotionLease?.close()
+                flashSrLease?.close()
+                engineLease.close()
+            }
             val outputSampleRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
             val defaultVoice = prefs.selectedVoice?.takeIf {
                 it.startsWith(CustomVoiceLoader.CUSTOM_PREFIX) || it in engine.voices
@@ -228,6 +235,7 @@ class TtsPlaybackController(context: Context) {
 
             val hasSpeakable = (startIdx until blocks.size).any { blocks[it].isSpeakable }
             if (!hasSpeakable) {
+                releaseAllLeases()
                 playingFlag.set(false)
                 if (isCurrent(gen, sessionCancel)) {
                     listener?.onChapterFinished()
@@ -350,7 +358,7 @@ class TtsPlaybackController(context: Context) {
                         )
                     }
                 } finally {
-                    engineLease.close()
+                    releaseAllLeases()
                 }
             }, "HolosProducer")
 
@@ -365,7 +373,7 @@ class TtsPlaybackController(context: Context) {
                 producer = prod,
                 prebufferMs = 1200,
                 playingLabel = AppStrings.t(appContext, "Озвучення…", "Playing…"),
-                onProducerNotStarted = { engineLease.close() },
+                onProducerNotStarted = { releaseAllLeases() },
             )
         }, "HolosBootstrap")
 
@@ -905,7 +913,7 @@ class TtsPlaybackController(context: Context) {
                 ?: if (HolosModelManager.isModelReady(appCtx, requestedModel)) requestedModel
                 else HolosModelManager.downloadedModels(appCtx).firstOrNull() ?: requestedModel
 
-            val isHolosFamily = effectiveModel != TtsModelId.SUPERTONIC_V2_MULTILINGUAL
+            val isHolosFamily = effectiveModel != TtsModelId.SUPERTONIC_3
             val flashSrActive = flashSrActiveOverride
                 ?: (isHolosFamily && prefs.flashSrEnabled && OnnxAddonManager.isAddonReady(appCtx, OnnxAddonId.FLASH_SR))
             val emotionActive = emotionActiveOverride
