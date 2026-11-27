@@ -69,6 +69,7 @@ class LibraryActivity : Activity() {
     private lateinit var prefs: ReaderPreferences
 
     private var searchQuery: String = ""
+    private var displayedSearchQuery: String? = null
     private var selectionMode: Boolean = false
     private val selectedIds = LinkedHashSet<String>()
     private var currentBooks: List<BookRecord> = emptyList()
@@ -230,7 +231,11 @@ class LibraryActivity : Activity() {
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                    searchQuery = s?.toString().orEmpty()
+                    val nextQuery = s?.toString().orEmpty()
+                    if (nextQuery == searchQuery) return
+                    searchQuery = nextQuery
+                    queryGen.incrementAndGet()
+                    if (selectionMode) exitSelectionMode()
                     searchHandler.removeCallbacks(debouncedSearchRunnable)
                     searchHandler.postDelayed(debouncedSearchRunnable, 200L)
                 }
@@ -266,12 +271,12 @@ class LibraryActivity : Activity() {
             visibility = View.GONE
             setPadding(d(10), d(6), d(6), d(6))
             setOnClickListener {
-                if (selectedIds.size == currentBooks.size) {
-                    selectedIds.clear()
+                if (currentBooks.all { it.id in selectedIds }) {
+                    exitSelectionMode()
                 } else {
                     selectedIds.addAll(currentBooks.map { it.id })
+                    renderBooks()
                 }
-                renderBooks()
             }
         }
 
@@ -488,6 +493,11 @@ class LibraryActivity : Activity() {
             runOnUiThread {
                 if (queryGen.get() != gen || isFinishing || isDestroyed) return@runOnUiThread
                 currentBooks = loaded
+                displayedSearchQuery = q
+                if (selectionMode) {
+                    selectedIds.retainAll(loaded.mapTo(HashSet()) { it.id })
+                    if (selectedIds.isEmpty()) exitSelectionMode()
+                }
                 searchInput.hint = AppStrings.t(this, "Пошук серед ${currentBooks.size} книг…", "Search ${currentBooks.size} books…")
                 renderBooks()
                 updateMiniPlayer()
@@ -773,6 +783,7 @@ class LibraryActivity : Activity() {
     // --- Selection Mode ---
 
     private fun enterSelectionMode(firstId: String) {
+        if (displayedSearchQuery != searchQuery || currentBooks.none { it.id == firstId }) return
         selectionMode = true
         selectedIds.clear()
         selectedIds.add(firstId)
@@ -1018,11 +1029,12 @@ class LibraryActivity : Activity() {
     }
 
     private fun deleteSelectedBooks() {
-        val count = selectedIds.size
+        val booksToDelete = selectedIds.toList()
+        if (booksToDelete.isEmpty()) return
         UiTheme.dialogBuilder(this, prefs.theme)
-            .setTitle("Видалити $count книг(и)?")
+            .setTitle("Видалити ${booksToDelete.size} книг(и)?")
             .setPositiveButton("Видалити") { _, _ ->
-                db.deleteBooks(selectedIds)
+                db.deleteBooks(booksToDelete)
                 exitSelectionMode()
                 refreshBooks()
             }
