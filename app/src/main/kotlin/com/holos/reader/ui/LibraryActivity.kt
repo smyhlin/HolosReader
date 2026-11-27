@@ -196,7 +196,6 @@ class LibraryActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        GitHubUpdater.checkInBackground(this, prefs)
         applyTheme()
         refreshBooks()
         if (!autoOpenedOnce && !externalOpenPending && prefs.openLastBookOnStart && intent?.data == null && intent?.action != Intent.ACTION_SEND) {
@@ -204,6 +203,13 @@ class LibraryActivity : Activity() {
             prefs.lastBookId?.let { id ->
                 db.getBook(id)?.let { openBook(it) }
             }
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && ::prefs.isInitialized && !isFinishing) {
+            GitHubUpdater.checkInBackground(this, prefs)
         }
     }
 

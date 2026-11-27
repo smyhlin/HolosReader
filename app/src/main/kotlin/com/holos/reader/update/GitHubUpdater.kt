@@ -82,8 +82,8 @@ object GitHubUpdater {
                 return@execute
             }
 
-            if (silent) backgroundCheck.set(CheckState.COMPLETE)
             if (release == null) {
+                if (silent) backgroundCheck.set(CheckState.COMPLETE)
                 if (!silent) {
                     activity.runOnUiThread {
                         if (!activity.isFinishing && !activity.isDestroyed) {
@@ -100,7 +100,11 @@ object GitHubUpdater {
 
             val isNewer = compareVersions(release.version, installedVersion) > 0
             activity.runOnUiThread {
-                if (activity.isFinishing || activity.isDestroyed) return@runOnUiThread
+                if (activity.isFinishing || activity.isDestroyed || (silent && isNewer && !activity.hasWindowFocus())) {
+                    if (silent) backgroundCheck.set(CheckState.IDLE)
+                    return@runOnUiThread
+                }
+                if (silent) backgroundCheck.set(CheckState.COMPLETE)
                 if (isNewer) {
                     if (silent && prefs.dismissedUpdateTag == release.tagName) return@runOnUiThread
                     showUpdatePrompt(activity, prefs, release, installedVersion)
