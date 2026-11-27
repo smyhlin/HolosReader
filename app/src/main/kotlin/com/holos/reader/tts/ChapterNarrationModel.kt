@@ -46,7 +46,7 @@ class ChapterTimeline(val blocks: List<ReaderBlock>) {
         val idx = activeBlockIndex.coerceIn(0, blocks.size)
         val before = prefixChars[idx]
         val posMs = ((before / cps) * 1000.0).roundToLong().coerceAtLeast(0L)
-        val durMs = ((total / cps) * 1000.0).roundToLong().coerceAtLeast(1000L)
+        val durMs = ((total / cps) * 1000.0).roundToLong().coerceAtLeast(1L)
         return posMs.coerceAtMost(durMs) to durMs
     }
 

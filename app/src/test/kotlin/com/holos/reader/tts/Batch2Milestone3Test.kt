@@ -67,6 +67,20 @@ class Batch2Milestone3Test {
         }
     }
 
+    @Test
+    fun subsecondChapterRoundTripsEveryReportedBlockBoundary() {
+        val blocks = listOf(
+            ReaderBlock(0, BlockType.PARAGRAPH, "Так"),
+            ReaderBlock(1, BlockType.HR, ""),
+            ReaderBlock(2, BlockType.PARAGRAPH, "Ні"),
+        )
+        val timeline = ChapterTimeline(blocks)
+        for (speed in listOf(0.5f, 1.0f, 2.5f)) {
+            val (positionMs, durationMs) = timeline.estimateTimingMs(2, speed)
+            assertEquals(2, timeline.blockIndexForFraction(positionMs.toFloat() / durationMs))
+        }
+    }
+
     // #32: EngineLeasePool closes retired idle engine even when replacement factory returns null or throws
     @Test
     fun engineLeasePoolClosesRetiredIdleEngineWhenReplacementFails() {
