@@ -120,7 +120,7 @@ object EpubStreamingParser {
             if (navHref != null) {
                 val navPath = resolvePath(opfDir, navHref!!)
                 readEntryText(zip, navPath)?.let { navHtml ->
-                    toc = parseEpub3NavFast(navHtml, parentDir(navPath), spineIndexByHref, spineIndexByHrefLower)
+                    toc = parseEpub3NavFast(navHtml, navPath, spineIndexByHref, spineIndexByHrefLower)
                 }
             }
             if (toc.isEmpty() && ncxHref != null) {
@@ -665,7 +665,7 @@ object EpubStreamingParser {
 
     private fun parseEpub3NavFast(
         navHtml: String,
-        navDir: String,
+        navPath: String,
         spineIndexByHref: Map<String, Int>,
         spineIndexByHrefLower: Map<String, Int>,
     ): List<TocEntry> {
@@ -689,8 +689,8 @@ object EpubStreamingParser {
                 else -> {
                     val (rawPath, fragment) = fastAttr(m.groupValues[1], "href")?.let { splitRawHref(it) } ?: continue
                     val label = parseInlineRichText(m.groupValues[2]).first
-                    if (label.isEmpty() || rawPath.isEmpty()) continue
-                    val resolved = resolvePath(navDir, rawPath)
+                    if (label.isEmpty() || (rawPath.isEmpty() && fragment == null)) continue
+                    val resolved = if (rawPath.isEmpty()) navPath else resolvePath(parentDir(navPath), rawPath)
                     val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHrefLower[resolved.lowercase()] ?: -1
                     val fullHref = if (fragment != null) "$resolved#$fragment" else resolved
                     result.add(TocEntry(label, fullHref, spineIdx, depth.coerceAtLeast(0), fragment = fragment))

@@ -599,21 +599,26 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
 
     fun queryToc(bookId: String, filter: String = ""): List<TocEntry> {
         val out = ArrayList<TocEntry>(256)
-        val sql: String
-        val args: Array<String>
-        if (filter.isBlank()) {
-            sql = "SELECT title, href, spine_idx, depth, fragment FROM toc WHERE book_id=? ORDER BY ord ASC"
-            args = arrayOf(bookId)
-        } else {
-            sql = "SELECT title, href, spine_idx, depth, fragment FROM toc WHERE book_id=? AND title LIKE ? ESCAPE '\\' ORDER BY ord ASC"
-            args = arrayOf(bookId, "%${escapeLike(filter.trim())}%")
-        }
+        val query = """
+            SELECT t.title, t.href, t.spine_idx, t.depth, t.fragment, s.href
+            FROM toc t
+            LEFT JOIN spine s ON s.book_id=t.book_id AND s.idx=t.spine_idx
+            WHERE t.book_id=?
+        """.trimIndent()
+        val sql = if (filter.isBlank()) "$query ORDER BY t.ord ASC"
+            else "$query AND t.title LIKE ? ESCAPE '\\' ORDER BY t.ord ASC"
+        val args = if (filter.isBlank()) arrayOf(bookId) else arrayOf(bookId, "%${escapeLike(filter.trim())}%")
         readableDatabase.rawQuery(sql, args).use { c ->
             while (c.moveToNext()) {
-                val rawHref = c.getString(1)
-                val storedFrag = if (c.isNull(4)) null else c.getString(4)
-                val frag = storedFrag ?: rawHref.substringAfter('#', "").takeIf { it.isNotBlank() }
-                out.add(TocEntry(c.getString(0), rawHref, c.getInt(2), c.getInt(3), fragment = frag))
+                val fullHref = c.getString(1)
+                val storedFragment = c.getString(4)
+                val spineHref = c.getString(5)
+                // Pre-v5 rows stored both pieces in href. Match the entire path before reading the suffix.
+                val fragment = storedFragment ?: spineHref?.let { path ->
+                    val prefix = "$path#"
+                    fullHref.takeIf { it.startsWith(prefix) }?.removePrefix(prefix)?.takeIf { it.isNotBlank() }
+                }
+                out.add(TocEntry(c.getString(0), fullHref, c.getInt(2), c.getInt(3), fragment = fragment))
             }
         }
         return out
