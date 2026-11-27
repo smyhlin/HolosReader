@@ -1012,7 +1012,9 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     }
 
     override fun onActiveBlockChanged(blockIndex: Int) {
+        val callbackGeneration = controller.currentSessionGeneration
         runOnUiThread {
+            if (isFinishing || isDestroyed || controller.currentSessionGeneration != callbackGeneration) return@runOnUiThread
             wordAnimator?.cancel()
             activeBlockIndex = blockIndex
             activeWordStart = -1
@@ -1025,25 +1027,9 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             if (blockIndex < first + 1 || blockIndex > last - 1) {
                 blocksListView.smoothScrollToPositionFromTop(blockIndex, blocksListView.height / 3, 250)
             }
-            if (audioSheet.isVisible()) {
-                audioSheet.updateState(blockIndex, controller.isPlaying, controller.isPaused)
-            }
+            // The paired playback-state callback refreshes the sheet and media metadata.
             saveProgress(blockIndex, com.holos.reader.tts.ProgressEvent.CHECKPOINT)
             updateBookmarkIcon()
-            if (controller.isPlaying) {
-                val (posMs, durMs) = estimateChapterAudioTiming(blockIndex)
-                val snippet = currentBlocks.getOrNull(blockIndex)?.text?.trim()?.take(90)
-                    ?.ifBlank { book?.title ?: "HolosReader" } ?: (book?.title ?: "HolosReader")
-                ReaderAudioService.refresh(
-                    context = this,
-                    title = snippet,
-                    subtitle = chapterTitle,
-                    album = book?.title,
-                    positionMs = posMs,
-                    durationMs = durMs,
-                    speed = prefs.speechSpeed,
-                )
-            }
         }
     }
 
@@ -1052,7 +1038,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     override fun onActiveWordChanged(blockIndex: Int, wordStart: Int, wordEnd: Int) {
         runOnUiThread {
-            if (blockIndex != activeBlockIndex) return@runOnUiThread
+            if (isFinishing || isDestroyed || blockIndex != activeBlockIndex) return@runOnUiThread
             activeWordStart = wordStart
             activeWordEnd = wordEnd
             audioSheet.updateActiveWord(wordStart, wordEnd)
