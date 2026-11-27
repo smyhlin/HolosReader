@@ -133,6 +133,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private var previousLinearChapterIndex: Int? = null
     private var chapterLoadPending = false
     private lateinit var chapterPullChip: TextView
+    private lateinit var followAudioChip: TextView
+    private var followAudio = true
     private lateinit var bottomDock: LinearLayout
     private var chapterTitle: String = ""
     private var currentBlocks: List<ReaderBlock> = emptyList()
@@ -371,6 +373,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             clipToPadding = false
             setOnScrollListener(object : AbsListView.OnScrollListener {
                 override fun onScrollStateChanged(view: AbsListView?, scrollState: Int) {
+                    if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_TOUCH_SCROLL && controller.isPlaying) {
+                        followAudio = false
+                        updateFollowAudioChip()
+                    }
                     if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_IDLE && contentCommitted && !controller.isPlaying) {
                         updateBookmarkIcon()
                         saveProgress(viewportBlockIndex, com.holos.reader.tts.ProgressEvent.CONSUMED_READING)
@@ -410,8 +416,26 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
             visibility = View.GONE
         }
+        followAudioChip = TextView(this).apply {
+            text = AppStrings.t(this@ReaderActivity, "До поточного озвучення", "Back to narration")
+            textSize = 13f
+            gravity = Gravity.CENTER
+            minHeight = d(44)
+            setPadding(d(16), 0, d(16), 0)
+            visibility = View.GONE
+            setOnClickListener {
+                followAudio = true
+                updateFollowAudioChip()
+                if (activeBlockIndex in currentBlocks.indices) {
+                    blocksListView.smoothScrollToPositionFromTop(activeBlockIndex, blocksListView.height / 3, 200)
+                }
+            }
+        }
         val chapterPullArea = FrameLayout(this).apply {
             addView(blocksListView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(followAudioChip, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL).apply {
+                topMargin = d(8)
+            })
             addView(chapterPullChip, FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.CENTER_HORIZONTAL))
         }
         readerCanvas.addView(chapterPullArea, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
@@ -601,6 +625,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         bottomIconBar.setBackgroundColor(p.canvasBg)
         subtleHeaderTv.setTextColor(p.secondaryText)
         footerCounterTv.setTextColor(p.secondaryText)
+        followAudioChip.setTextColor(p.primaryText)
+        followAudioChip.background = UiTheme.rounded(p.cardBg, d(22).toFloat(), p.accentBlue, d(1))
 
         miniPlayerPill.background = UiTheme.rounded(p.cardBg, d(24).toFloat())
         miniTitleTv.setTextColor(p.primaryText)
@@ -767,6 +793,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     controller.clearAbLoop()
                     if (::audioSheet.isInitialized) audioSheet.clearAbLoopUi()
                 }
+                followAudio = true
+                updateFollowAudioChip()
                 chapterIndex = targetChapter
                 chapterTitle = targetTitle
                 currentBlocks = blocks
@@ -988,6 +1016,8 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         val callbackGeneration = controller.currentSessionGeneration
         runOnUiThread {
             if (isFinishing || isDestroyed || controller.currentSessionGeneration != callbackGeneration) return@runOnUiThread
+            if (!isPlaying) followAudio = true
+            updateFollowAudioChip()
             miniPlayBtn.setImageResource(if (isPlaying && !isPaused) R.drawable.ic_pause else R.drawable.ic_play)
             if (audioSheet.isVisible()) {
                 audioSheet.updateState(activeBlockIndex, isPlaying, isPaused)
@@ -1022,7 +1052,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             // Smoothly keep active block in the middle third of the screen
             val first = blocksListView.firstVisiblePosition
             val last = blocksListView.lastVisiblePosition
-            if (blockIndex < first + 1 || blockIndex > last - 1) {
+            if (followAudio && (blockIndex < first + 1 || blockIndex > last - 1)) {
                 blocksListView.smoothScrollToPositionFromTop(blockIndex, blocksListView.height / 3, 250)
             }
             if (audioSheet.isVisible()) {
@@ -1045,6 +1075,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 )
             }
         }
+    }
+
+    private fun updateFollowAudioChip() {
+        followAudioChip.visibility = if (!followAudio && controller.isPlaying) View.VISIBLE else View.GONE
     }
 
     private fun estimateChapterAudioTiming(blockIdx: Int): Pair<Long, Long> =
@@ -1083,7 +1117,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         if (prefs.ttsHighlightStyle == "TEXT_COLOR") {
             child.text = buildBlockSpannable(block, idx, p)
         }
-        if (activeWordStart >= 0 && child.layout != null) {
+        if (followAudio && activeWordStart >= 0 && child.layout != null) {
             val safeOff = activeWordStart.coerceIn(0, (child.text?.length ?: 1) - 1)
             val line = child.layout.getLineForOffset(safeOff)
             val wordAbsY = child.top + child.paddingTop + child.layout.getLineBottom(line)
