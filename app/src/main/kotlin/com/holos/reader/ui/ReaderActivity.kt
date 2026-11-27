@@ -311,7 +311,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         applicationContext.getSharedPreferences("holos_reader_prefs", Context.MODE_PRIVATE)
             .unregisterOnSharedPreferenceChangeListener(livePrefsListener)
         autoScrollHandler.removeCallbacksAndMessages(null)
-        if (book != null && contentCommitted) saveProgress()
+        saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
         if (::controller.isInitialized) {
             controller.stop()
             if (ReaderAudioService.activeController === controller) {
@@ -364,7 +364,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 override fun onScrollStateChanged(view: AbsListView?, scrollState: Int) {
                     if (scrollState == AbsListView.OnScrollListener.SCROLL_STATE_IDLE && contentCommitted && !controller.isPlaying) {
                         updateBookmarkIcon()
-                        saveProgress(viewportBlockIndex)
+                        saveProgress(viewportBlockIndex, com.holos.reader.tts.ProgressEvent.CONSUMED_READING)
                     }
                 }
                 override fun onScroll(view: AbsListView?, firstVisibleItem: Int, visibleItemCount: Int, totalItemCount: Int) {
@@ -877,7 +877,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
     private fun saveProgress(
         blockIdx: Int = currentAnchorBlock(),
-        event: com.holos.reader.tts.ProgressEvent = com.holos.reader.tts.ProgressEvent.CONSUMED_READING,
+        event: com.holos.reader.tts.ProgressEvent,
     ) {
         val b = book ?: return
         if (!contentCommitted) return
@@ -952,7 +952,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             if (audioSheet.isVisible()) {
                 audioSheet.updateState(blockIndex, controller.isPlaying, controller.isPaused)
             }
-            saveProgress(blockIndex)
+            saveProgress(blockIndex, com.holos.reader.tts.ProgressEvent.CHECKPOINT)
             updateBookmarkIcon()
             if (controller.isPlaying) {
                 val (posMs, durMs) = estimateChapterAudioTiming(blockIndex)
@@ -1742,7 +1742,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                     startActivity(Intent(this, StressEditorActivity::class.java))
                 },
                 IconMenuItem(R.drawable.ic_stats, "Статистика читання", "Графіки часу, активність та серії") {
-                    saveProgress()
+                    saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
                     startActivity(Intent(this, StatisticsActivity::class.java))
                 },
                 IconMenuItem(R.drawable.ic_info, "Про програму (About)", "GitHub, HolosTTS, словники та джерела") {
