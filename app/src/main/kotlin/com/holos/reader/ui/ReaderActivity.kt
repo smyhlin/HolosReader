@@ -321,7 +321,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
 
         readerCanvas = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        // Minimalist Top Toolbar (Bookmark | Stress | Theme | Menu | Close)
+        // Minimalist Top Toolbar (Bookmark | Stress | Menu | Close)
         topOverlayBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -329,7 +329,6 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             topBookmarkBtn = UiTheme.iconView(this@ReaderActivity, R.drawable.ic_bookmark, padDp = 8, tagName = "bm_icon") { toggleCurrentBookmark() }
             addView(topBookmarkBtn, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(toolbarIcon("А́") { startActivity(Intent(this@ReaderActivity, StressEditorActivity::class.java)) }, LinearLayout.LayoutParams(0, d(40), 1f))
-            addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_palette, padDp = 8) { toggleColorSwatchBar() }, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_menu, padDp = 8) { showReaderMenu() }, LinearLayout.LayoutParams(0, d(40), 1f))
             addView(UiTheme.iconView(this@ReaderActivity, R.drawable.ic_close, padDp = 8) { finish() }, LinearLayout.LayoutParams(0, d(40), 1f))
         }
@@ -1384,7 +1383,6 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         refreshQuickPanelsUi()
     }
 
-    private fun toggleColorSwatchBar() = toggleLightThemeBar()
 
     private fun toggleLightThemeBar() {
         if (!::lightThemeBar.isInitialized) return
