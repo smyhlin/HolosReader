@@ -315,7 +315,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         autoScrollHandler.removeCallbacksAndMessages(null)
         saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
         if (::controller.isInitialized) {
-            controller.stop()
+            controller.close()
             if (ReaderAudioService.activeController === controller) {
                 ReaderAudioService.activeController = null
                 ReaderAudioService.onSkipNextAction = null
