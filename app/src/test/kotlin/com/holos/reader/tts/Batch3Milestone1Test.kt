@@ -224,7 +224,7 @@ class Batch3Milestone1Test {
             stressOverridesSize = 0L,
         )
 
-        assertEquals(4, AudioCacheRecipe.CURRENT_RECIPE_VERSION)
+        assertEquals(5, AudioCacheRecipe.CURRENT_RECIPE_VERSION)
         assertNotEquals(installedSnap.recipe.cacheKeyHex(), installedSnap.recipe.copy(recipeVersion = 3).cacheKeyHex())
         assertTrue(fallbackSnap.isFallbackModel)
         assertNotEquals(fallbackSnap.recipe.cacheKeyHex(), installedSnap.recipe.cacheKeyHex())
