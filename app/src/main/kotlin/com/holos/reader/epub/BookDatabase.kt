@@ -260,7 +260,50 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         return md.digest().joinToString("") { "%02x".format(it) }
     }
 
-    fun importFromUri(uri: Uri, displayName: String?): BookRecord {
+    internal enum class ImportStatus { CREATED, REATTACHED, DUPLICATE }
+
+    private data class ImportedBook(val book: BookRecord, val status: ImportStatus)
+
+    internal class BatchImportResult {
+        var added = 0
+            private set
+        var reattached = 0
+            private set
+        var duplicates = 0
+            private set
+        var failed = 0
+            private set
+        val failureDetails = mutableListOf<String>()
+
+        fun record(status: ImportStatus) {
+            when (status) {
+                ImportStatus.CREATED -> added++
+                ImportStatus.REATTACHED -> reattached++
+                ImportStatus.DUPLICATE -> duplicates++
+            }
+        }
+
+        fun recordFailure(name: String, error: Exception) {
+            failed++
+            if (failureDetails.size < 20) {
+                val reason = error.localizedMessage?.lineSequence()?.firstOrNull()?.take(180)
+                failureDetails.add(listOfNotNull(name.take(160), reason?.takeIf { it.isNotBlank() }).joinToString(": "))
+            }
+        }
+    }
+
+    fun importFromUri(uri: Uri, displayName: String?): BookRecord =
+        importUri(uri, displayName).book
+
+    internal fun importBatchFile(uri: Uri, displayName: String?, result: BatchImportResult) {
+        try {
+            result.record(importUri(uri, displayName).status)
+        } catch (error: Exception) {
+            result.recordFailure(displayName ?: uri.lastPathSegment ?: "EPUB", error)
+        }
+    }
+
+    private fun importUri(uri: Uri, displayName: String?): ImportedBook {
         val id = UUID.randomUUID().toString().substring(0, 12)
         val safeName = "$id.epub"
         val stagedFile = File(booksDir, "$safeName.part")
@@ -276,36 +319,43 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     /**
      * Batch-imports all `.epub` files from a user-selected directory (ACTION_OPEN_DOCUMENT_TREE).
      */
-    fun importFromDirectoryTree(treeUri: Uri): Int =
-        importDirectoryRecursive(treeUri, DocumentsContract.getTreeDocumentId(treeUri), depth = 0)
+    internal fun importFromDirectoryTree(treeUri: Uri): BatchImportResult {
+        val result = BatchImportResult()
+        try {
+            importDirectoryRecursive(treeUri, DocumentsContract.getTreeDocumentId(treeUri), 0, result)
+        } catch (error: Exception) {
+            result.recordFailure(treeUri.lastPathSegment ?: "EPUB", error)
+        }
+        return result
+    }
 
-    private fun importDirectoryRecursive(treeUri: Uri, parentDocId: String, depth: Int): Int {
-        if (depth > 6) return 0
+    private fun importDirectoryRecursive(treeUri: Uri, parentDocId: String, depth: Int, result: BatchImportResult) {
         val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
         val cols = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
         )
-        var imported = 0
-        appCtx.contentResolver.query(childrenUri, cols, null, null, null)?.use { c ->
+        val cursor = appCtx.contentResolver.query(childrenUri, cols, null, null, null)
+            ?: throw java.io.IOException("Document provider returned no directory listing")
+        cursor.use { c ->
             while (c.moveToNext()) {
                 val childId = c.getString(0)
-                val name = c.getString(1) ?: continue
+                val name = c.getString(1) ?: childId
                 val mime = c.getString(2) ?: ""
                 if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                    imported += importDirectoryRecursive(treeUri, childId, depth + 1)
+                    try {
+                        check(depth < 6) { "Maximum folder depth reached" }
+                        importDirectoryRecursive(treeUri, childId, depth + 1, result)
+                    } catch (error: Exception) {
+                        result.recordFailure(name, error)
+                    }
                 } else if (name.endsWith(".epub", ignoreCase = true) || mime == "application/epub+zip") {
                     val fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
-                    try {
-                        importFromUri(fileUri, name)
-                        imported++
-                    } catch (_: Exception) {
-                    }
+                    importBatchFile(fileUri, name, result)
                 }
             }
         }
-        return imported
     }
 
     /**
@@ -320,7 +370,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         val staged = File(booksDir, "$safeName.part")
         buildSingleChapterEpub(staged, cleanTitle, bodyText)
         val sha256 = computeFileSha256(staged)
-        return indexLocalEpubFile(id, safeName, staged, cleanTitle, sha256)
+        return indexLocalEpubFile(id, safeName, staged, cleanTitle, sha256).book
     }
 
     private fun findAllBySha256(sha256: String): List<BookRecord> {
@@ -378,18 +428,22 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         stagedFile: File,
         displayName: String?,
         sha256: String,
-    ): BookRecord {
+    ): ImportedBook {
         val matches = findAllBySha256(sha256)
         matches.firstOrNull { !isDetached(it) }?.let { healthy ->
             stagedFile.delete()
-            return if (healthy.coverFileName == null) healthy else restoreMissingCover(healthy, getBookFile(healthy))
+            val book = if (healthy.coverFileName == null) healthy else restoreMissingCover(healthy, getBookFile(healthy))
+            return ImportedBook(book, ImportStatus.DUPLICATE)
         }
         matches.firstOrNull { isDetached(it) }?.let { detached ->
             val dest = getBookFile(detached)
             dest.parentFile?.mkdirs()
             if (dest.exists()) dest.delete()
-            check(stagedFile.renameTo(dest)) { "Не вдалося відновити файл книги" }
-            return restoreMissingCover(detached, dest)
+            if (!stagedFile.renameTo(dest)) {
+                stagedFile.delete()
+                error("Не вдалося відновити файл книги")
+            }
+            return ImportedBook(restoreMissingCover(detached, dest), ImportStatus.REATTACHED)
         }
 
         val meta = try {
@@ -484,7 +538,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         } finally {
             db.endTransaction()
         }
-        return record
+        return ImportedBook(record, ImportStatus.CREATED)
     }
 
     fun listBooks(searchQuery: String = "", sortBy: String = "RECENT", statusFilter: String = "ALL"): List<BookRecord> {
