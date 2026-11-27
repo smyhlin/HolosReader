@@ -96,7 +96,7 @@ object OnnxAddonManager {
             val tokFile = File(dir, "tokenizer.json")
             if (!tokFile.exists() || tokFile.length() == 0L) {
                 onProgress(if (en) "Downloading tokenizer.json…" else "Завантаження tokenizer.json…", 70)
-                downloadFile(CONTEXTUAL_STRESS_TOKENIZER_URL, tokFile) { _, _ -> }
+                downloadFile(CONTEXTUAL_STRESS_TOKENIZER_URL, tokFile)
             }
         }
         onProgress(if (en) "Add-on ready!" else "Модуль готовий!", 100)
@@ -110,6 +110,7 @@ object OnnxAddonManager {
         onProgress: (message: String, percent: Int) -> Unit,
     ): File {
         val en = AppStrings.isEnglish(context)
+        val concurrency = ReaderPreferences(context).downloadConcurrency
         val dir = getAddonDir(context, addonId).apply { mkdirs() }
         val items: List<Pair<String, File>> = when (addonId) {
             OnnxAddonId.FLASH_SR -> listOf(

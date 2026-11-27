@@ -265,7 +265,7 @@ object HolosModelManager {
                 val staging = java.nio.file.Files.createTempDirectory(dir.toPath(), "repair-").toFile()
                 try {
                     val stagedManifest = File(staging, item.file.name)
-                    downloadFile(item.sourceUrl, stagedManifest) { _, _ -> }
+                    downloadFile(item.sourceUrl, stagedManifest)
                     check(item.validateContent?.invoke(stagedManifest) == true) { "Downloaded Holos manifest is invalid" }
                     java.nio.file.Files.move(
                         stagedManifest.toPath(), item.file.toPath(),
