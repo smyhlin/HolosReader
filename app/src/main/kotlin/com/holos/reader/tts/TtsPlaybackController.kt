@@ -689,7 +689,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                                 lastWordEnd = -1
                                 activeBlock.set(head.blockIndex)
                                 listener?.onActiveBlockChanged(head.blockIndex)
-                                listener?.onPlaybackStateChanged(true, false, playingLabel)
+                                if (!pausedFlag.get()) listener?.onPlaybackStateChanged(true, false, playingLabel)
                             } else {
                                 break
                             }
@@ -796,8 +796,10 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                 for (ap in prebuffer) {
                     if (!isCurrent(gen, sessionCancel)) return false
                     if (!writeAudioPacket(ap)) {
-                        sessionCancel.set(true)
-                        listener?.onError(AppStrings.t(appContext, "Помилка аудіовиводу", "Audio output error"))
+                        if (isCurrent(gen, sessionCancel)) {
+                            listener?.onError(AppStrings.t(appContext, "Помилка аудіовиводу", "Audio output error"))
+                            sessionCancel.set(true)
+                        }
                         return false
                     }
                 }
