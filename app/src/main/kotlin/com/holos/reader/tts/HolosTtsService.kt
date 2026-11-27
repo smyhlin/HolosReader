@@ -27,32 +27,30 @@ class HolosTtsService : TextToSpeechService() {
     override fun onIsLanguageAvailable(lang: String?, country: String?, variant: String?): Int {
         val code = lang?.lowercase(Locale.ROOT) ?: return TextToSpeech.LANG_NOT_SUPPORTED
         if (code != "ukr" && code != "uk") return TextToSpeech.LANG_NOT_SUPPORTED
+        if (resolveAdvertisedVoiceNames().isEmpty()) return TextToSpeech.LANG_MISSING_DATA
         val c = country?.uppercase(Locale.ROOT) ?: ""
         return if (c == "UKR" || c == "UA") TextToSpeech.LANG_COUNTRY_AVAILABLE else TextToSpeech.LANG_AVAILABLE
     }
 
     override fun onGetLanguage(): Array<String> = arrayOf("ukr", "UKR", "")
 
-    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int {
-        val avail = onIsLanguageAvailable(lang, country, variant)
-        if (avail == TextToSpeech.LANG_NOT_SUPPORTED) return avail
-        return if (HolosModelManager.hasAnyModelReady(this)) avail else TextToSpeech.LANG_MISSING_DATA
-    }
+    override fun onLoadLanguage(lang: String?, country: String?, variant: String?): Int =
+        onIsLanguageAvailable(lang, country, variant)
 
     internal fun resolveAdvertisedVoiceNames(): List<String> {
-        val loaded = HolosEngineHolder.peekVoicesOrEmpty()
-        if (loaded.isNotEmpty()) return loaded
         val prefs = ReaderPreferences(this)
         val effectiveModel = if (HolosModelManager.isModelReady(this, prefs.selectedTtsModelId)) {
             prefs.selectedTtsModelId
         } else {
-            HolosModelManager.downloadedModels(this).firstOrNull() ?: prefs.selectedTtsModelId
+            HolosModelManager.downloadedModels(this).firstOrNull() ?: return emptyList()
         }
-        return HolosVoiceCatalog.defaultVoicesFor(effectiveModel).ifEmpty { listOf("default") }
+        return HolosEngineHolder.peekVoicesOrEmpty(effectiveModel).ifEmpty {
+            HolosVoiceCatalog.defaultVoicesFor(effectiveModel)
+        }
     }
 
     override fun onGetDefaultVoiceNameFor(lang: String?, country: String?, variant: String?): String? {
-        if (onIsLanguageAvailable(lang, country, variant) == TextToSpeech.LANG_NOT_SUPPORTED) return null
+        if (onIsLanguageAvailable(lang, country, variant) < TextToSpeech.LANG_AVAILABLE) return null
         val names = resolveAdvertisedVoiceNames()
         val preferred = ReaderPreferences(this).selectedVoice
         return preferred?.takeIf { it in names } ?: names.firstOrNull()
@@ -67,16 +65,15 @@ class HolosTtsService : TextToSpeechService() {
 
     override fun onIsValidVoiceName(voiceName: String?): Int {
         if (voiceName.isNullOrBlank()) return TextToSpeech.ERROR
-        if (voiceName == "default" || voiceName in resolveAdvertisedVoiceNames() || voiceName in HolosVoiceCatalog.allKnownVoiceIds()) {
-            return TextToSpeech.SUCCESS
-        }
-        return TextToSpeech.ERROR
+        val names = resolveAdvertisedVoiceNames()
+        return if (voiceName in names || (voiceName == "default" && names.isNotEmpty())) {
+            TextToSpeech.SUCCESS
+        } else TextToSpeech.ERROR
     }
 
     override fun onLoadVoice(voiceName: String?): Int {
-        if (!voiceName.isNullOrBlank() && voiceName != "default") {
-            serviceVoice = voiceName
-        }
+        if (onIsValidVoiceName(voiceName) != TextToSpeech.SUCCESS) return TextToSpeech.ERROR
+        serviceVoice = voiceName.takeUnless { it == "default" }
         return TextToSpeech.SUCCESS
     }
 
@@ -103,7 +100,13 @@ class HolosTtsService : TextToSpeechService() {
             val engine = activeLease.engine
             val stressifier = HolosEngineHolder.getStressifier(this)
             val prefs = ReaderPreferences(this)
-            val voice = request.voiceName?.takeIf { it in engine.voices }
+            val requestedVoice = request.voiceName?.takeUnless { it.isBlank() || it == "default" }
+            if (requestedVoice != null && requestedVoice !in engine.voices) {
+                callback.error(TextToSpeech.ERROR_INVALID_REQUEST)
+                callback.done()
+                return
+            }
+            val voice = requestedVoice
                 ?: serviceVoice?.takeIf { it in engine.voices }
                 ?: prefs.selectedVoice?.takeIf { it in engine.voices }
                 ?: engine.voices.firstOrNull()

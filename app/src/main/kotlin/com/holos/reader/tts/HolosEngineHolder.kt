@@ -106,7 +106,8 @@ object HolosEngineHolder {
     }
 
     /** Non-blocking voice list peek safe to call on the UI thread. */
-    fun peekVoicesOrEmpty(): List<String> = engine?.voices ?: emptyList()
+    fun peekVoicesOrEmpty(modelId: TtsModelId? = null): List<String> =
+        engine?.takeIf { modelId == null || it.modelId == modelId }?.voices.orEmpty()
 
     /**
      * Closes the active [HolosOnnx] engine so updated CPU threads or hardware accelerator
