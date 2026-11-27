@@ -291,9 +291,16 @@ class ReaderSettingsActivity : Activity() {
         val restoredScroll = tabScrollPositions[renderedTabIndex]
         val renderedScroll = rootScroll
         if (restoredScroll > 0) {
-            renderedScroll.post {
-                if (rootScroll === renderedScroll) renderedScroll.scrollTo(0, restoredScroll)
-            }
+            renderedScroll.addOnLayoutChangeListener(object : View.OnLayoutChangeListener {
+                override fun onLayoutChange(
+                    view: View,
+                    left: Int, top: Int, right: Int, bottom: Int,
+                    oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
+                ) {
+                    view.removeOnLayoutChangeListener(this)
+                    if (rootScroll === renderedScroll) renderedScroll.scrollTo(0, restoredScroll)
+                }
+            })
         }
     }
 
