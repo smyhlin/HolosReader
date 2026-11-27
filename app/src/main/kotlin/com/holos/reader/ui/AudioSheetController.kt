@@ -1560,11 +1560,10 @@ class AudioSheetController(
             val emotionClassifier = emotionLease?.engine
             val outputRate = if (flashSr != null) FlashSrOnnx.OUTPUT_RATE else engine.sampleRate
             val stressifier = HolosEngineHolder.getStressifier(activity)
-            val activeModelId = HolosEngineHolder.currentLoadedModelId()
             val snapshot = TtsPlaybackController.resolveOfflineSnapshot(
                 context = activity,
                 prefs = prefs,
-                effectiveModelOverride = activeModelId,
+                effectiveModelOverride = engine.modelId,
                 flashSrActiveOverride = flashSr != null,
                 emotionActiveOverride = emotionClassifier != null,
                 contextualStressActiveOverride = prefs.contextualStressEnabled && com.holos.reader.tts.OnnxAddonManager.isAddonReady(activity, com.holos.reader.tts.OnnxAddonId.CONTEXTUAL_STRESS),

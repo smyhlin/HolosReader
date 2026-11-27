@@ -58,8 +58,6 @@ object HolosEngineHolder {
     @Volatile
     private var engine: HolosTtsEngine? = null
     @Volatile
-    private var loadedModelId: TtsModelId? = null
-    @Volatile
     private var loadedRequestedModel: TtsModelId? = null
     @Volatile
     private var loadedThreads: Int = -1
@@ -240,7 +238,6 @@ object HolosEngineHolder {
             engine = null
             loadedThreads = -1
             loadedAccelPref = null
-            loadedModelId = null
             loadedRequestedModel = null
         }
         enginePool.retireCurrent()
@@ -329,8 +326,6 @@ object HolosEngineHolder {
      * generation across the entire synthesis operation (#15). Callers MUST close the lease in
      * `finally` (e.g. `.use { lease -> ... }`).
      */
-    fun currentLoadedModelId(): TtsModelId? = synchronized(engineLock) { loadedModelId }
-
     fun acquireEngineLease(context: Context): EngineLeasePool.Lease<HolosTtsEngine>? {
         val appCtx = context.applicationContext
         val prefs = ReaderPreferences(appCtx)
@@ -356,7 +351,6 @@ object HolosEngineHolder {
                         engine = created
                         loadedThreads = wantThreads
                         loadedAccelPref = wantAccel
-                        loadedModelId = effectiveModel
                         loadedRequestedModel = wantModel
                     }
                     activeAccelerator = when {
