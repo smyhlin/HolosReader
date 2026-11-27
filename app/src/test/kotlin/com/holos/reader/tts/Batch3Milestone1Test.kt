@@ -51,7 +51,7 @@ class Batch3Milestone1Test {
     @Test
     fun `anchor on inline img binds to image block not preceding text (#54)`() {
         val xhtml = """<html><body><p>Before<img id="i" src="pic.png"/>After</p></body></html>"""
-        val parsed = EpubStreamingParser.parseXhtmlToBlocks(xhtml, "OEBPS/ch1.xhtml")
+        val parsed = EpubStreamingParser.parseHtmlToRichBlocksWithAnchors(xhtml, "OEBPS/ch1.xhtml")
         assertEquals(3, parsed.blocks.size)
         assertEquals("Before", parsed.blocks[0].text)
         assertEquals(BlockType.IMAGE, parsed.blocks[1].type)
@@ -62,7 +62,7 @@ class Batch3Milestone1Test {
     @Test
     fun `anchor on section boundary binds to section content not preceding text (#54)`() {
         val xhtml = """<html><body>Intro<section id="s"><p>Target</p></section></body></html>"""
-        val parsed = EpubStreamingParser.parseXhtmlToBlocks(xhtml, "OEBPS/ch1.xhtml")
+        val parsed = EpubStreamingParser.parseHtmlToRichBlocksWithAnchors(xhtml, "OEBPS/ch1.xhtml")
         assertEquals(2, parsed.blocks.size)
         assertEquals("Intro", parsed.blocks[0].text)
         assertEquals("Target", parsed.blocks[1].text)
@@ -72,7 +72,7 @@ class Batch3Milestone1Test {
     @Test
     fun `anchor on hr following buffered text binds to hr block and empty anchors survive (#54)`() {
         val xhtml = """<html><body><p>Lead<hr id="sep"/>Trail</p><a id="a1"></a><a id="a2" name="a3"></a><p>Final</p></body></html>"""
-        val parsed = EpubStreamingParser.parseXhtmlToBlocks(xhtml, "OEBPS/ch1.xhtml")
+        val parsed = EpubStreamingParser.parseHtmlToRichBlocksWithAnchors(xhtml, "OEBPS/ch1.xhtml")
         assertEquals(BlockType.HR, parsed.blocks[1].type)
         assertEquals(1, parsed.anchorToBlock["sep"])
         val finalIdx = parsed.blocks.indexOfFirst { it.text == "Final" }
@@ -95,7 +95,7 @@ class Batch3Milestone1Test {
               </table>
             </body></html>
         """.trimIndent()
-        val parsed = EpubStreamingParser.parseXhtmlToBlocks(xhtml, "OEBPS/t.xhtml")
+        val parsed = EpubStreamingParser.parseHtmlToRichBlocksWithAnchors(xhtml, "OEBPS/t.xhtml")
         assertEquals(3, parsed.blocks.size)
         assertEquals("H1  |  H2", parsed.blocks[0].text)
         assertEquals("A\nB  |  C", parsed.blocks[1].text)
@@ -112,7 +112,7 @@ class Batch3Milestone1Test {
               </table>
             </body></html>
         """.trimIndent()
-        val parsed = EpubStreamingParser.parseXhtmlToBlocks(xhtml, "OEBPS/t2.xhtml")
+        val parsed = EpubStreamingParser.parseHtmlToRichBlocksWithAnchors(xhtml, "OEBPS/t2.xhtml")
         val idxBefore = parsed.blocks.indexOfFirst { it.text.contains("Before") }
         val idxImg = parsed.blocks.indexOfFirst { it.type == BlockType.IMAGE }
         val idxAfter = parsed.blocks.indexOfFirst { it.text.contains("After") }
