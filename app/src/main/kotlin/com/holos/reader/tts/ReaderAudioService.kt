@@ -11,7 +11,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.drawable.Icon
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -27,6 +26,7 @@ import com.holos.reader.R
 import com.holos.reader.epub.BookDatabase
 import com.holos.reader.ui.AppStrings
 import com.holos.reader.ui.ReaderActivity
+import com.holos.reader.util.BitmapDecode
 
 /**
  * Foreground Media Playback Service (pure framework Android, zero-AndroidX):
@@ -348,7 +348,7 @@ class ReaderAudioService : Service() {
             val db = BookDatabase(this)
             val rec = db.getBook(bid) ?: return null
             val cf = db.getCoverFile(rec) ?: return null
-            BitmapFactory.decodeFile(cf.absolutePath)?.also { cachedCoverBitmap = it }
+            BitmapDecode.decodeFileBounded(cf.absolutePath, 256)?.also { cachedCoverBitmap = it }
         } catch (_: Exception) {
             null
         }

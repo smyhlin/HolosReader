@@ -221,7 +221,7 @@ class EpubSession(private val epubFile: File) : Closeable {
 
     private fun extractAndLoadFont(z: ZipFile, fontDir: File, bookPrefix: String, entryName: String): Typeface? {
         return try {
-            val safeName = entryName.substringAfterLast('/').replace(Regex("[^a-zA-Z0-9._-]"), "_")
+            val safeName = entryName.substringAfterLast('/').replace(RE_UNSAFE_FILE_NAME, "_")
             val target = File(fontDir, "${bookPrefix}_$safeName")
             if (!target.exists() || target.length() == 0L) {
                 val bytes = EpubStreamingParser.extractEntryBytes(z, entryName) ?: return null
@@ -258,6 +258,7 @@ class EpubSession(private val epubFile: File) : Closeable {
     }
 
     companion object {
+        private val RE_UNSAFE_FILE_NAME = Regex("[^a-zA-Z0-9._-]")
         private const val TAG = "EpubSession"
         private val RE_CSS_FONT_FAMILY = Regex("""font-family\s*:\s*([^;}{]+)""", RegexOption.IGNORE_CASE)
     }

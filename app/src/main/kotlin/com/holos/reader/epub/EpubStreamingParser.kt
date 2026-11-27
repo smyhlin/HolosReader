@@ -676,12 +676,8 @@ object EpubStreamingParser {
         val section = navHtml.substring(navStart, navEnd)
 
         val result = ArrayList<TocEntry>(128)
-        val tokenRegex = Regex(
-            """<ol\b[^>]*>|</ol>|<a\b([^>]*)>(.*?)</a>""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        )
         var depth = -1
-        for (m in tokenRegex.findAll(section)) {
+        for (m in RE_NAV_OL_TOKEN.findAll(section)) {
             val v = m.value
             when {
                 v.startsWith("<ol", ignoreCase = true) -> depth++
@@ -801,6 +797,10 @@ object EpubStreamingParser {
 
     private const val MAX_TEXT_ENTRY_BYTES = 16 * 1024 * 1024
     private const val MAX_BINARY_ENTRY_BYTES = 32 * 1024 * 1024
+    private val RE_NAV_OL_TOKEN = Regex(
+            """<ol\b[^>]*>|</ol>|<a\b([^>]*)>(.*?)</a>""",
+            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+        )
     private val RE_NAV_TOC_OPEN = Regex("""<nav\b[^>]*\b(?:epub:)?type\s*=\s*["'][^"']*\btoc\b[^"']*["'][^>]*>""", RegexOption.IGNORE_CASE)
     private val RE_NCX_TOKEN = Regex(
         """</(?:[a-zA-Z0-9_-]+:)?navPoint\b[^>]*>|<(?:[a-zA-Z0-9_-]+:)?navPoint\b[^>]*>|<(?:[a-zA-Z0-9_-]+:)?text\b[^>]*>(.*?)</(?:[a-zA-Z0-9_-]+:)?text>|<(?:[a-zA-Z0-9_-]+:)?content\b([^>]*)/?>""",

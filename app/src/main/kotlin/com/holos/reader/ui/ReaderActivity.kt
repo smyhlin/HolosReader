@@ -4,7 +4,6 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.animation.ValueAnimator
 import android.content.pm.ActivityInfo
 import android.content.Context
@@ -72,6 +71,7 @@ import android.provider.OpenableColumns
 import com.holos.reader.tts.CustomVoiceLoader
 import com.holos.reader.tts.HolosEngineHolder
 import com.holos.reader.tts.ReaderAudioService
+import com.holos.reader.util.BitmapDecode
 import com.holos.reader.tts.ReaderPreferences
 import com.holos.reader.tts.ReaderTheme
 import com.holos.reader.tts.TtsPlaybackController
@@ -95,6 +95,20 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     private lateinit var audioSheet: AudioSheetController
     private lateinit var tocSheet: TocSheetController
     private val autoScrollHandler = Handler(Looper.getMainLooper())
+    private val blocksRelayoutRunnable = Runnable {
+        if (::blocksAdapter.isInitialized) blocksAdapter.notifyDataSetChanged()
+    }
+
+    /** Font and line-spacing live drags rebind at most ~30 times a second instead of once per pixel. */
+    private fun scheduleBlocksRelayout() {
+        autoScrollHandler.removeCallbacks(blocksRelayoutRunnable)
+        autoScrollHandler.postDelayed(blocksRelayoutRunnable, 32L)
+    }
+
+    private fun commitBlocksRelayout() {
+        autoScrollHandler.removeCallbacks(blocksRelayoutRunnable)
+        if (::blocksAdapter.isInitialized) blocksAdapter.notifyDataSetChanged()
+    }
     private var autoScrolling = false
     private val sessionTracker = com.holos.reader.tts.ReadingSessionTracker()
     @Volatile
@@ -231,7 +245,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             return
         }
         db.getCoverFile(loaded)?.let { cf ->
-            coverBitmap = BitmapFactory.decodeFile(cf.absolutePath)
+            coverBitmap = BitmapDecode.decodeFileBounded(cf.absolutePath, 720)
         }
         contentCommitted = false
         val restoredCh = savedInstanceState?.getInt(STATE_CHAPTER_IDX, loaded.lastChapterIndex) ?: loaded.lastChapterIndex
@@ -255,11 +269,13 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
     override fun onPause() {
         sessionTracker.setForeground(false)
         saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
+        if (::db.isInitialized) db.flushProgress()
         super.onPause()
     }
 
     override fun onStop() {
         saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
+        if (::db.isInitialized) db.flushProgress()
         super.onStop()
     }
 
@@ -318,6 +334,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             .unregisterOnSharedPreferenceChangeListener(livePrefsListener)
         autoScrollHandler.removeCallbacksAndMessages(null)
         saveProgress(event = com.holos.reader.tts.ProgressEvent.CHECKPOINT)
+        if (::db.isInitialized) db.flushProgress()
         if (::controller.isInitialized) {
             controller.close()
             if (ReaderAudioService.activeController === controller) {
@@ -977,7 +994,7 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             lastBlockIndex = currentBlocks.lastIndex,
             isFinalLinearChapter = isFinalLinear,
         )
-        db.updateProgress(b.id, chapterIndex, blockIdx, addSeconds = deltaSec, reachedEnd = reachedEnd, event = event)
+        db.enqueueProgress(b.id, chapterIndex, blockIdx, addSeconds = deltaSec, reachedEnd = reachedEnd, event = event)
     }
 
     // --- TtsPlaybackController.Listener ---
@@ -1645,11 +1662,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             setCurrentValue(prefs.fontSizeSp)
             onValueLive = { v ->
                 prefs.fontSizeSp = v
-                blocksAdapter.notifyDataSetChanged()
+                scheduleBlocksRelayout()
             }
             onValueCommitted = { v ->
                 prefs.fontSizeSp = v
-                blocksAdapter.notifyDataSetChanged()
+                commitBlocksRelayout()
             }
         }
 
@@ -1688,11 +1705,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
             setCurrentValue(prefs.lineSpacingMult)
             onValueLive = { v ->
                 prefs.lineSpacingMult = v
-                blocksAdapter.notifyDataSetChanged()
+                scheduleBlocksRelayout()
             }
             onValueCommitted = { v ->
                 prefs.lineSpacingMult = v
-                blocksAdapter.notifyDataSetChanged()
+                commitBlocksRelayout()
             }
         }
 

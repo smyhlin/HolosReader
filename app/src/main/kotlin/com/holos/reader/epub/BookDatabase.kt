@@ -12,6 +12,8 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.security.MessageDigest
@@ -33,6 +35,11 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
     private val appCtx = context.applicationContext
     private val booksDir = File(appCtx.filesDir, "books").apply { mkdirs() }
     private val coversDir = File(appCtx.filesDir, "covers").apply { mkdirs() }
+    private val progressExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "HolosProgress").apply { isDaemon = true }
+    }
+    private val progressGate = Any()
+    private var queuedProgress: ProgressSnapshot? = null
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -86,6 +93,7 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             )
         """)
         db.execSQL("CREATE INDEX idx_toc_spine ON toc(book_id, spine_idx)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_recent ON books(MAX(last_read_at, added_at))")
         db.execSQL("""
             CREATE TABLE bookmarks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,6 +182,9 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
             if ("fragment" !in tocCols) {
                 db.execSQL("ALTER TABLE toc ADD COLUMN fragment TEXT")
             }
+        }
+        if (oldVersion < 6) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_books_recent ON books(MAX(last_read_at, added_at))")
         }
     }
 
@@ -696,6 +707,65 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         }
     }
 
+    /**
+     * Coalesces scroll checkpoints onto one background writer.
+     * Seconds are summed and the newest position wins, so a burst of idle-scroll saves
+     * cannot drop reading time or jump the UI thread onto SQLite.
+     */
+    fun enqueueProgress(
+        bookId: String,
+        chapterIndex: Int,
+        blockIndex: Int,
+        addSeconds: Long = 0L,
+        reachedEnd: Boolean = false,
+        event: com.holos.reader.tts.ProgressEvent = com.holos.reader.tts.ProgressEvent.CONSUMED_READING,
+    ) {
+        val next = ProgressSnapshot(
+            bookId,
+            chapterIndex,
+            blockIndex,
+            addSeconds.coerceAtLeast(0L),
+            reachedEnd,
+            event,
+        )
+        val displaced = synchronized(progressGate) {
+            val prev = queuedProgress
+            if (prev != null && prev.bookId != next.bookId) {
+                queuedProgress = next
+                prev
+            } else {
+                queuedProgress = coalesceProgress(prev, next)
+                null
+            }
+        }
+        progressExecutor.execute {
+            if (displaced != null) writeSnapshot(displaced)
+            drainProgress()
+        }
+    }
+
+    /** Blocks the caller until the queued checkpoint is on disk. Call from the UI thread on pause/destroy, never from [progressExecutor]. */
+    fun flushProgress(timeoutMs: Long = 1_500L) {
+        val done = progressExecutor.submit { drainProgress() }
+        try {
+            done.get(timeoutMs, TimeUnit.MILLISECONDS)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun drainProgress() {
+        val job = synchronized(progressGate) { queuedProgress.also { queuedProgress = null } } ?: return
+        writeSnapshot(job)
+    }
+
+    private fun writeSnapshot(job: ProgressSnapshot) {
+        try {
+            updateProgress(job.bookId, job.chapterIndex, job.blockIndex, job.addSeconds, job.reachedEnd, job.event)
+        } catch (t: Throwable) {
+            android.util.Log.w("BookDatabase", "Progress write failed", t)
+        }
+    }
+
     fun updateStatus(bookIds: Collection<String>, status: ReadingStatus) {
         val db = writableDatabase
         db.beginTransaction()
@@ -837,14 +907,15 @@ class BookDatabase(context: Context) : SQLiteOpenHelper(
         raw.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     companion object {
+        private val RE_BLANK_LINES = Regex("\r?\n+")
         private const val DB_NAME = "holos_reader.db"
-        private const val DB_VERSION = 5
+        private const val DB_VERSION = 6
         private const val MAX_IMPORT_BYTES = 512L * 1024L * 1024L
         const val CURRENT_PARSER_VERSION = 3
 
         fun buildSingleChapterEpub(outFile: File, title: String, bodyText: String) {
             fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            val paras = bodyText.split(Regex("\\r?\\n+"))
+            val paras = bodyText.split(RE_BLANK_LINES)
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .joinToString("\n") { "<p>${esc(it)}</p>" }
