@@ -682,9 +682,11 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
         controller.stop()
         val loadGen = chapterLoadGen.incrementAndGet()
         bgExecutor.execute {
-            val blocks = session.borrowZip { z ->
-                EpubStreamingParser.parseChapterBlocks(z, spineItem)
+            val parsedChapter = session.borrowZip { z ->
+                EpubStreamingParser.parseChapterWithAnchors(z, spineItem)
             }
+            val blocks = parsedChapter?.blocks
+            val anchorMap = parsedChapter?.anchorToBlock ?: emptyMap()
             runOnUiThread {
                 if (chapterLoadGen.get() != loadGen || isFinishing || isDestroyed) return@runOnUiThread
                 if (blocks == null) {
@@ -709,7 +711,10 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 chapterProgressBar.progress = (((chapterIndex + 1) * 100) / b.chapterCount.coerceAtLeast(1)).coerceIn(0, 100)
 
                 val fragmentBlock = if (!targetFragment.isNullOrBlank()) {
-                    blocks.indexOfFirst { it.anchorId.equals(targetFragment, ignoreCase = true) }.takeIf { it >= 0 }
+                    anchorMap[targetFragment]
+                        ?: anchorMap.entries.firstOrNull { it.key.equals(targetFragment, ignoreCase = true) }?.value
+                        ?: blocks.indexOfFirst { it.anchorId == targetFragment }.takeIf { it >= 0 }
+                        ?: blocks.indexOfFirst { it.anchorId.equals(targetFragment, ignoreCase = true) }.takeIf { it >= 0 }
                 } else null
                 val resolvedBlock = when {
                     fragmentBlock != null -> fragmentBlock
@@ -1250,11 +1255,21 @@ class ReaderActivity : Activity(), TtsPlaybackController.Listener {
                 if (imgPath != null) {
                     val maxW = resources.displayMetrics.widthPixels - d(36)
                     bgExecutor.execute {
-                        val bmp = epubSession?.loadImage(imgPath, maxW)
-                        if (bmp != null && iv.tag == imgPath) {
+                        val bmp = try {
+                            epubSession?.loadImage(imgPath, maxW)
+                        } catch (_: Throwable) {
+                            null
+                        }
+                        if (iv.tag == imgPath && !isFinishing && !isDestroyed) {
                             runOnUiThread {
-                                if (iv.tag == imgPath) {
-                                    iv.setImageBitmap(bmp)
+                                if (iv.tag == imgPath && !isFinishing && !isDestroyed) {
+                                    if (bmp != null) {
+                                        iv.setBackgroundColor(Color.TRANSPARENT)
+                                        iv.setImageBitmap(bmp)
+                                    } else {
+                                        iv.setImageDrawable(null)
+                                        iv.setBackgroundColor(UiTheme.palette(prefs.theme).cardBg)
+                                    }
                                     iv.colorFilter = if (prefs.invertImagesInDark && UiTheme.palette(prefs.theme).isDark) {
                                         ColorMatrixColorFilter(floatArrayOf(
                                             -1f, 0f, 0f, 0f, 255f,

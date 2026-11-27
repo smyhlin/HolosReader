@@ -67,18 +67,53 @@ class LibraryActivity : Activity() {
         override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
     }
 
-    private fun loadCoverCached(path: String): Bitmap? {
-        coverCache.get(path)?.let { return it }
-        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(path, opts)
-        var sample = 1
-        while (opts.outWidth / sample > 480) sample *= 2
-        val bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply {
-            inSampleSize = sample
-            inPreferredConfig = Bitmap.Config.RGB_565
-        }) ?: return null
-        coverCache.put(path, bmp)
-        return bmp
+    private fun loadCoverCached(path: String, maxW: Int = 480, maxH: Int = 720): Bitmap? {
+        val key = "$path@${maxW}x$maxH"
+        coverCache.get(key)?.let { return it }
+        return try {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, opts)
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
+            val sample = com.holos.reader.epub.BoundedImageSizing.computeSampleSize(
+                srcWidth = opts.outWidth,
+                srcHeight = opts.outHeight,
+                maxWidthPx = maxW,
+                maxHeightPx = maxH,
+                maxPixels = com.holos.reader.epub.BoundedImageSizing.DEFAULT_MAX_COVER_PIXELS,
+            )
+            val bmp = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.RGB_565
+            }) ?: return null
+            coverCache.put(key, bmp)
+            bmp
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun bindCoverAsync(target: ImageView, path: String?, maxW: Int, maxH: Int) {
+        val key = if (path != null) "$path@${maxW}x$maxH" else null
+        target.tag = key
+        if (path == null || key == null) {
+            target.setImageDrawable(null)
+            return
+        }
+        coverCache.get(key)?.let {
+            target.setImageBitmap(it)
+            return
+        }
+        target.setImageDrawable(null)
+        bgExecutor.execute {
+            val bmp = loadCoverCached(path, maxW, maxH)
+            if (bmp != null && target.tag == key && !isFinishing && !isDestroyed) {
+                runOnUiThread {
+                    if (target.tag == key && !isFinishing && !isDestroyed) {
+                        target.setImageBitmap(bmp)
+                    }
+                }
+            }
+        }
     }
 
     // Views
@@ -415,7 +450,7 @@ class LibraryActivity : Activity() {
         val last = prefs.lastBookId?.let { db.getBook(it) } ?: currentBooks.firstOrNull { it.lastReadAtMs > 0L }
         if (last != null && !selectionMode) {
             miniTitle.text = last.title
-            db.getCoverFile(last)?.let { BitmapFactory.decodeFile(it.absolutePath)?.let { b -> miniCover.setImageBitmap(b) } }
+            bindCoverAsync(miniCover, db.getCoverFile(last)?.absolutePath, d(64), d(96))
             miniPlayerPill.visibility = View.VISIBLE
         } else {
             miniPlayerPill.visibility = View.GONE
@@ -471,7 +506,7 @@ class LibraryActivity : Activity() {
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = UiTheme.rounded(p.cardBg, d(10).toFloat())
             UiTheme.clipRounded(this, d(10).toFloat())
-            db.getCoverFile(book)?.let { BitmapFactory.decodeFile(it.absolutePath)?.let { b -> setImageBitmap(b) } }
+            bindCoverAsync(this, db.getCoverFile(book)?.absolutePath, d(240), d(360))
         }
         coverFrame.addView(coverImg, FrameLayout.LayoutParams(MATCH_PARENT, coverHeight))
 
@@ -552,7 +587,7 @@ class LibraryActivity : Activity() {
                 scaleType = ImageView.ScaleType.CENTER_CROP
                 background = UiTheme.rounded(p.cardBg, d(8).toFloat())
                 UiTheme.clipRounded(this, d(8).toFloat())
-                db.getCoverFile(book)?.let { BitmapFactory.decodeFile(it.absolutePath)?.let { b -> setImageBitmap(b) } }
+                bindCoverAsync(this, db.getCoverFile(book)?.absolutePath, d(240), d(360))
             }
             val info = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL

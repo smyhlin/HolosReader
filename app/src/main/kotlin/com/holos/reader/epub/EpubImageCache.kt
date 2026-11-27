@@ -16,6 +16,38 @@ import java.util.zip.ZipFile
  * - [close] never blocks the UI thread waiting for in-flight reads; the last returning reader
  *   closes the underlying [ZipFile] cleanly so closed-handle crashes cannot happen.
  */
+/**
+ * Pure-JVM bounded image sizing helper (#6): constrains width, height, and total decoded
+ * pixel count using 64-bit arithmetic so tall/giant EPUB illustrations or covers cannot
+ * exhaust heap memory.
+ */
+object BoundedImageSizing {
+    const val DEFAULT_MAX_ILLUSTRATION_PIXELS: Long = 4_000_000L // ~8-16 MB decoded
+    const val DEFAULT_MAX_COVER_PIXELS: Long = 500_000L          // ~1 MB RGB_565
+
+    fun computeSampleSize(
+        srcWidth: Int,
+        srcHeight: Int,
+        maxWidthPx: Int,
+        maxHeightPx: Int,
+        maxPixels: Long = DEFAULT_MAX_ILLUSTRATION_PIXELS,
+    ): Int {
+        if (srcWidth <= 0 || srcHeight <= 0) return 1
+        val wLimit = maxWidthPx.coerceAtLeast(64).toLong()
+        val hLimit = maxHeightPx.coerceAtLeast(64).toLong()
+        val pxLimit = maxPixels.coerceAtLeast(16_384L)
+        var sample = 1L
+        while (sample < 1024L) {
+            val outW = (srcWidth.toLong() + sample - 1L) / sample
+            val outH = (srcHeight.toLong() + sample - 1L) / sample
+            val outPx = outW * outH
+            if (outW <= wLimit && outH <= hLimit && outPx <= pxLimit) break
+            sample *= 2L
+        }
+        return sample.toInt().coerceAtLeast(1)
+    }
+}
+
 class EpubSession(private val epubFile: File) : Closeable {
 
     private val zip: ZipFile = ZipFile(epubFile)
@@ -63,36 +95,55 @@ class EpubSession(private val epubFile: File) : Closeable {
         }
     }
 
-    fun loadImage(entryPath: String, maxWidthPx: Int): Bitmap? {
-        val safeMaxWidth = maxWidthPx.coerceAtLeast(64)
-        val key = "$entryPath@$safeMaxWidth"
+    fun loadImage(
+        entryPath: String,
+        maxWidthPx: Int,
+        maxHeightPx: Int = (maxWidthPx.coerceAtLeast(64) * 3).coerceAtMost(4096),
+    ): Bitmap? {
+        val safeMaxWidth = maxWidthPx.coerceIn(64, 2048)
+        val safeMaxHeight = maxHeightPx.coerceIn(64, 4096)
+        val key = "$entryPath@${safeMaxWidth}x$safeMaxHeight"
         bitmapCache.get(key)?.let { return it }
 
-        val bytes = borrowZip { z ->
-            EpubStreamingParser.extractEntryBytes(z, entryPath)
+        val bytes = try {
+            borrowZip { z -> EpubStreamingParser.extractEntryBytes(z, entryPath) }
+        } catch (t: Throwable) {
+            Log.w("EpubSession", "Failed reading image entry $entryPath: ${t.message}")
+            null
         } ?: return null
 
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
 
-        var sampleSize = 1
-        while (bounds.outWidth / sampleSize > safeMaxWidth * 2) {
-            sampleSize *= 2
-        }
+            val hasAlpha = entryPath.endsWith(".png", ignoreCase = true) ||
+                entryPath.endsWith(".webp", ignoreCase = true) ||
+                entryPath.endsWith(".gif", ignoreCase = true)
+            val bytesPerPx = if (hasAlpha) 4L else 2L
+            val maxHeapPixels = ((Runtime.getRuntime().maxMemory() / 16L) / bytesPerPx)
+                .coerceIn(500_000L, BoundedImageSizing.DEFAULT_MAX_ILLUSTRATION_PIXELS)
 
-        val hasAlpha = entryPath.endsWith(".png", ignoreCase = true) ||
-            entryPath.endsWith(".webp", ignoreCase = true) ||
-            entryPath.endsWith(".gif", ignoreCase = true)
-        val decodeOpts = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-            inPreferredConfig = if (hasAlpha) Bitmap.Config.ARGB_8888 else Bitmap.Config.RGB_565
+            val sampleSize = BoundedImageSizing.computeSampleSize(
+                srcWidth = bounds.outWidth,
+                srcHeight = bounds.outHeight,
+                maxWidthPx = safeMaxWidth,
+                maxHeightPx = safeMaxHeight,
+                maxPixels = maxHeapPixels,
+            )
+            val decodeOpts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize
+                inPreferredConfig = if (hasAlpha) Bitmap.Config.ARGB_8888 else Bitmap.Config.RGB_565
+            }
+            val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return null
+            if (!isRetired) {
+                bitmapCache.put(key, bmp)
+            }
+            bmp
+        } catch (t: Throwable) {
+            Log.w("EpubSession", "Bounded decode failed for $entryPath: ${t.message}")
+            null
         }
-        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return null
-        if (!isRetired) {
-            bitmapCache.put(key, bmp)
-        }
-        return bmp
     }
 
     fun resolveBookTypeface(cacheDir: File, bold: Boolean): Typeface? {

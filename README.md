@@ -56,6 +56,8 @@ On first launch (and anytime in **Settings → TTS** or **Menu → TTS Model**),
 - **Contextual Stress / Homographs (~110 MB, local `.onnx` import):** Sentence-level homograph resolver (*за́мок/замо́к*, *му́ка/мука́*) hooked into `UkrainianStressifier` (Tier 1.5). Export from [aloudreader/uk-stress-token-classifier](https://huggingface.co/aloudreader/uk-stress-token-classifier) using `python3 tools/export_stress_onnx.py` and import in **Settings → TTS** (`tokenizer.json` downloads automatically).
 - **On-Device Voice Cloner (~20 MB, local `.onnx` import):** Export `voice_encoder.pt` from [patriotyk/HolosTTS](https://huggingface.co/patriotyk/HolosTTS) using `python3 tools/export_voice_encoder_onnx.py`, import `voice_encoder.onnx` in **Settings → TTS**, and tap **Clone Voice from WAV Clip** to turn any 5–15 s WAV clip into a custom HolosTTS speaker vector.
 
+> **Tip:** Ordinary users do **not** need to run export scripts manually — **Contextual Stress (FP16/INT8)** and **On-Device Voice Cloner (`voice_encoder.onnx`)** are 1-tap auto-downloadable inside **Settings -> TTS -> Optional ONNX Add-ons** (from the [`onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1) release). `tools/export_voice_encoder_onnx.py` accepts only pre-traced TorchScript raw-waveform modules and intentionally exits with code 2 on raw `state_dict` checkpoints.
+
 
 For detailed ONNX model/add-on precision tradeoffs (INT8 vs FP16 vs FP32), export scripts, and GitHub Release hosting instructions, see [`docs/ONNX_MODELS_AND_ADDONS.md`](docs/ONNX_MODELS_AND_ADDONS.md).
 

@@ -56,6 +56,8 @@
 - **Контекстні наголоси / омографи (~110 МБ, імпорт `.onnx`):** розрізняє *за́мок/замо́к*, *му́ка/мука́* в контексті речення; експортується командою `python3 tools/export_stress_onnx.py` ([aloudreader/uk-stress-token-classifier](https://huggingface.co/aloudreader/uk-stress-token-classifier)).
 - **Клонування голосу з WAV на телефоні (~20 МБ, імпорт `.onnx`):** експортуйте `voice_encoder.onnx` через `python3 tools/export_voice_encoder_onnx.py`, імпортуйте в **Налаштування → TTS** та оберіть 5–15 с **16-bit PCM `.wav`** запис.
 
+> **Порада:** Звичайним користувачам **не потрібно** запускати скрипти експорту вручну — **Контекстні наголоси (FP16/INT8)** та **Клонування голосу (`voice_encoder.onnx`)** завантажуються в 1 клік у **Налаштування -> TTS -> Додаткові ONNX-модулі** (з релізу [`onnx-addons-v1`](https://github.com/smyhlin/HolosReader/releases/tag/onnx-addons-v1)). Скрипт `tools/export_voice_encoder_onnx.py` приймає лише TorchScript-модуль із raw-waveform входом і навмисно завершується з кодом 2 на звичайних `state_dict`-чекпоїнтах.
+
 
 Детальний довідник щодо всіх ONNX-моделей, точностей (INT8 / FP16 / FP32), скриптів експорту та хостингу на GitHub Releases: [`docs/ONNX_MODELS_AND_ADDONS.md`](docs/ONNX_MODELS_AND_ADDONS.md).
 

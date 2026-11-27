@@ -31,7 +31,7 @@ data class BookRecord(
     val addedAtMs: Long = System.currentTimeMillis(),
     val lastReadAtMs: Long = 0L,
     val contentSha256: String? = null,
-    val parserVersion: Int = 1,
+    val parserVersion: Int = 2,
 ) {
     val progressPercent: Int
         get() {
@@ -122,4 +122,9 @@ data class ParsedEpubMeta(
     val coverEntryPath: String?,
     val spine: List<SpineItem>,
     val toc: List<TocEntry>,
+)
+
+data class ParsedChapter(
+    val blocks: List<ReaderBlock>,
+    val anchorToBlock: Map<String, Int> = emptyMap(),
 )

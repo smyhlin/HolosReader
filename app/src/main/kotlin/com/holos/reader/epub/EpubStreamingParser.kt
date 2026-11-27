@@ -62,7 +62,7 @@ object EpubStreamingParser {
 
             scanTags(opfXml, manifestStart, manifestEnd, "item") { attrs ->
                 val id = fastAttr(attrs, "id") ?: return@scanTags
-                val href = fastAttr(attrs, "href")?.let { decodeHref(it) } ?: return@scanTags
+                val href = fastAttr(attrs, "href")?.let { splitRawHref(it).first } ?: return@scanTags
                 val mt = fastAttr(attrs, "media-type") ?: ""
                 val props = fastAttr(attrs, "properties") ?: ""
                 manifest[id] = ManifestEntry(id, href, mt)
@@ -135,9 +135,14 @@ object EpubStreamingParser {
         }
     }
 
-    fun parseChapterBlocks(zip: ZipFile, spineItem: SpineItem): List<ReaderBlock> {
-        val html = readEntryText(zip, spineItem.href) ?: return emptyList()
-        return parseHtmlToRichBlocks(html, chapterDir = parentDir(spineItem.href))
+    const val PARSER_VERSION: Int = 2
+
+    fun parseChapterBlocks(zip: ZipFile, spineItem: SpineItem): List<ReaderBlock> =
+        parseChapterWithAnchors(zip, spineItem).blocks
+
+    fun parseChapterWithAnchors(zip: ZipFile, spineItem: SpineItem): ParsedChapter {
+        val html = readEntryText(zip, spineItem.href) ?: return ParsedChapter(emptyList(), emptyMap())
+        return parseHtmlToRichBlocksWithAnchors(html, chapterDir = parentDir(spineItem.href))
     }
 
     fun parseChapterBlocks(epubFile: File, spineItem: SpineItem): List<ReaderBlock> {
@@ -148,98 +153,330 @@ object EpubStreamingParser {
      * Parses XHTML/HTML chapter into structured [ReaderBlock]s with full inline span preservation
      * (bold, italic, underline, strikethrough, code, sup/sub), tables, lists, captions, footnotes, and images.
      */
-    fun parseHtmlToRichBlocks(rawHtml: String, chapterDir: String = ""): List<ReaderBlock> {
-        var html = RE_COMMENT.replace(rawHtml, "")
-        html = RE_SCRIPT_STYLE.replace(html, "")
+    fun parseHtmlToRichBlocks(rawHtml: String, chapterDir: String = ""): List<ReaderBlock> =
+        parseHtmlToRichBlocksWithAnchors(rawHtml, chapterDir).blocks
 
-        val bodyStart = html.indexOf("<body", ignoreCase = true)
+    /**
+     * Single-pass ordered streaming XHTML/HTML event parser (#1, #2):
+     * - Preserves inter-element text (`<body>Intro<section>Before<p>Middle</p>After</section>Outro</body>`)
+     * - Flushes pending text before inline images (`<p>Before<img/>After</p>`) in exact document order
+     * - Splits nested block elements (`<blockquote><p>One</p><p>Two</p></blockquote>`) cleanly
+     * - Builds a per-chapter [ParsedChapter.anchorToBlock] map capturing nested, section, inline,
+     *   image, and empty-element `id`/`name` anchors mapped to their target visible block.
+     */
+    fun parseHtmlToRichBlocksWithAnchors(rawHtml: String, chapterDir: String = ""): ParsedChapter {
+        val bodyStart = rawHtml.indexOf("<body", ignoreCase = true)
         val body = if (bodyStart >= 0) {
-            val openEnd = html.indexOf('>', bodyStart)
-            val bodyClose = html.lastIndexOf("</body>", ignoreCase = true)
-            if (openEnd >= 0 && bodyClose > openEnd) html.substring(openEnd + 1, bodyClose) else html
-        } else html
+            val openEnd = rawHtml.indexOf('>', bodyStart)
+            val bodyClose = rawHtml.lastIndexOf("</body>", ignoreCase = true)
+            if (openEnd >= 0 && bodyClose > openEnd) rawHtml.substring(openEnd + 1, bodyClose) else rawHtml
+        } else rawHtml
 
         val blocks = ArrayList<ReaderBlock>(64)
-        var blockIdx = 0
+        val anchorToBlock = LinkedHashMap<String, Int>()
+        val pendingAnchors = ArrayList<String>(4)
 
-        val blockRegex = Regex(
-            """<(h[1-6]|p|blockquote|li|tr|figcaption|aside|pre)\b([^>]*)>(.*?)</\1>|<div\b([^>]*)>((?:(?!</?div\b|<(?:h[1-6]|p|blockquote|li|tr|table|ul|ol|section|article)\b).)*?)</div>|<hr\b[^>]*/?>|<img\b([^>]+)/?>|<image\b([^>]+)/?>""",
-            setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
-        )
+        val blockStack = ArrayList<Pair<String, BlockType>>()
+        val inlineBuf = StringBuilder(256)
+        val inlineSpans = ArrayList<InlineSpan>(8)
+        val spanStack = ArrayDeque<Pair<SpanStyle, Int>>()
 
-        for (m in blockRegex.findAll(body)) {
-            val full = m.value
-            if (full.startsWith("<hr", ignoreCase = true)) {
-                blocks.add(ReaderBlock(blockIdx++, BlockType.HR, ""))
-                continue
+        var inTr = false
+        val trCells = ArrayList<String>(8)
+        var skipUntilCloseTag: String? = null
+
+        fun currentBlockType(): BlockType {
+            for (k in blockStack.lastIndex downTo 0) {
+                val t = blockStack[k].second
+                if (t != BlockType.PARAGRAPH) return t
             }
-            if (full.startsWith("<img", ignoreCase = true) || full.startsWith("<image", ignoreCase = true)) {
-                val attrs = m.groupValues[6].ifEmpty { m.groupValues[7] }
-                extractImageBlock(attrs, chapterDir, blockIdx)?.let {
-                    blocks.add(it)
-                    blockIdx++
-                }
-                continue
-            }
-
-            val isLeafDiv = full.startsWith("<div", ignoreCase = true)
-            val tag = if (isLeafDiv) "div" else m.groupValues[1].lowercase()
-            val attrs = if (isLeafDiv) m.groupValues[4] else m.groupValues[2]
-            val inner = if (isLeafDiv) m.groupValues[5] else m.groupValues[3]
-            val anchorId = fastAttr(attrs, "id")?.takeIf { it.isNotBlank() }
-
-            // Extract ALL inline <img> nested inside <p> / <div> / <figure> / <td> (H08)
-            for (imgInInner in Regex("""<img\b([^>]+)/?>""", RegexOption.IGNORE_CASE).findAll(inner)) {
-                extractImageBlock(imgInInner.groupValues[1], chapterDir, blockIdx)?.let {
-                    blocks.add(it)
-                    blockIdx++
-                }
-            }
-
-            if (tag == "tr") {
-                val cells = Regex("""<t[dh]\b[^>]*>(.*?)</t[dh]>""", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
-                    .findAll(inner)
-                    .map { parseInlineRichText(it.groupValues[1]).first }
-                    .filter { it.isNotEmpty() }
-                    .toList()
-                if (cells.isNotEmpty()) {
-                    blocks.add(ReaderBlock(blockIdx++, BlockType.TABLE_ROW, cells.joinToString("  |  "), anchorId = anchorId))
-                }
-                continue
-            }
-
-            val (plain, spans) = parseInlineRichText(inner)
-            if (plain.isEmpty()) continue
-
-            val type = when {
-                tag == "h1" -> BlockType.HEADING_1
-                tag == "h2" -> BlockType.HEADING_2
-                tag.startsWith("h") -> BlockType.HEADING_3
-                tag == "blockquote" -> BlockType.BLOCKQUOTE
-                tag == "li" -> BlockType.LIST_ITEM
-                tag == "figcaption" -> BlockType.CAPTION
-                tag == "aside" || attrs.contains("footnote", ignoreCase = true) -> BlockType.FOOTNOTE
-                else -> BlockType.PARAGRAPH
-            }
-            val finalText = if (type == BlockType.LIST_ITEM) "• $plain" else plain
-            val finalSpans = if (type == BlockType.LIST_ITEM) {
-                spans.map { it.copy(start = it.start + 2, end = it.end + 2) }
-            } else spans
-            blocks.add(ReaderBlock(blockIdx++, type, finalText, finalSpans, anchorId = anchorId))
+            return BlockType.PARAGRAPH
         }
 
-        if (blocks.isEmpty()) {
-            val fallbackLines = body
-                .replace(Regex("""</?(div|br|section|article)\b[^>]*>""", RegexOption.IGNORE_CASE), "\n")
-                .split('\n')
-            for (line in fallbackLines) {
-                val (plain, spans) = parseInlineRichText(line)
-                if (plain.isNotEmpty()) {
-                    blocks.add(ReaderBlock(blockIdx++, BlockType.PARAGRAPH, plain, spans))
+        fun bindAnchorsTo(blockIdx: Int): String? {
+            if (pendingAnchors.isEmpty()) return null
+            val first = pendingAnchors[0]
+            for (a in pendingAnchors) {
+                if (!anchorToBlock.containsKey(a)) {
+                    anchorToBlock[a] = blockIdx
+                }
+            }
+            pendingAnchors.clear()
+            return first
+        }
+
+        fun emitBlock(type: BlockType, text: String, spans: List<InlineSpan> = emptyList(), imagePath: String? = null) {
+            val idx = blocks.size
+            val primaryAnchor = bindAnchorsTo(idx)
+            blocks.add(
+                ReaderBlock(
+                    index = idx,
+                    type = type,
+                    text = text,
+                    spans = spans,
+                    imageEntryPath = imagePath,
+                    anchorId = primaryAnchor,
+                )
+            )
+        }
+
+        fun flushInlineText(forceType: BlockType? = null) {
+            val reopenedStyles = ArrayList<SpanStyle>(spanStack.size)
+            while (spanStack.isNotEmpty()) {
+                val (style, start) = spanStack.removeLast()
+                if (inlineBuf.length > start) {
+                    inlineSpans.add(InlineSpan(start, inlineBuf.length, style))
+                }
+                reopenedStyles.add(style)
+            }
+            val rawText = inlineBuf.toString()
+            val leadTrim = rawText.indexOfFirst { !it.isWhitespace() }
+            if (leadTrim >= 0) {
+                val trailTrim = rawText.indexOfLast { !it.isWhitespace() } + 1
+                val trimmed = rawText.substring(leadTrim, trailTrim)
+                val adjustedSpans = inlineSpans.mapNotNull { sp ->
+                    val s = (sp.start - leadTrim).coerceIn(0, trimmed.length)
+                    val e = (sp.end - leadTrim).coerceIn(0, trimmed.length)
+                    if (e > s) InlineSpan(s, e, sp.style) else null
+                }
+                if (inTr) {
+                    trCells.add(trimmed)
+                } else {
+                    val bType = forceType ?: currentBlockType()
+                    val finalText = if (bType == BlockType.LIST_ITEM) "• $trimmed" else trimmed
+                    val finalSpans = if (bType == BlockType.LIST_ITEM) {
+                        adjustedSpans.map { it.copy(start = it.start + 2, end = it.end + 2) }
+                    } else adjustedSpans
+                    emitBlock(bType, finalText, finalSpans)
+                }
+            }
+            inlineBuf.setLength(0)
+            inlineSpans.clear()
+            for (k in reopenedStyles.lastIndex downTo 0) {
+                spanStack.addLast(reopenedStyles[k] to 0)
+            }
+        }
+
+        fun flushTableRow() {
+            flushInlineText()
+            if (trCells.isNotEmpty()) {
+                emitBlock(BlockType.TABLE_ROW, trCells.joinToString("  |  "))
+                trCells.clear()
+            }
+            inTr = false
+        }
+
+        fun appendDecodedText(segment: String) {
+            if (segment.isEmpty()) return
+            val decoded = decodeEntities(segment)
+            for (ch in decoded) {
+                if (ch.isWhitespace()) {
+                    if (inlineBuf.isNotEmpty() && !inlineBuf[inlineBuf.length - 1].isWhitespace()) {
+                        inlineBuf.append(' ')
+                    }
+                } else {
+                    inlineBuf.append(ch)
                 }
             }
         }
-        return blocks
+
+        fun mapBlockTag(tag: String, attrs: String): BlockType? = when (tag) {
+            "h1" -> BlockType.HEADING_1
+            "h2" -> BlockType.HEADING_2
+            "h3", "h4", "h5", "h6" -> BlockType.HEADING_3
+            "blockquote" -> BlockType.BLOCKQUOTE
+            "li" -> BlockType.LIST_ITEM
+            "figcaption" -> BlockType.CAPTION
+            "aside" -> BlockType.FOOTNOTE
+            "p", "div", "section", "article", "header", "footer", "main", "nav", "pre",
+            "figure", "ul", "ol", "table", "tbody", "thead", "tfoot", "dl", "dt", "dd" ->
+                if (attrs.contains("footnote", ignoreCase = true)) BlockType.FOOTNOTE else BlockType.PARAGRAPH
+            else -> null
+        }
+
+        fun mapInlineStyle(tag: String): SpanStyle? = when (tag) {
+            "b", "strong" -> SpanStyle.BOLD
+            "i", "em", "cite" -> SpanStyle.ITALIC
+            "u", "ins" -> SpanStyle.UNDERLINE
+            "s", "strike", "del" -> SpanStyle.STRIKE
+            "code", "kbd", "tt" -> SpanStyle.CODE
+            "sup" -> SpanStyle.SUP
+            "sub" -> SpanStyle.SUB
+            else -> null
+        }
+
+        var i = 0
+        val len = body.length
+        while (i < len) {
+            val lt = body.indexOf('<', i)
+            if (lt < 0) {
+                if (skipUntilCloseTag == null) appendDecodedText(body.substring(i))
+                break
+            }
+            if (lt > i && skipUntilCloseTag == null) {
+                appendDecodedText(body.substring(i, lt))
+            }
+
+            if (body.startsWith("<!--", lt)) {
+                val endComment = body.indexOf("-->", lt + 4)
+                i = if (endComment >= 0) endComment + 3 else len
+                continue
+            }
+            if (body.startsWith("<![CDATA[", lt)) {
+                val endCdata = body.indexOf("]]>", lt + 9)
+                if (endCdata >= 0) {
+                    if (skipUntilCloseTag == null) appendDecodedText(body.substring(lt + 9, endCdata))
+                    i = endCdata + 3
+                } else {
+                    i = len
+                }
+                continue
+            }
+            if (lt + 1 < len && (body[lt + 1] == '?' || body[lt + 1] == '!')) {
+                val gt = body.indexOf('>', lt + 2)
+                i = if (gt >= 0) gt + 1 else len
+                continue
+            }
+
+            val nextCh = if (lt + 1 < len) body[lt + 1] else ' '
+            val looksLikeTag = nextCh == '/' || nextCh in 'a'..'z' || nextCh in 'A'..'Z'
+            if (!looksLikeTag) {
+                if (skipUntilCloseTag == null) inlineBuf.append('<')
+                i = lt + 1
+                continue
+            }
+
+            var gt = lt + 1
+            var quote = ' '
+            while (gt < len) {
+                val c = body[gt]
+                if (quote != ' ') {
+                    if (c == quote) quote = ' '
+                } else if (c == '"' || c == ''') {
+                    quote = c
+                } else if (c == '>') {
+                    break
+                }
+                gt++
+            }
+            if (gt >= len) {
+                if (skipUntilCloseTag == null) appendDecodedText(body.substring(lt))
+                break
+            }
+
+            val rawTag = body.substring(lt + 1, gt).trim()
+            i = gt + 1
+            if (rawTag.isEmpty()) continue
+
+            val isClose = rawTag.startsWith("/")
+            val selfClose = !isClose && rawTag.endsWith("/")
+            val clean = rawTag.removePrefix("/").removeSuffix("/").trim()
+            val spIdx = clean.indexOfFirst { it.isWhitespace() }
+            val tagName = (if (spIdx >= 0) clean.substring(0, spIdx) else clean).lowercase()
+            val attrs = if (spIdx >= 0) clean.substring(spIdx + 1) else ""
+
+            if (skipUntilCloseTag != null) {
+                if (isClose && tagName == skipUntilCloseTag) {
+                    skipUntilCloseTag = null
+                }
+                continue
+            }
+            if (!isClose && !selfClose && (tagName == "script" || tagName == "style" || tagName == "head")) {
+                skipUntilCloseTag = tagName
+                continue
+            }
+
+            if (!isClose && attrs.isNotEmpty()) {
+                fastAttr(attrs, "id")?.let { decodeEntities(it).trim() }
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { pendingAnchors.add(it) }
+                if (tagName == "a") {
+                    fastAttr(attrs, "name")?.let { decodeEntities(it).trim() }
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { pendingAnchors.add(it) }
+                }
+            }
+
+            when (tagName) {
+                "br" -> {
+                    if (inlineBuf.isNotEmpty() && inlineBuf[inlineBuf.length - 1] != '
+') {
+                        inlineBuf.append('
+')
+                    }
+                    continue
+                }
+                "hr" -> {
+                    if (inTr) flushTableRow() else flushInlineText()
+                    emitBlock(BlockType.HR, "")
+                    continue
+                }
+                "img", "image" -> {
+                    if (!isClose) {
+                        flushInlineText()
+                        extractImageBlock(attrs, chapterDir, blocks.size)?.let { imgBlk ->
+                            emitBlock(BlockType.IMAGE, imgBlk.text, emptyList(), imgBlk.imageEntryPath)
+                        }
+                    }
+                    continue
+                }
+                "tr" -> {
+                    if (!isClose) {
+                        flushInlineText()
+                        inTr = true
+                        trCells.clear()
+                    } else {
+                        flushTableRow()
+                    }
+                    continue
+                }
+                "td", "th" -> {
+                    flushInlineText()
+                    continue
+                }
+            }
+
+            val blockType = mapBlockTag(tagName, attrs)
+            if (blockType != null) {
+                if (!isClose) {
+                    flushInlineText()
+                    if (!selfClose) {
+                        blockStack.add(tagName to blockType)
+                    }
+                } else {
+                    flushInlineText()
+                    val matchIdx = blockStack.indexOfLast { it.first == tagName }
+                    if (matchIdx >= 0) {
+                        while (blockStack.size > matchIdx) {
+                            blockStack.removeAt(blockStack.lastIndex)
+                        }
+                    }
+                }
+                continue
+            }
+
+            val inlineStyle = mapInlineStyle(tagName)
+            if (inlineStyle != null && !selfClose) {
+                if (!isClose) {
+                    spanStack.addLast(inlineStyle to inlineBuf.length)
+                } else {
+                    val idx = spanStack.indexOfLast { it.first == inlineStyle }
+                    if (idx >= 0) {
+                        val (style, start) = spanStack.removeAt(idx)
+                        if (inlineBuf.length > start) {
+                            inlineSpans.add(InlineSpan(start, inlineBuf.length, style))
+                        }
+                    }
+                }
+            }
+        }
+
+        if (inTr) flushTableRow() else flushInlineText()
+
+        if (pendingAnchors.isNotEmpty() && blocks.isNotEmpty()) {
+            bindAnchorsTo(blocks.lastIndex)
+        }
+        return ParsedChapter(blocks, anchorToBlock)
     }
 
     /**
@@ -345,7 +582,7 @@ object EpubStreamingParser {
     private fun extractImageBlock(attrs: String, chapterDir: String, blockIdx: Int): ReaderBlock? {
         val rawSrc = fastAttr(attrs, "src") ?: fastAttr(attrs, "xlink:href") ?: fastAttr(attrs, "href")
         if (rawSrc.isNullOrBlank()) return null
-        val resolved = resolvePath(chapterDir, decodeHref(rawSrc))
+        val resolved = resolvePath(chapterDir, splitRawHref(rawSrc).first)
         val alt = fastAttr(attrs, "alt")?.let { decodeEntities(it).trim() }.orEmpty()
         return ReaderBlock(blockIdx, BlockType.IMAGE, alt, imageEntryPath = resolved)
     }
@@ -373,9 +610,7 @@ object EpubStreamingParser {
                 v.startsWith("<ol", ignoreCase = true) -> depth++
                 v.startsWith("</ol", ignoreCase = true) -> depth = (depth - 1).coerceAtLeast(-1)
                 else -> {
-                    val decodedHref = fastAttr(m.groupValues[1], "href")?.let { decodeHref(it).trim() } ?: continue
-                    val rawPath = decodedHref.substringBefore('#')
-                    val fragment = decodedHref.substringAfter('#', "").takeIf { it.isNotBlank() }
+                    val (rawPath, fragment) = fastAttr(m.groupValues[1], "href")?.let { splitRawHref(it) } ?: continue
                     val label = parseInlineRichText(m.groupValues[2]).first
                     if (label.isEmpty() || rawPath.isEmpty()) continue
                     val resolved = resolvePath(navDir, rawPath)
@@ -412,10 +647,9 @@ object EpubStreamingParser {
                 }
                 m.groupValues[2].isNotEmpty() -> {
                     val label = pendingLabel
-                    val decodedSrc = fastAttr(m.groupValues[2], "src")?.let { decodeHref(it).trim() }
-                    if (!label.isNullOrEmpty() && !decodedSrc.isNullOrEmpty()) {
-                        val rawPath = decodedSrc.substringBefore('#')
-                        val fragment = decodedSrc.substringAfter('#', "").takeIf { it.isNotBlank() }
+                    val rawSrc = fastAttr(m.groupValues[2], "src")
+                    if (!label.isNullOrEmpty() && !rawSrc.isNullOrBlank()) {
+                        val (rawPath, fragment) = splitRawHref(rawSrc)
                         val resolved = resolvePath(ncxDir, rawPath)
                         val spineIdx = spineIndexByHref[resolved] ?: spineIndexByHref[resolved.lowercase()] ?: -1
                         val fullHref = if (fragment != null) "$resolved#$fragment" else resolved
@@ -570,28 +804,53 @@ object EpubStreamingParser {
         return stack.joinToString("/")
     }
 
-    /** RFC 3986 percent-decoding that preserves literal '+' in EPUB filenames. */
+    /**
+     * Splits a raw EPUB URI attribute into `(decodedPath, decodedFragment)` by separating
+     * on the raw `#` delimiter *before* percent-decoding so `%23` inside filenames stays literal (#3).
+     */
+    fun splitRawHref(rawHref: String): Pair<String, String?> {
+        val unescaped = decodeEntities(rawHref).trim()
+        val hashIdx = unescaped.indexOf('#')
+        return if (hashIdx >= 0) {
+            val path = decodeHref(unescaped.substring(0, hashIdx))
+            val frag = decodeHref(unescaped.substring(hashIdx + 1)).takeIf { it.isNotBlank() }
+            path to frag
+        } else {
+            decodeHref(unescaped) to null
+        }
+    }
+
+    /**
+     * RFC 3986 percent-decoding that preserves literal '+' and non-BMP Unicode surrogate pairs
+     * (e.g. emoji in EPUB filenames) by decoding only contiguous `%XX` byte runs as UTF-8 (#3).
+     */
     fun decodeHref(href: String): String {
         if ('%' !in href) return href
-        val out = java.io.ByteArrayOutputStream(href.length)
+        val sb = StringBuilder(href.length)
+        val pctBytes = java.io.ByteArrayOutputStream(16)
         var i = 0
         val n = href.length
         while (i < n) {
-            val c = href[i]
-            if (c == '%' && i + 2 < n) {
+            if (href[i] == '%' && i + 2 < n) {
                 val hi = Character.digit(href[i + 1], 16)
                 val lo = Character.digit(href[i + 2], 16)
                 if (hi >= 0 && lo >= 0) {
-                    out.write((hi shl 4) or lo)
-                    i += 3
+                    pctBytes.reset()
+                    while (i + 2 < n && href[i] == '%') {
+                        val h = Character.digit(href[i + 1], 16)
+                        val l = Character.digit(href[i + 2], 16)
+                        if (h < 0 || l < 0) break
+                        pctBytes.write((h shl 4) or l)
+                        i += 3
+                    }
+                    sb.append(String(pctBytes.toByteArray(), Charsets.UTF_8))
                     continue
                 }
             }
-            val bytes = c.toString().toByteArray(Charsets.UTF_8)
-            out.write(bytes)
+            sb.append(href[i])
             i++
         }
-        return String(out.toByteArray(), Charsets.UTF_8)
+        return sb.toString()
     }
 
     /** Single-pass XML/HTML entity decoder so `&amp;lt;` safely decodes to `&lt;` (never `<`). */

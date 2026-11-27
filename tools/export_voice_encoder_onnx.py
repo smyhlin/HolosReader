@@ -27,8 +27,7 @@ def main() -> None:
     except Exception as exc:
         print(
             "ERROR: Upstream voice_encoder.pt is a PyTorch state_dict (log-mel StyleEncoder), "
-            "not a TorchScript raw-waveform graph. Refusing to emit an unqualified ONNX export.
-"
+            "not a TorchScript raw-waveform graph. Refusing to emit an unqualified ONNX export.\n"
             f"Details: {exc}",
             file=sys.stderr,
         )
