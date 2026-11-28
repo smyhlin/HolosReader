@@ -6,7 +6,6 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.PowerManager
 import android.os.SystemClock
-import android.os.SystemClock
 import android.util.Log
 import com.holos.reader.epub.ReaderBlock
 import com.holos.reader.ui.AppStrings
