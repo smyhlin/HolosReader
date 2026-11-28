@@ -719,6 +719,25 @@ class ReaderSettingsActivity : Activity() {
                 initial = prefs.hapticFeedback,
                 onChanged = { prefs.hapticFeedback = it },
             ),
+            pickerRow(
+                label = tr("Анімація переходу розділів", "Chapter Pull Animation"),
+                subtitle = tr(
+                    "Стиль індикатора при потягуванні вгору або вниз",
+                    "Overscroll indicator style when pulling to next or previous chapter",
+                ),
+                currentLabel = {
+                    if (prefs.chapterPullStyle == "PROGRESS_RING_POP") {
+                        tr("Кільце прогресу", "Progress Ring & Pop")
+                    } else {
+                        tr("Еластична капсула", "Elastic Capsule & Badge")
+                    }
+                },
+                options = listOf(
+                    "ELASTIC_CAPSULE_BADGE" to tr("Еластична капсула", "Elastic Capsule & Badge"),
+                    "PROGRESS_RING_POP" to tr("Кільце прогресу", "Progress Ring & Pop"),
+                ),
+                onPicked = { prefs.chapterPullStyle = it },
+            ),
             toggleRow(
                 label = tr("Скільки ще читати", "Time left in chapter"),
                 subtitle = tr(

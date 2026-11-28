@@ -274,6 +274,10 @@ class ReaderPreferences(context: Context) {
         get() = prefs.getBoolean("haptic_feedback", true)
         set(v) = prefs.edit().putBoolean("haptic_feedback", v).apply()
 
+    var chapterPullStyle: String
+        get() = prefs.getString("chapter_pull_style", "ELASTIC_CAPSULE_BADGE") ?: "ELASTIC_CAPSULE_BADGE"
+        set(v) = prefs.edit().putString("chapter_pull_style", v).apply()
+
     var showChapterTimeLeft: Boolean
         get() = prefs.getBoolean("chapter_time_left", true)
         set(v) = prefs.edit().putBoolean("chapter_time_left", v).apply()

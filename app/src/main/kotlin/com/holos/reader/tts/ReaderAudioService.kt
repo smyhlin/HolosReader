@@ -325,9 +325,8 @@ class ReaderAudioService : Service() {
                     setReferenceCounted(false)
                 }
             }
-            if (wakeLock?.isHeld == false) {
-                wakeLock?.acquire(4 * 60 * 60 * 1000L) // 4h safety ceiling
-            }
+            // Renew the 4h safety ceiling on playback refreshes (setReferenceCounted(false)) so long sessions never hit a gap.
+            wakeLock?.acquire(4 * 60 * 60 * 1000L)
         } catch (e: Exception) {
             Log.w(TAG, "WakeLock acquire failed", e)
         }
