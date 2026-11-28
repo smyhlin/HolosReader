@@ -4,6 +4,8 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
+import android.os.PowerManager
+import android.os.SystemClock
 import android.os.SystemClock
 import android.util.Log
 import com.holos.reader.epub.ReaderBlock
@@ -87,6 +89,11 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
     private val sleepAtChapterEnd = AtomicBoolean(false)
     private val activeBlock = AtomicInteger(-1)
     private val sessionGen = AtomicLong(0L)
+    private val producedSamplesAtomic = AtomicLong(0L)
+    @Volatile private var sessionStartMs: Long = 0L
+    @Volatile private var perfModeTag: String = "LIVE"
+    @Volatile private var perfEmotionOn: Boolean = false
+    @Volatile private var perfFlashSrOn: Boolean = false
 
     // True A-B loop bounds (inclusive block indices; -1 = disabled)
     @Volatile
@@ -225,6 +232,8 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
         playingFlag.set(true)
         scheduleSleepDeadline(gen, sessionCancel)
 
+        sessionStartMs = SystemClock.elapsedRealtime()
+        producedSamplesAtomic.set(0L)
         val startIdx = startBlockIndex.coerceIn(0, blocks.lastIndex)
         listener?.onPlaybackStateChanged(
             isPlaying = true,
@@ -369,6 +378,9 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
             )
 
             // Producer: pre-synthesizes current + upcoming paragraphs ahead of playback (with A-B loop & per-block isolation)
+            perfModeTag = "LIVE"
+            perfEmotionOn = liveEmotion != null
+            perfFlashSrOn = flashSr != null
             val prod = Thread({
                 try {
                     var i = startIdx
@@ -377,6 +389,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                     while (i < blocks.size && isCurrent(gen, sessionCancel)) {
                         val block = blocks[i]
                         if (block.isSpeakable) {
+                            val blockSynthStartMs = SystemClock.elapsedRealtime()
                             val pacing = liveEmotion?.readyEmotion(block.text)
                             if (liveEmotion != null && totalProducedFrames > 0L) {
                                 // Aim past the next block so slow inference has time to finish.
@@ -449,6 +462,20 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                                 loopIterationsWithoutSpeech = 0
                                 blockSpeechFrames[i] = speechFrames
                                 val paraPause = FloatArray((outputSampleRate * 260) / 1000)
+                                producedSamplesAtomic.addAndGet(speechFrames + paraPause.size.toLong())
+                                val synthMs = (SystemClock.elapsedRealtime() - blockSynthStartMs).coerceAtLeast(1L)
+                                val audioMs = (speechFrames * 1000L) / outputSampleRate.coerceAtLeast(1)
+                                if (audioMs > 0L) {
+                                    val rtf = synthMs.toDouble() / audioMs.toDouble()
+                                    Log.i(
+                                        PERF_TAG,
+                                        String.format(
+                                            java.util.Locale.US,
+                                            "synth block=%d synthMs=%d audioMs=%d rtf=%.2f screenOn=%b emotion=%b flashSr=%b ep=%s",
+                                            i, synthMs, audioMs, rtf, isScreenInteractive(), perfEmotionOn, perfFlashSrOn, HolosEngineHolder.activeAccelerator,
+                                        ),
+                                    )
+                                }
                                 offerBlocking(queue, Packet.Audio(i, paraPause), gen, sessionCancel)
                                 offerBlocking(queue, Packet.BlockEnd(i, speechFrames), gen, sessionCancel)
                             }
@@ -542,6 +569,9 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
             statusText = AppStrings.t(appContext, "Офлайн-аудіо…", "Offline audio…"),
         )
 
+        perfModeTag = "WAV"
+        perfEmotionOn = false
+        perfFlashSrOn = false
         val prod = Thread({
             try {
                 RandomAccessFile(wavFile, "r").use { raf ->
@@ -573,6 +603,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                                 floats[s] = pcm16 / 32768f
                                 bi += 2
                             }
+                            producedSamplesAtomic.addAndGet(actualSamples.toLong())
                             offerBlocking(queue, Packet.Audio(entry.blockIndex, floats), gen, sessionCancel)
                             remaining -= actualSamples
                         }
@@ -680,6 +711,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
             var lastEnqueuedBlock = -1
             var totalFramesWritten = 0L
             var chapterEndedNaturally = false
+            var lastLoggedUnderruns = 0
 
             val sync = Thread({
                 var currentMarker: BlockMarker? = null
@@ -835,6 +867,15 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                 prebuffer.clear()
                 prebufferSamples = 0
                 playbackStarted = true
+                val ttfpMs = (SystemClock.elapsedRealtime() - sessionStartMs).coerceAtLeast(0L)
+                Log.i(
+                    PERF_TAG,
+                    String.format(
+                        java.util.Locale.US,
+                        "ttfp mode=%s ttfpMs=%d screenOn=%b emotion=%b flashSr=%b ep=%s",
+                        perfModeTag, ttfpMs, isScreenInteractive(), perfEmotionOn, perfFlashSrOn, HolosEngineHolder.activeAccelerator,
+                    ),
+                )
                 return true
             }
 
@@ -865,6 +906,21 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
                             blockSpeechFrames[packet.blockIndex] = packet.speechFrames
                             lastEnqueuedBlock = -1 // allow re-emitting marker on A-B single-block loop
                             if (!playbackStarted) flushPrebuffer()
+                            val underruns = try { track.underrunCount } catch (_: Throwable) { lastLoggedUnderruns }
+                            val underrunDelta = (underruns - lastLoggedUnderruns).coerceAtLeast(0)
+                            lastLoggedUnderruns = underruns
+                            val played = try { track.playbackHeadPosition.toLong() and 0xFFFFFFFFL } catch (_: Throwable) { 0L }
+                            val queuedSamples = (producedSamplesAtomic.get() - played).coerceAtLeast(0L)
+                            val queuedSec = queuedSamples.toDouble() / sampleRate.coerceAtLeast(1).toDouble()
+                            Log.i(
+                                PERF_TAG,
+                                String.format(
+                                    java.util.Locale.US,
+                                    "play mode=%s block=%d queuedSec=%.2f underruns=%d(+%d) screenOn=%b emotion=%b flashSr=%b",
+                                    perfModeTag, packet.blockIndex, queuedSec, underruns, underrunDelta,
+                                    isScreenInteractive(), perfEmotionOn, perfFlashSrOn,
+                                ),
+                            )
                         }
                         is Packet.ChapterEnd -> {
                             if (!playbackStarted) flushPrebuffer()
@@ -1134,6 +1190,12 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
         playingFlag.set(false)
     }
 
+    private fun isScreenInteractive(): Boolean = try {
+        appContext.getSystemService(PowerManager::class.java)?.isInteractive ?: true
+    } catch (_: Throwable) {
+        true
+    }
+
     companion object {
         private val emotionWorker = ThreadPoolExecutor(
             0, 1, 20L, TimeUnit.SECONDS, SynchronousQueue(),
@@ -1150,6 +1212,7 @@ class TtsPlaybackController(context: Context) : AutoCloseable {
         )
 
         private const val TAG = "TtsPlaybackController"
+        private const val PERF_TAG = "HolosPerf"
 
         fun offlineDir(context: Context): File =
             File(context.applicationContext.filesDir, "offline_chapters").apply { mkdirs() }
